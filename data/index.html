@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Blue Paws Tracker</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="icon" type="image/x-icon" href="/icons/favicon.ico">
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.locatecontrol/dist/L.Control.Locate.min.css" />
+  <link href="https://cdn.jsdelivr.net/npm/leaflet-measure-path@1.5.0/leaflet-measure-path.min.css" rel="stylesheet">
+    <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 70vh; margin: 10px; border: 2px solid #888; border-radius: 10px; }
+    #statusBanner {
+      text-align: center;
+      font-weight: bold;
+      padding: 6px;
+      border-radius: 6px;
+      margin: 5px;
+      display: inline-block;
+    }
+    #statusBanner.flash {
+      animation: status-flash 1.2s linear infinite alternate;
+    }
+    @keyframes status-flash {
+      0% { opacity: 1; }
+      100% { opacity: 0.3; }
+    }
+    /* Add animation for connected status poll */
+    #statusBanner.connected-flash {
+      animation: status-connected-flash-anim 0.5s ease-out 1;
+    }
+    @keyframes status-connected-flash-anim {
+      0% { opacity: 1; }
+      50% { opacity: 0.6; }
+      100% { opacity: 1; }
+    }
+    #filterBar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      padding: 15px 120px 20px 30px;  /* Increased left and bottom padding */
+      margin: 10px 15px 25px 15px;    /* Added margins all around */
+      justify-content: left;
+    }
+    .filter-dropdown {
+      border: none;
+      border-radius: 25px;
+      padding: 10px 20px;
+      background-color: #007bff;
+      color: white;
+      cursor: pointer;
+      font-size: 1.33em;    /* Increased by 33% */
+    }
+    .dropdown-menu {
+      min-width: 280px;     /* Increased to accommodate larger text */
+      margin-top: 5px !important;  /* Add space between button and dropdown */
+      padding: 12px;        /* Increased from 8px */
+      font-size: 1.33em;    /* Increased by 33% */
+    }
+    .dropdown-menu .dropdown-item {
+      padding: 8px 16px;    /* More padding for larger text */
+    }
+    .dropdown-menu input[type="checkbox"] {
+      transform: scale(1.33); /* Make checkboxes larger too */
+      margin-right: 8px;
+    }
+    #consoleWrapper {
+      padding: 10px;
+      text-align: left;
+    }
+    #jsonConsole {
+      display: none;
+      background: #f1f1f1;
+      padding: 10px;
+      font-family: monospace;
+      height: 675px; /* Increased by 50% from 450px */
+      overflow-y: auto;
+      border: 1px solid #ccc;
+      border-radius: 6px;
+      text-align: left;
+      font-size: 0.9em; /* Slightly smaller font for potentially more content */
+    }
+    .breadcrumb {
+      stroke: rgba(0, 123, 255, 0.7);
+      stroke-width: 3;
+      stroke-dasharray: 6, 8;  /* Creates a dashed line pattern */
+    }
+    .btn-group.aged .btn {
+      background-color: #6c757d !important;
+      border-color: #6c757d !important;
+      opacity: 0.8;
+    }
+    /* Replace the coordinate-control style block with: */
+    .coordinate-control {
+      background: rgba(255, 255, 255, 0.8);
+      padding: 4px 8px;
+      border-radius: 4px;
+      box-shadow: 0 1px 5px rgba(0,0,0,0.4);
+      font-family: monospace;
+      font-size: 11px;
+      position: absolute; /* Changed from fixed to absolute */
+      bottom: 10px;
+      right: 10px; /* Positioned to the bottom-right of the map */
+      z-index: 1000;
+      pointer-events: none;
+    }
+    .marker-popup {
+      font-size: 1.1em;
+      min-width: 250px;
+    }
+    .copy-btn {
+      cursor: pointer;
+      padding: 2px 6px;
+      margin-left: 5px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      background: #f8f9fa;
+    }
+    .copy-btn:hover {
+      background: #e9ecef;
+    }
+    .json-preview {
+      max-height: 150px;
+      overflow-y: auto;
+      background: #f8f9fa;
+      padding: 8px;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 0.9em;
+      white-space: pre-wrap;
+      margin-top: 8px;
+    }
+    /* Add styles for collapsed drawing tools */
+    .leaflet-draw-toolbar-collapsed {
+      transition: all 0.3s ease;
+    }
+    .leaflet-draw-toolbar-collapsed:hover .leaflet-draw-toolbar {
+      display: block !important;
+    }
+    .marker-dropdown {
+      transition: opacity 0.3s ease;
+    }
+    .marker-dropdown.semi-transparent {
+      opacity: 0.5;
+    }
+    .marker-popup-content {
+      /* Add styles to make the popup background/border match the dropdown if needed */
+      /* Example: background-color: #fff; border: 1px solid #ccc; border-radius: .25rem; */
+    }
+    .leaflet-popup-content-wrapper {
+        background: #fff; /* Match dropdown background */
+        border-radius: .375rem; /* Match Bootstrap dropdown radius */
+        box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.15); /* Match Bootstrap dropdown shadow */
+    }
+    .leaflet-popup-content {
+        margin: 0; /* Remove default Leaflet popup margin */
+        padding: 0; /* Use padding on the inner container instead */
+        min-width: 250px; /* Ensure minimum width */
+        width: auto !important; /* Override Leaflet's inline width style */
+    }
+    .leaflet-popup-tip-container {
+        /* Optional: Hide the default Leaflet tip if it clashes */
+        /* display: none; */
+    }
+    /* Double the size of the main logo and the title */
+    .main-logo-title h4 {
+      font-size: 2.19em; /* 1.25em * 1.75 = 2.19em, 75% bigger than default */
+      display: inline-block;
+      vertical-align: middle;
+      margin: 0;
+    }
+    .main-logo-title img {
+      vertical-align: middle;
+      margin-left: 17.5px; /* Keep margin for now */
+    }
+    /* Double the size of the dropdown buttons and the icon within */
+    .marker-dropdown .btn {
+      font-size: 2.66em !important; /* Double from 1.33em */
+      padding: 20px 40px !important; /* Double the padding */
+      min-height: 54px;
+    }
+    .marker-dropdown img {
+      height: 54px !important; /* Double from 27px */
+      margin-right: 16px !important; /* Double the margin */
+      vertical-align: text-bottom;
+    }
+    /* Adjust dropdown button and icon size */
+    .marker-dropdown .btn {
+      font-size: 1.86em !important; /* Reduce from 2.66em by 30% */
+      padding: 14px 28px !important; /* Reduce padding by 30% */
+      min-height: 38px;
+    }
+    .marker-dropdown img {
+      height: 62.1px !important; /* 54px * 1.15 = 62.1px */
+      margin-right: 16px !important;
+      vertical-align: text-bottom;
+    }
+    /* Adjust dropdown button size - make 15% smaller */
+    .marker-dropdown .btn {
+      font-size: 1.58em !important; /* Reduce from 1.86em by 15% */
+      padding: 12px 24px !important; /* Reduce padding by 15% */
+      min-height: auto; /* Allow height to adjust based on content */
+      white-space: nowrap; /* Prevent text wrapping inside button */
+    }
+    /* Keep icon size as is, adjust vertical alignment if needed */
+    .marker-dropdown img {
+      height: 62.1px !important;
+      margin-right: 10px !important; /* Slightly reduce margin */
+      vertical-align: middle; /* Align icon vertically with text */
+    }
+
+    /* Ensure container allows wrapping */
+    #catDropdownContainer {
+      display: flex;
+      justify-content: center; /* Center buttons horizontally */
+      flex-wrap: wrap; /* Allow buttons to wrap to the next line */
+      gap: 10px;
+      margin: 10px;
+      padding: 5px; /* Add some padding around the container */
+    }
+    /* Remove green flash effect for dropdown button */
+    .dropdown-flash-green {
+      /* animation: none !important; */ /* Keep commented or remove */
+    }
+    @keyframes dropdown-flash-green-anim {}
+
+    /* Remove alternating green and blue blink for dropdown button */
+    .dropdown-blink {
+      /* animation: none !important; */ /* Keep commented or remove */
+    }
+    @keyframes dropdown-blink-anim {}
+
+    /* Add style for home status */
+    .marker-dropdown .btn.status-home {
+      background-color: #28a745 !important; /* Green color */
+      border-color: #28a745 !important;
+      color: white !important; /* Ensure text is readable */
+    }
+    
+    /* Add style for error status */
+    .marker-dropdown .btn.status-error {
+      background-color: #dc3545 !important; /* Bootstrap error red */
+      border-color: #dc3545 !important;
+      color: white !important; /* Ensure text is readable */
+    }
+
+    /* Style for GPS accuracy circle */
+    .accuracy-circle {
+      fill-color: #007bff; /* Bootstrap primary blue */
+      fill-opacity: 0.15;
+      stroke: true;
+      color: #007bff;
+      weight: 1;
+      opacity: 0.5;
+    }
+    .console-entry {
+      /* border-bottom: 1px solid #ddd; // Remove bottom border */
+      margin-bottom: 5px;
+      padding-bottom: 5px;
+    }
+    .console-entry summary {
+      cursor: pointer;
+      font-weight: bold;
+      padding: 3px 0; /* Add some padding */
+      line-height: 1.4; /* Improve line spacing if text wraps */
+    }
+    .console-entry pre {
+      margin-top: 5px;
+      background-color: #e9ecef; /* Slightly different background for pre */
+      padding: 5px;
+      border-radius: 4px;
+      white-space: pre-wrap; /* Ensure wrapping within pre */
+      word-break: break-all; /* Break long strings */
+    }
+    /* Style for the horizontal rule */
+    #jsonConsole hr {
+      border: none; /* Remove default border */
+      border-top: 1px solid #ccc; /* Add a light grey line */
+      margin: 10px 0 5px 0; /* Add vertical spacing */
+    }
+  </style>
+</head>
+<body>
+  <div class="text-center py-2 bg-light main-logo-title">
+    <h4>
+      <span class="title-favicon">
+        <img src="/icons/favicon.ico" style="height: 88px; vertical-align: middle; margin-right: 10px; transform: rotate(-15deg);">
+      </span>
+      Blue Paws Tracker 
+      <span class="title-main-logo">
+        <img src="/icons/MainLogoPodgeCarrie_small.png" style="height: 130px; vertical-align: middle; margin-left: 10px; transform: none;">
+      </span>
+    </h4>
+  </div>
+  <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">Connected✔</div>
+  
+  <!-- Add container for dropdown buttons -->
+  <div id="catDropdownContainer" style="display: flex; justify-content: center; gap: 10px; margin: 10px;"></div>
+  
+  <div id="map"></div>
+  <div id="consoleWrapper" class="text-left p-2">
+    <button class="btn btn-outline-secondary me-2" id="toggleConsoleButton">Toggle Debug Console</button>
+    <button class="btn btn-outline-info" id="copyConsoleButton">Copy Console 📋</button> <!-- Added Copy Button -->
+    <div id="jsonConsole" style="display: none;" class="mt-2"></div> <!-- Added mt-2 for spacing -->
+  </div>
+
+  <!-- Core Leaflet library first -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- Leaflet plugins next -->
+  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+  <script src="https://unpkg.com/leaflet-providers/leaflet-providers.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet.locatecontrol/dist/L.Control.Locate.min.js"></script>
+  <script src="https://unpkg.com/leaflet-geometryutil/src/leaflet.geometryutil.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/leaflet-measure-path@1.5.0/leaflet-measure-path.min.js"></script>
+  <!-- Utility libraries -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/mgrs/1.0.0/mgrs.js"></script>
+
+  <!-- Your custom scripts last -->
+  <script src="Leaflet2.js"></script>
+
+  <script>
+    // Declare and initialize global variables at the top
+    // Variables are now defined in Leaflet2.js, no need to redeclare them here
+    const MARKER_TIMEOUT = 180000; // 3 minutes in milliseconds
+    // Remove duplicate declaration of HOME_LOCATION
+    // const HOME_LOCATION = [51.87378215701798, -2.239428653198173];
+    // Remove duplicate declaration of HOME_ICON
+    // const HOME_ICON = L.icon({
+    //   iconUrl: '/icons/Home.png',
+    //   iconSize: [48, 48],
+    //   iconAnchor: [12, 41],
+    //   popupAnchor: [1, -34]
+    // });
+    
+    // Missing variable declarations
+    let messageCount = 0;
+    let currentCentered = null;
+    const lastUpdated = {};
+    const accuracyCircles = {}; // <-- Add this line
+
+    // Variables for status banner and flashing
+    let flashTimeout = null; // For connected pulse
+    // let lastStatusText = ''; // No longer strictly needed for the flash logic
+    let isCurrentlyFlashingDisconnected = false;
+    let disconnectFlashTimeout = null;
+
+    // Map is already declared in Leaflet2.js, just add layers here
+    const osm = L.tileLayer.provider('OpenStreetMap.Mapnik', { maxZoom: 19 }).addTo(map); // OSM as default
+    const esriSat = L.tileLayer.provider('Esri.WorldImagery', { maxZoom: 23 });
+    const esriTopo = L.tileLayer.provider('Esri.WorldTopoMap', { maxZoom: 23 });
+    const stadiaDark = L.tileLayer.provider('Stadia.AlidadeSmoothDark', { maxZoom: 20 });
+    const usgsImagery = L.tileLayer.provider('USGS.USImagery', { maxZoom: 18 }); // Added USGS Imagery
+    const openTopo = L.tileLayer.provider('OpenTopoMap', { maxZoom: 17 }); // Added OpenTopoMap
+    const esriNatGeo = L.tileLayer.provider('Esri.NatGeoWorldMap', { maxZoom: 16 }); // Added Esri NatGeo
+
+    // Define Base Maps
+    const baseMaps = {
+      "OpenStreetMap": osm,
+      "Satellite (Esri)": esriSat,
+      "Satellite (USGS)": usgsImagery, // Added USGS
+      "Topographic (Esri)": esriTopo,
+      "Topographic (Open)": openTopo, // Added OpenTopoMap
+      "NatGeo (Esri)": esriNatGeo, // Added Esri NatGeo
+      "Dark Mode (Stadia)": stadiaDark
+    };
+
+    // Define Overlay Maps
+    const esriLabels = L.tileLayer.provider('Esri.Reference.WorldBoundariesAndPlaces', { maxZoom: 23 }); // Added Esri Labels/Boundaries Overlay
+    const overlayMaps = {
+        "Labels & Roads (Esri)": esriLabels
+    };
+
+    // Add layer control with base maps and overlays
+    L.control.layers(baseMaps, overlayMaps).addTo(map);
+    map.setMaxZoom(19); // Set map maxZoom to match OSM
+
+    // Replace the coordinate control initialization and update code with:
+    const coordinateControl = L.control({position: 'bottomright'});
+    coordinateControl.onAdd = function(map) {
+      const div = L.DomUtil.create('div', 'coordinate-control');
+      div.innerHTML = '--°N, --°E';
+      return div;
+    };
+    coordinateControl.addTo(map);
+
+    map.on('mousemove', function(e) {
+      const lat = e.latlng.lat;
+      const lng = e.latlng.lng;
+      const ddLat = Math.abs(lat).toFixed(5) + (lat >= 0 ? '°N' : '°S');
+      const ddLng = Math.abs(lng).toFixed(5) + (lng >= 0 ? '°E' : '°W');
+      const coordElement = document.querySelector('.coordinate-control');
+      if (coordElement) {
+        coordElement.innerHTML = `${ddLat}, ${ddLng}`;
+      }
+    });
+
+    // Add draw control
+    const drawnItems = new L.FeatureGroup();
+    map.addLayer(drawnItems);
+
+    const drawControl = new L.Control.Draw({
+      position: 'topleft',
+      draw: {
+        polyline: {
+          metric: true,
+          showLength: true,
+        },
+        polygon: {
+          metric: true,
+          showArea: true,
+          allowIntersection: false
+        },
+        circle: false,
+        rectangle: true,
+        marker: false,
+        circlemarker: false
+      },
+      edit: {
+        featureGroup: drawnItems,
+        remove: true
+      }
+    });
+    map.addControl(drawControl);
+
+    // Collapse draw control by default and add hover behavior
+    const drawToolbar = document.querySelector('.leaflet-draw.leaflet-control');
+    if (drawToolbar) {
+      drawToolbar.classList.add('leaflet-draw-toolbar-collapsed');
+      const buttons = drawToolbar.querySelectorAll('.leaflet-draw-toolbar');
+      buttons.forEach(button => {
+        button.style.display = 'none';
+      });
+    }
+
+    // Update coordinate control to start collapsed
+    const coordElement = document.querySelector('.coordinate-control');
+    if (coordElement) {
+      coordElement.classList.add('collapsed');
+    }
+
+    // Handle drawn items
+    map.on('draw:created', function(e) {
+      const layer = e.layer;
+      drawnItems.addLayer(layer);
+      
+      // Remove manual calculation and popup binding - leaflet-measure-path should handle this
+      // if (e.layerType === 'polyline') {
+      //   const distance = calculatePolylineDistance(layer);
+      //   layer.bindPopup(`Distance: ${distance.toFixed(1)} meters`);
+      // } else if (e.layerType === 'polygon') {
+      //   const area = calculatePolygonArea(layer);
+      //   layer.bindPopup(`Area: ${area.toFixed(1)} sq meters`);
+      // }
+    });
+
+    function updateStatus(text, color) {
+      const status = document.getElementById('statusBanner');
+      status.textContent = text;
+      status.style.color = color;
+      status.style.background = `rgba(${color === 'green' ? '0,255,0' : color === 'orange' ? '255,165,0' : '255,0,0'},0.1)`;
+
+      // Clear any ongoing disconnect flash timeout first
+      if (disconnectFlashTimeout) {
+        clearTimeout(disconnectFlashTimeout);
+        disconnectFlashTimeout = null;
+      }
+      // Remove previous visual effect classes
+      status.classList.remove('flash', 'connected-flash');
+      if (flashTimeout) { // For connected-flash
+        clearTimeout(flashTimeout);
+        flashTimeout = null;
+      }
+
+      if (text.startsWith('Disconnected')) {
+        if (!isCurrentlyFlashingDisconnected) {
+          status.classList.add('flash'); // Add class for infinite CSS flash
+          isCurrentlyFlashingDisconnected = true;
+          // Set a timeout to remove the 'flash' class after 5 seconds
+          disconnectFlashTimeout = setTimeout(() => {
+            status.classList.remove('flash');
+            isCurrentlyFlashingDisconnected = false;
+            // The banner will remain with "Disconnected" text and red background, but no animation.
+          }, 5000); // Duration of the disconnected flash
+        }
+        // If already flashing, the text/color update is sufficient. The 5s timeout will eventually stop it.
+      } else {
+        // If status is no longer "Disconnected", ensure any disconnected flashing is stopped.
+        if (isCurrentlyFlashingDisconnected) {
+          status.classList.remove('flash');
+          isCurrentlyFlashingDisconnected = false;
+          // disconnectFlashTimeout is already cleared at the start of the function
+        }
+
+        if (text.startsWith('Connected')) {
+          // Apply brief pulse for "Connected" status
+          status.classList.add('connected-flash');
+          flashTimeout = setTimeout(() => {
+            status.classList.remove('connected-flash');
+          }, 500); // Duration of the connected pulse animation
+        }
+        // Other statuses (e.g., "Attempting Reconnect") will have no flash.
+      }
+    }
+
+    document.getElementById('toggleConsoleButton').addEventListener('click', () => {
+      const jsonConsole = document.getElementById('jsonConsole');
+      if (jsonConsole.style.display === 'none') {
+        jsonConsole.style.display = 'block';
+        jsonConsole.scrollIntoView({ behavior: 'smooth', block: 'start' }); // Scroll to the JSON console
+      } else {
+        jsonConsole.style.display = 'none';
+      }
+    });
+
+    function toggleVisibility(id) {
+      markerVisibility[id] = !markerVisibility[id];
+      document.getElementById(`visible${id}`).checked = markerVisibility[id];
+      if (markers[id]) {
+        if (markerVisibility[id]) {
+          map.addLayer(markers[id]);
+          // Show accuracy circle if it exists
+          if (accuracyCircles[id]) {
+            map.addLayer(accuracyCircles[id]);
+            accuracyCircles[id].bringToBack(); // Ensure it's behind marker
+          }
+        } else {
+          map.removeLayer(markers[id]);
+          // Hide accuracy circle if it exists
+          if (accuracyCircles[id]) {
+            map.removeLayer(accuracyCircles[id]);
+          }
+        }
+      }
+    }
+
+    function createDropdown(id) {
+      // Skip if dropdown already exists
+      if (dropdowns.has(id)) {
+        return;
+      }
+
+      markerVisibility[id] = true;
+      autoCenter[id] = false;
+      breadcrumbs[id] = [];
+      
+      // Determine icon URL based on known cats
+      const baseId = KNOWN_CATS.includes(id) ? id : 'generic';
+      const iconUrl = `/icons/${baseId}_Marker_Normal.png`;
+      
+      const dropdownHtml = `
+        <div class="btn-group marker-dropdown" id="dropdown-${id}">
+          <button class="btn btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+            <img src="${iconUrl}" style="height: 27px; margin-right: 8px; vertical-align: text-bottom;">
+            ${id}
+          </button>
+          <ul class="dropdown-menu">
+            <li><a class="dropdown-item" href="#" onclick="toggleAutoCenter('${id}')">
+              <input type="checkbox" id="center${id}"> Centre and follow 🎯
+            </a></li>
+            <li><a class="dropdown-item" href="#" onclick="toggleVisibility('${id}')">
+              <input type="checkbox" id="visible${id}" checked> Show/Hide Marker
+            </a></li>
+            <li><a class="dropdown-item" href="#" onclick="toggleBreadcrumbs('${id}')">
+              <input type="checkbox" id="breadcrumb${id}" checked> Show Trail
+            </a></li>
+            <li><a class="dropdown-item" href="#" onclick="showJsonMessage('${id}', event)">
+              Show JSON Message 📄
+            </a></li>
+          </ul>
+        </div>`;
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = dropdownHtml;
+      document.getElementById('filterBar').appendChild(wrapper.firstElementChild);
+      dropdowns.add(id);
+      
+      // Show breadcrumbs immediately if the checkbox is checked (which it is by default now)
+      showBreadcrumbs(id); // <-- Added this call
+    }
+
+    function toggleAutoCenter(id) {
+      // If this marker is already centered, just turn it off
+      if (autoCenter[id]) {
+        autoCenter[id] = false;
+        document.getElementById(`center${id}`).checked = false;
+        currentCentered = null;
+        return;
+      }
+
+      // Uncheck any existing centered marker
+      if (currentCentered && currentCentered !== id) {
+        autoCenter[currentCentered] = false;
+        document.getElementById(`center${currentCentered}`).checked = false;
+      }
+
+      // Set new centered marker
+      autoCenter[id] = true;
+      currentCentered = id;
+      document.getElementById(`center${id}`).checked = true;
+
+      if (markers[id]) {
+        map.panTo(markers[id].getLatLng());
+      }
+    }
+
+    function toggleBreadcrumbs(id) {
+      const isVisible = document.getElementById(`breadcrumb${id}`).checked;
+      if (isVisible) {
+        showBreadcrumbs(id);
+      } else {
+        hideBreadcrumbs(id);
+      }
+    }
+
+    function updateBreadcrumbs(id, latLng) {
+      breadcrumbs[id].push(latLng);
+      if (breadcrumbs[id].length > 4) { // Keep only last 4 positions
+        breadcrumbs[id].shift();
+      }
+      if (document.getElementById(`breadcrumb${id}`)?.checked) {
+        showBreadcrumbs(id);
+      }
+    }
+
+    function showBreadcrumbs(id) {
+      hideBreadcrumbs(id);
+      if (breadcrumbs[id].length > 1) {
+        breadcrumbLines[id] = L.polyline(breadcrumbs[id], {
+          className: 'breadcrumb'
+        }).addTo(map);
+      }
+    }
+
+    function hideBreadcrumbs(id) {
+      if (breadcrumbLines[id]) {
+        map.removeLayer(breadcrumbLines[id]);
+        breadcrumbLines[id] = null;
+      }
+    }
+
+    <!-- let ws; -->
+    let failedAttempts = 0;
+
+    function connectWS() {
+      if (ws && ws.readyState === WebSocket.CONNECTING) {
+        return; // Don't try to connect if already connecting
+      }
+
+      try {
+        ws = new WebSocket(`ws://${window.location.hostname}:81/`);
+
+        ws.onopen = () => {
+          console.log("WebSocket connected");
+          updateStatus("Connected✔", 'green'); // Fixed typo here
+          failedAttempts = 0;
+        };
+
+        ws.onclose = () => {
+          console.log("WebSocket closed");
+          failedAttempts++;
+          if (failedAttempts === 1) {
+            updateStatus("Attempting Reconnect🔌", 'orange');
+          } else if (failedAttempts >= 3) {
+            updateStatus("Connection Error - Please refresh page❌", 'red');
+          }
+        };
+
+        ws.onerror = (error) => {
+          console.error("WebSocket error:", error);
+          failedAttempts++;
+          updateStatus("Connection Error - Check device is powered on❌", 'red');
+        };
+
+        ws.onmessage = (event) => {
+          failedAttempts = 0;
+          try {
+            const data = JSON.parse(event.data);
+            messageCount++;
+            const timestamp = new Date().toISOString();
+            const formattedData = {
+              messageNum: messageCount,
+              timestamp: timestamp,
+              data: data
+            };
+
+            // --- New Console Entry Logic ---
+            const jsonConsole = document.getElementById('jsonConsole');
+
+            // Add HR before the new entry, but not if the console is empty
+            if (jsonConsole.firstChild) {
+              const hr = document.createElement('hr');
+              jsonConsole.prepend(hr);
+            }
+
+            const entryDetails = document.createElement('details');
+            entryDetails.className = 'console-entry';
+            entryDetails.open = messageCount <= 2; // Keep first 2 entries open by default
+
+            const entrySummary = document.createElement('summary');
+            const id = data.id || 'N/A';
+            const browserTime = timestamp.split('T')[1].replace('Z', '');
+            const deviceTime = data.time ? (typeof data.time === 'string' && data.time.includes('T') ? data.time.split('T')[1].replace('Z', '') : data.time) : 'N/A'; // Handle different time formats
+            const lat = data.lat ? data.lat.toFixed(6) : 'N/A';
+            const lon = data.lon ? data.lon.toFixed(6) : 'N/A';
+            const status = data.status || 'N/A';
+
+            // Format summary for better readability
+            entrySummary.innerHTML = `<b>Msg ${messageCount}</b> | ID: <b>${id}</b> | Status: ${status}<br>` +
+                                     `&nbsp;&nbsp;Browser Time: ${browserTime} | Device Time: ${deviceTime}<br>` +
+                                     `&nbsp;&nbsp;Coords: ${lat}, ${lon}`;
+
+            const entryPre = document.createElement('pre');
+            entryPre.textContent = JSON.stringify(formattedData, null, 2);
+
+            entryDetails.appendChild(entrySummary);
+            entryDetails.appendChild(entryPre);
+
+            // Prepend the new entry to the top of the console
+            jsonConsole.prepend(entryDetails);
+            // --- End New Console Entry Logic ---
+
+            // Original logic to update markers etc.
+            if (data.id) {
+              // ... (rest of the existing marker update logic remains unchanged) ...
+              createDropdown(id);  // Will only create if doesn't exist
+              lastUpdated[id] = Date.now();  // Update timestamp
+
+              if (!markers[id]) {
+                markers[id] = L.marker([0, 0], {
+                  icon: getMarkerIcon(id, data.status)
+                }).addTo(map);
+              }
+
+              const markerIcon = getMarkerIcon(id, data.status);
+              markers[id].setIcon(markerIcon);
+
+              // Use the same case-tolerant approach for dropdown icons
+              const baseId = KNOWN_CATS.includes(id) ? id : 'generic';
+              // Use our findBestIconMatch function from Leaflet2.js for proper case handling
+              const status = String(data.status || "").trim();
+              const iconStatus = findBestIconMatch(baseId, status);
+              const iconUrl = `/icons/${baseId}_Marker_${iconStatus}.png`;
+              updateDropdownIcon(id, iconUrl, status); // Pass status here
+
+              // Always update marker popup with relevant information
+              updateMarkerPopup(markers[id], data);
+
+              // Update marker position and accuracy circle if valid coordinates are provided
+              if (data.lat && data.lon) {
+                const newPos = [data.lat, data.lon];
+                markers[id].setLatLng(newPos);
+                updateBreadcrumbs(id, newPos);
+
+                // Always update or create a fixed 2-meter accuracy circle
+                const fixedRadius = 2; // Fixed radius in meters
+                if (accuracyCircles[id]) {
+                  accuracyCircles[id].setLatLng(newPos);
+                  accuracyCircles[id].setRadius(fixedRadius); // Ensure radius is fixed
+                } else {
+                  accuracyCircles[id] = L.circle(newPos, {
+                    radius: fixedRadius,
+                    className: 'accuracy-circle' // Apply CSS class
+                  }).addTo(map);
+                  // Ensure circle is behind the marker icon
+                  accuracyCircles[id].bringToBack(); 
+                }
+                // Ensure circle is only shown if marker is visible
+                if (!markerVisibility[id] && map.hasLayer(accuracyCircles[id])) {
+                   map.removeLayer(accuracyCircles[id]);
+                } else if (markerVisibility[id] && !map.hasLayer(accuracyCircles[id])) {
+                   map.addLayer(accuracyCircles[id]);
+                   accuracyCircles[id].bringToBack(); 
+                }
+
+                if (autoCenter[id]) {
+                  map.panTo(newPos);
+                }
+              } else {
+                 // If no lat/lon, remove the accuracy circle as position is unknown
+                 if (accuracyCircles[id]) {
+                   map.removeLayer(accuracyCircles[id]);
+                   delete accuracyCircles[id];
+                 }
+              }
+              
+              // This visibility check might need adjustment depending on how markers are removed/timed out
+              // Re-add marker/circle layers if they should be visible but aren't (e.g., after initial creation)
+              if (markerVisibility[id] && !map.hasLayer(markers[id])) { 
+                 map.addLayer(markers[id]);
+                 if (accuracyCircles[id] && !map.hasLayer(accuracyCircles[id])) {
+                    map.addLayer(accuracyCircles[id]);
+                    accuracyCircles[id].bringToBack();
+                 }
+              } else if (!markerVisibility[id] && map.hasLayer(markers[id])) {
+                 map.removeLayer(markers[id]);
+                 if (accuracyCircles[id] && map.hasLayer(accuracyCircles[id])) {
+                    map.removeLayer(accuracyCircles[id]);
+                 }
+              }
+            }
+          } catch (e) {
+             console.error("Error processing WebSocket message:", e, "Raw data:", event.data); // Log errors
+          }
+        };
+      } catch (error) {
+        // ...existing code...
+      }
+    }
+
+    // Function to update the dropdown icon and button style based on status
+    function updateDropdownIcon(id, iconUrl, status) {
+      const dropdownButton = document.querySelector(`#dropdown-${id} .btn`);
+      if (dropdownButton) {
+        const dropdownIcon = dropdownButton.querySelector('img');
+        if (dropdownIcon) {
+          dropdownIcon.src = iconUrl;
+        }
+        
+        // Remove all status classes first
+        dropdownButton.classList.remove('status-home', 'status-error');
+        
+        // Add appropriate status class based on the status
+        if (status) {
+          const statusLower = status.toLowerCase();
+          if (statusLower === 'home') {
+            dropdownButton.classList.add('status-home');
+          } else if (statusLower === 'error') {
+            dropdownButton.classList.add('status-error');
+          }
+        }
+      }
+    }
+
+    function copyToClipboard(text) {
+      // Try using the modern Clipboard API first
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(() => {
+          alert('Copied to clipboard!');
+        }).catch(() => {
+          // Fallback to older method
+          fallbackCopyToClipboard(text);
+        });
+      } else {
+        // Use fallback for non-secure contexts or unsupported browsers
+        fallbackCopyToClipboard(text);
+      }
+    }
+
+    function fallbackCopyToClipboard(text) {
+      // Create temporary textarea
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.left = '-999999px';
+      textArea.style.top = '-999999px';
+      document.body.appendChild(textArea);
+      
+      // Select and copy
+      textArea.focus();
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        alert('Copied to clipboard!');
+      } catch (err) {
+        console.error('Failed to copy text: ', err);
+        alert('Failed to copy - please try selecting and copying manually');
+      }
+      
+      // Cleanup
+      document.body.removeChild(textArea);
+    }
+
+    function calculateDistanceFromHome(latlng) {
+      return (map.distance(latlng, HOME_LOCATION) / 1000).toFixed(2);
+    }
+
+    function updateMarkerPopup(marker, data) {
+      const latlng = marker.getLatLng();
+      const coords = `${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}`;
+      const distance = calculateDistanceFromHome(latlng);
+      
+      const popupContent = `
+        <div class="marker-popup">
+          <h5>${data.id}</h5>
+          <p>
+            <strong>Coordinates:</strong> 
+            <span>${coords}</span>
+            <button class="copy-btn" onclick="copyToClipboard('${coords}')">📋</button>
+          </p>
+          <p><strong>Distance from home:</strong> ${distance}km</p>
+          <p><strong>Status:</strong> ${data.status || 'Unknown'}</p>
+          <details>
+            <summary style="cursor: pointer; color: #0d6efd;">View Last JSON</summary>
+            <div class="json-preview">${JSON.stringify(data, null, 2)}</div>
+          </details>
+        </div>`;
+
+      marker.bindPopup(popupContent, {
+        maxWidth: 300,
+        className: 'marker-popup'
+      });
+    }
+
+    function toggleMarkerVisibility(id) {
+      const dropdown = document.querySelector(`#dropdown-${id}`);
+      const isHidden = dropdown.value === 'hide';
+      
+      // Add/remove semi-transparent class based on hide state
+      dropdown.classList.toggle('semi-transparent', isHidden);
+      
+      // Handle marker visibility
+      // ... existing marker visibility code ...
+    }
+
+    // --- Live connection indicator polling ---
+    function pollConnectionStatus() {
+      fetch('/data', { method: 'GET', cache: 'no-store' })
+        .then(response => {
+          if (response.ok) {
+            updateStatus('Connected✔', 'green');
+          } else {
+            // Handle HTTP errors (e.g., 404, 500) from the server
+            updateStatus(`Disconnected (Server: ${response.status})❌`, 'red');
+          }
+        })
+        .catch(() => {
+          // Handle network errors (e.g., server down, no network)
+          updateStatus('Disconnected (Network Error)❌', 'red');
+        });
+    }
+    setInterval(pollConnectionStatus, 5000); // Poll every 5 seconds
+    pollConnectionStatus(); // Run once on page load
+
+    function showJsonMessage(id, event) {
+      // Prevent the default behavior which would close the dropdown
+      event.preventDefault();
+      event.stopPropagation();
+      
+      // Find the most recent data for this ID by looking at the jsonConsole
+      const jsonConsole = document.getElementById('jsonConsole');
+      const consoleText = jsonConsole.textContent;
+      
+      try {
+        // Try to find the latest entry for this ID
+        const regex = new RegExp(`"id":\\s*"${id}"`, 'g');
+        let match;
+        let lastIndex = -1;
+        
+        // Find the last occurrence of this ID in the console text
+        while ((match = regex.exec(consoleText)) !== null) {
+          lastIndex = match.index;
+        }
+        
+        if (lastIndex >= 0) {
+          // Find the beginning of the JSON object containing this ID
+          const startBrace = consoleText.lastIndexOf('{', lastIndex);
+          // Find the corresponding closing brace (this is simplified and assumes well-formed JSON)
+          let endBrace = startBrace;
+          let braceCount = 1;
+          
+          for (let i = startBrace + 1; i < consoleText.length; i++) {
+            if (consoleText[i] === '{') braceCount++;
+            if (consoleText[i] === '}') braceCount--;
+            if (braceCount === 0) {
+              endBrace = i + 1;
+              break;
+            }
+          }
+          
+          // Extract the JSON string
+          const jsonStr = consoleText.substring(startBrace, endBrace);
+          
+          // Create a modal to display the JSON
+          const modal = document.createElement('div');
+          modal.className = 'modal fade';
+          modal.id = `jsonModal-${id}`;
+          modal.setAttribute('tabindex', '-1');
+          modal.setAttribute('aria-labelledby', `jsonModalLabel-${id}`);
+          modal.setAttribute('aria-hidden', 'true');
+          
+          modal.innerHTML = `
+            <div class="modal-dialog">
+              <div class="modal-content">
+                <div class="modal-header">
+                  <h5 class="modal-title" id="jsonModalLabel-${id}">JSON Data for ${id}</h5>
+                  <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                  <pre style="max-height: 400px; overflow-y: auto;">${JSON.stringify(JSON.parse(jsonStr), null, 2)}</pre>
+                </div>
+                <div class="modal-footer">
+                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                </div>
+              </div>
+            </div>
+          `;
+          
+          document.body.appendChild(modal);
+          
+          // Initialize and show the modal
+          const modalInstance = new bootstrap.Modal(modal);
+          modalInstance.show();
+          
+          // Remove the modal from DOM when hidden
+          modal.addEventListener('hidden.bs.modal', function () {
+            document.body.removeChild(modal);
+          });
+        } else {
+          alert(`No data available for ${id}`);
+        }
+      } catch (err) {
+        console.error('Error showing JSON message:', err);
+        alert(`Error showing data for ${id}: ${err.message}`);
+      }
+    }
+
+    // Add event listener for the new copy button
+    document.getElementById('copyConsoleButton').addEventListener('click', () => {
+      const jsonConsole = document.getElementById('jsonConsole');
+      if (!jsonConsole) {
+          console.error('Could not find #jsonConsole element');
+          alert('Error: Console element not found!');
+          return;
+      }
+      console.log('Copy button clicked. Console element:', jsonConsole);
+
+      // Select all <pre> elements directly within the console div
+      const preElements = jsonConsole.querySelectorAll('pre'); // Changed selector
+      console.log(`Found ${preElements.length} <pre> elements inside #jsonConsole.`);
+
+      if (preElements.length === 0) {
+          // If still not found, maybe the structure is different? Log innerHTML.
+          console.log('No <pre> elements found. Console innerHTML:', jsonConsole.innerHTML);
+          alert('Console appears empty or structure is unexpected.');
+          return;
+      }
+
+      // Get text content from all found <pre> tags
+      const textToCopy = Array.from(preElements)
+                              .map(pre => pre.textContent)
+                              .join('\n\n'); // Add double newline between entries
+
+      console.log('Text to copy length:', textToCopy.length);
+
+      if (textToCopy) {
+        copyToClipboard(textToCopy);
+      } else {
+        // This case might occur if <pre> tags exist but are empty
+        console.log('Text content was empty despite finding <pre> elements.');
+        alert('Console content appears empty.');
+      }
+    });
+
+  </script>
+
+  <!-- Add Bootstrap JS for dropdowns -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
