@@ -14,11 +14,51 @@ const map = L.map("map", {
   },
 });
 
-// Add OpenStreetMap tile layer
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  attribution:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-}).addTo(map);
+// Define map layers
+const osm = L.tileLayer
+  .provider("OpenStreetMap.Mapnik", {
+    maxZoom: 19,
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  })
+  .addTo(map); // OSM as default
+
+const esriSat = L.tileLayer.provider("Esri.WorldImagery", { maxZoom: 23 });
+const esriTopo = L.tileLayer.provider("Esri.WorldTopoMap", { maxZoom: 23 });
+const stadiaDark = L.tileLayer.provider("Stadia.AlidadeSmoothDark", {
+  maxZoom: 20,
+});
+const usgsImagery = L.tileLayer.provider("USGS.USImagery", { maxZoom: 18 });
+const openTopo = L.tileLayer.provider("OpenTopoMap", { maxZoom: 17 });
+const esriNatGeo = L.tileLayer.provider("Esri.NatGeoWorldMap", { maxZoom: 16 });
+
+// Define Base Maps
+const baseMaps = {
+  OpenStreetMap: osm,
+  "Satellite (Esri)": esriSat,
+  "Satellite (USGS)": usgsImagery,
+  "Topographic (Esri)": esriTopo,
+  "Topographic (Open)": openTopo,
+  "NatGeo (Esri)": esriNatGeo,
+  "Dark Mode (Stadia)": stadiaDark,
+};
+
+// Define Overlay Maps
+const esriLabels = L.tileLayer.provider(
+  "Esri.Reference.WorldBoundariesAndPlaces",
+  { maxZoom: 23 }
+);
+const overlayMaps = {
+  "Labels & Roads (Esri)": esriLabels,
+};
+
+// Add layer control with base maps and overlays
+L.control
+  .layers(baseMaps, overlayMaps, {
+    position: "topright",
+    collapsed: false,
+  })
+  .addTo(map);
 
 // Define KNOWN_CATS to avoid ReferenceError
 const KNOWN_CATS = [

@@ -1,0 +1,151 @@
+/* Enhanced styling for the cat tracker application */
+
+/* Status styles for cat dropdowns */
+.marker-dropdown .btn.status-home {
+  background-color: #28a745 !important; /* Green color for home status */
+  border-color: #28a745 !important;
+  color: white !important;
+}
+  
+.marker-dropdown .btn.status-error {
+  background-color: #dc3545 !important; /* Red color for error status */
+  border-color: #dc3545 !important;
+  color: white !important;
+}
+
+.marker-dropdown .btn.status-offline {
+  background-color: #6c757d !important; /* Gray color for offline status */
+  border-color: #6c757d !important;
+  color: white !important;
+  opacity: 0.8; /* Slightly dimmed appearance */
+}
+
+.marker-dropdown .btn.status-outanabout {
+  background-color: #007bff !important; /* Blue color for moving status */
+  border-color: #007bff !important;
+  color: white !important;
+}
+
+/* Improved cat dropdown container */
+#catDropdownContainer {
+  display: flex;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin: 10px auto;
+  padding: 8px;
+  max-width: 95%;
+  border-radius: 8px;
+  background-color: rgba(240, 240, 240, 0.4);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  overflow-x: auto;
+}
+
+/* Improved dropdown buttons */
+.marker-dropdown .btn {
+  font-size: 1.5em !important;
+  padding: 12px 20px !important;
+  min-height: 38px;
+  border-radius: 12px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  transition: all 0.2s ease;
+  position: relative; /* For position indicator */
+}
+
+.marker-dropdown .btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.marker-dropdown img {
+  height: 42px !important;
+  width: auto !important;
+  margin-right: 12px !important;
+  vertical-align: middle;
+  transition: transform 0.2s ease;
+}
+
+/* Update time indicator */
+.dropdown-update-time {
+  font-size: 0.65em;
+  opacity: 0.7;
+  position: absolute;
+  bottom: 2px;
+  right: 8px;
+  pointer-events: none;
+}
+
+/* Aged status for old data */
+.marker-dropdown.aged .btn {
+  opacity: 0.7;
+  filter: grayscale(30%);
+}
+
+/* Pulsing animation for updates */
+@keyframes dropdown-pulse {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.05); }
+  100% { transform: scale(1); }
+}
+
+.dropdown-pulse {
+  animation: dropdown-pulse 0.6s ease;
+}
+
+/* Better organization for closely positioned cats */
+.marker-dropdown:hover {
+  z-index: 1000;
+}
+
+/* Container wrapper and header styles */
+.cat-container-wrapper {
+  width: 95%;
+  margin: 0 auto;
+}
+
+.container-header {
+  background-color: rgba(240, 240, 240, 0.7);
+  border-radius: 8px 8px 0 0;
+  padding: 5px 10px;
+  margin-top: 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+
+.cat-count {
+  font-size: 0.9em;
+  font-weight: 500;
+  color: #555;
+}
+
+/* Responsive adjustments for mobile */
+@media (max-width: 768px) {
+  .cat-container-wrapper {
+    width: 100%;
+  }
+  
+  .container-header {
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+  }
+  
+  .btn-group-sm .btn {
+    font-size: 0.8em;
+    padding: 0.25rem 0.4rem;
+  }
+  
+  .marker-dropdown .btn {
+    font-size: 1.2em !important;
+    padding: 10px 16px !important;
+  }
+  
+  .marker-dropdown img {
+    height: 32px !important;
+    margin-right: 8px !important;
+  }
+}
+
+/* Ensure container has rounded corners that match the header */
+#catDropdownContainer {
+  border-radius: 0 0 8px 8px;
+}

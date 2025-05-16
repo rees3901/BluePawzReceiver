@@ -6,12 +6,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/x-icon" href="/icons/favicon.ico">
 
-  <!-- Leaflet CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <!-- Leaflet CSS -->  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.locatecontrol/dist/L.Control.Locate.min.css" />
   <link href="https://cdn.jsdelivr.net/npm/leaflet-measure-path@1.5.0/leaflet-measure-path.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="cat-tracker.css" />
     <style>
     body { margin: 0; font-family: sans-serif; }
     #map { height: 70vh; margin: 10px; border: 2px solid #888; border-radius: 10px; }
@@ -189,16 +189,28 @@
       margin-right: 16px !important; /* Double the margin */
       vertical-align: text-bottom;
     }
-    /* Adjust dropdown button and icon size */
+    /* Improved dropdown button and icon size for better UI */
     .marker-dropdown .btn {
-      font-size: 1.86em !important; /* Reduce from 2.66em by 30% */
-      padding: 14px 28px !important; /* Reduce padding by 30% */
+      font-size: 1.5em !important; /* Optimized for readability */
+      padding: 12px 20px !important; /* Better padding for touch targets */
       min-height: 38px;
+      border-radius: 12px; /* More rounded corners for modern look */
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1); /* Subtle shadow for depth */
+      transition: all 0.2s ease; /* Smooth transitions for hover effects */
     }
+    
+    /* Add hover effect for better user feedback */
+    .marker-dropdown .btn:hover {
+      transform: translateY(-2px); /* Slight lift effect on hover */
+      box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15); /* Enhanced shadow on hover */
+    }
+    
     .marker-dropdown img {
-      height: 62.1px !important; /* 54px * 1.15 = 62.1px */
-      margin-right: 16px !important;
-      vertical-align: text-bottom;
+      height: 42px !important; /* Optimized icon size */
+      width: auto !important; /* Maintain aspect ratio */
+      margin-right: 12px !important;
+      vertical-align: middle; /* Better vertical alignment with text */
+      transition: transform 0.2s ease; /* Smooth animation for icon */
     }
     /* Adjust dropdown button size - make 15% smaller */
     .marker-dropdown .btn {
@@ -214,14 +226,19 @@
       vertical-align: middle; /* Align icon vertically with text */
     }
 
-    /* Ensure container allows wrapping */
+    /* Improved cat dropdown container with better responsiveness and organization */
     #catDropdownContainer {
       display: flex;
       justify-content: center; /* Center buttons horizontally */
       flex-wrap: wrap; /* Allow buttons to wrap to the next line */
-      gap: 10px;
-      margin: 10px;
-      padding: 5px; /* Add some padding around the container */
+      gap: 12px;
+      margin: 10px auto; /* Auto horizontal margins for better centering */
+      padding: 8px; /* Slightly increased padding for better spacing */
+      max-width: 95%; /* Prevent container from taking full width on large screens */
+      border-radius: 8px; /* Rounded corners for container */
+      background-color: rgba(240, 240, 240, 0.4); /* Very light background to visually group buttons */
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05); /* Subtle shadow for depth */
+      overflow-x: auto; /* Allow horizontal scrolling on very small screens */
     }
     /* Remove green flash effect for dropdown button */
     .dropdown-flash-green {
@@ -298,13 +315,20 @@
     </h4>
   </div>
   <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">Connected✔</div>
+    <!-- Improved container for cat dropdown buttons with sorting controls -->
+  <div class="cat-container-wrapper">
+    <div class="container-header d-flex justify-content-between align-items-center px-2">
+      <span class="cat-count" id="activeCatCount">0 Cats Tracking</span>
+      <div class="btn-group btn-group-sm" role="group">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByName">Sort by Name</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByStatus">Sort by Status</button>
+      </div>
+    </div>
+    <div id="catDropdownContainer"></div>
+  </div>
   
-  <!-- Add container for dropdown buttons -->
-  <div id="catDropdownContainer" style="display: flex; justify-content: center; gap: 10px; margin: 10px;"></div>
-  
-  <div id="map"></div>
-  <div id="consoleWrapper" class="text-left p-2">
-    <button class="btn btn-outline-secondary me-2" id="toggleConsoleButton">Toggle Debug Console</button>
+  <div id="map"></div>  <div id="consoleWrapper" class="text-left p-2">
+    <button class="btn btn-outline-secondary me-2" id="toggleConsoleButton">Show Debug Console</button>
     <button class="btn btn-outline-info" id="copyConsoleButton">Copy Console 📋</button> <!-- Added Copy Button -->
     <div id="jsonConsole" style="display: none;" class="mt-2"></div> <!-- Added mt-2 for spacing -->
   </div>
@@ -348,37 +372,8 @@
     let flashTimeout = null; // For connected pulse
     // let lastStatusText = ''; // No longer strictly needed for the flash logic
     let isCurrentlyFlashingDisconnected = false;
-    let disconnectFlashTimeout = null;
-
-    // Map is already declared in Leaflet2.js, just add layers here
-    const osm = L.tileLayer.provider('OpenStreetMap.Mapnik', { maxZoom: 19 }).addTo(map); // OSM as default
-    const esriSat = L.tileLayer.provider('Esri.WorldImagery', { maxZoom: 23 });
-    const esriTopo = L.tileLayer.provider('Esri.WorldTopoMap', { maxZoom: 23 });
-    const stadiaDark = L.tileLayer.provider('Stadia.AlidadeSmoothDark', { maxZoom: 20 });
-    const usgsImagery = L.tileLayer.provider('USGS.USImagery', { maxZoom: 18 }); // Added USGS Imagery
-    const openTopo = L.tileLayer.provider('OpenTopoMap', { maxZoom: 17 }); // Added OpenTopoMap
-    const esriNatGeo = L.tileLayer.provider('Esri.NatGeoWorldMap', { maxZoom: 16 }); // Added Esri NatGeo
-
-    // Define Base Maps
-    const baseMaps = {
-      "OpenStreetMap": osm,
-      "Satellite (Esri)": esriSat,
-      "Satellite (USGS)": usgsImagery, // Added USGS
-      "Topographic (Esri)": esriTopo,
-      "Topographic (Open)": openTopo, // Added OpenTopoMap
-      "NatGeo (Esri)": esriNatGeo, // Added Esri NatGeo
-      "Dark Mode (Stadia)": stadiaDark
-    };
-
-    // Define Overlay Maps
-    const esriLabels = L.tileLayer.provider('Esri.Reference.WorldBoundariesAndPlaces', { maxZoom: 23 }); // Added Esri Labels/Boundaries Overlay
-    const overlayMaps = {
-        "Labels & Roads (Esri)": esriLabels
-    };
-
-    // Add layer control with base maps and overlays
-    L.control.layers(baseMaps, overlayMaps).addTo(map);
-    map.setMaxZoom(19); // Set map maxZoom to match OSM
+    let disconnectFlashTimeout = null;    // Map and layers are already declared in Leaflet2.js
+    // No need to redeclare them here
 
     // Replace the coordinate control initialization and update code with:
     const coordinateControl = L.control({position: 'bottomright'});
@@ -537,9 +532,7 @@
           }
         }
       }
-    }
-
-    function createDropdown(id) {
+    }    function createDropdown(id) {
       // Skip if dropdown already exists
       if (dropdowns.has(id)) {
         return;
@@ -553,22 +546,31 @@
       const baseId = KNOWN_CATS.includes(id) ? id : 'generic';
       const iconUrl = `/icons/${baseId}_Marker_Normal.png`;
       
+      // Get current time for last updated display
+      const now = new Date();
+      const timeString = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+      lastUpdated[id] = now.getTime();
+      
       const dropdownHtml = `
         <div class="btn-group marker-dropdown" id="dropdown-${id}">
           <button class="btn btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
-            <img src="${iconUrl}" style="height: 27px; margin-right: 8px; vertical-align: text-bottom;">
+            <img src="${iconUrl}" alt="${id}" class="cat-icon">
             ${id}
+            <span class="dropdown-update-time" id="lastUpdate-${id}">Updated: ${timeString}</span>
           </button>
           <ul class="dropdown-menu">
-            <li><a class="dropdown-item" href="#" onclick="toggleAutoCenter('${id}')">
+            <li><div class="dropdown-header">Status: <span id="status-${id}">Unknown</span></div></li>
+            <li><hr class="dropdown-divider"></li>
+            <li><a class="dropdown-item" href="#" onclick="toggleAutoCenter('${id}'); return false;">
               <input type="checkbox" id="center${id}"> Centre and follow 🎯
             </a></li>
-            <li><a class="dropdown-item" href="#" onclick="toggleVisibility('${id}')">
+            <li><a class="dropdown-item" href="#" onclick="toggleVisibility('${id}'); return false;">
               <input type="checkbox" id="visible${id}" checked> Show/Hide Marker
             </a></li>
-            <li><a class="dropdown-item" href="#" onclick="toggleBreadcrumbs('${id}')">
+            <li><a class="dropdown-item" href="#" onclick="toggleBreadcrumbs('${id}'); return false;">
               <input type="checkbox" id="breadcrumb${id}" checked> Show Trail
             </a></li>
+            <li><hr class="dropdown-divider"></li>
             <li><a class="dropdown-item" href="#" onclick="showJsonMessage('${id}', event)">
               Show JSON Message 📄
             </a></li>
@@ -576,11 +578,11 @@
         </div>`;
       const wrapper = document.createElement('div');
       wrapper.innerHTML = dropdownHtml;
-      document.getElementById('filterBar').appendChild(wrapper.firstElementChild);
+      document.getElementById('catDropdownContainer').appendChild(wrapper.firstElementChild);
       dropdowns.add(id);
       
-      // Show breadcrumbs immediately if the checkbox is checked (which it is by default now)
-      showBreadcrumbs(id); // <-- Added this call
+      // Start checking for aged markers
+      startAgedMarkersCheck();
     }
 
     function toggleAutoCenter(id) {
@@ -615,14 +617,16 @@
       } else {
         hideBreadcrumbs(id);
       }
-    }
-
-    function updateBreadcrumbs(id, latLng) {
+    }    function updateBreadcrumbs(id, latLng) {
       breadcrumbs[id].push(latLng);
       if (breadcrumbs[id].length > 4) { // Keep only last 4 positions
         breadcrumbs[id].shift();
       }
-      if (document.getElementById(`breadcrumb${id}`)?.checked) {
+      
+      // Always try to show breadcrumbs by default (checkbox is checked by default)
+      const checkbox = document.getElementById(`breadcrumb${id}`);
+      // If checkbox doesn't exist yet or is checked, show breadcrumbs
+      if (!checkbox || checkbox.checked) {
         showBreadcrumbs(id);
       }
     }
@@ -810,29 +814,60 @@
       } catch (error) {
         // ...existing code...
       }
-    }
-
-    // Function to update the dropdown icon and button style based on status
+    }    // Enhanced function to update the dropdown icon, status display, and timestamp
     function updateDropdownIcon(id, iconUrl, status) {
-      const dropdownButton = document.querySelector(`#dropdown-${id} .btn`);
+      const dropdownElement = document.querySelector(`#dropdown-${id}`);
+      const dropdownButton = dropdownElement?.querySelector('.btn');
+      
       if (dropdownButton) {
+        // Update the icon
         const dropdownIcon = dropdownButton.querySelector('img');
-        if (dropdownIcon) {
+        if (dropdownIcon && dropdownIcon.src !== iconUrl) {
           dropdownIcon.src = iconUrl;
         }
         
         // Remove all status classes first
-        dropdownButton.classList.remove('status-home', 'status-error');
+        dropdownButton.classList.remove('status-home', 'status-error', 'status-offline', 'status-outanabout');
         
         // Add appropriate status class based on the status
         if (status) {
           const statusLower = status.toLowerCase();
-          if (statusLower === 'home') {
-            dropdownButton.classList.add('status-home');
-          } else if (statusLower === 'error') {
-            dropdownButton.classList.add('status-error');
+          const statusMap = {
+            'home': 'status-home',
+            'error': 'status-error',
+            'offline': 'status-offline',
+            'outanabout': 'status-outanabout'
+          };
+          
+          if (statusMap[statusLower]) {
+            dropdownButton.classList.add(statusMap[statusLower]);
+          }
+          
+          // Update status text in dropdown menu
+          const statusElement = document.getElementById(`status-${id}`);
+          if (statusElement) {
+            statusElement.textContent = status;
           }
         }
+        
+        // Update timestamp
+        const now = new Date();
+        const timeString = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        lastUpdated[id] = now.getTime();
+        
+        const timestampElement = document.getElementById(`lastUpdate-${id}`);
+        if (timestampElement) {
+          timestampElement.textContent = `Updated: ${timeString}`;
+        }
+        
+        // Add a brief pulse animation
+        dropdownButton.classList.remove('dropdown-pulse');
+        setTimeout(() => {
+          dropdownButton.classList.add('dropdown-pulse');
+        }, 10);
+        
+        // Remove aged class if it exists
+        dropdownElement.classList.remove('aged');
       }
     }
 
@@ -915,9 +950,7 @@
       
       // Handle marker visibility
       // ... existing marker visibility code ...
-    }
-
-    // --- Live connection indicator polling ---
+    }    // --- Live connection indicator polling ---
     function pollConnectionStatus() {
       fetch('/data', { method: 'GET', cache: 'no-store' })
         .then(response => {
@@ -935,6 +968,42 @@
     }
     setInterval(pollConnectionStatus, 5000); // Poll every 5 seconds
     pollConnectionStatus(); // Run once on page load
+    
+    // --- Check for aged markers and dim them ---
+    let agedMarkersInterval;
+    function checkForAgedMarkers() {
+      const now = Date.now();
+      // Loop through all the markers with lastUpdated timestamps
+      Object.keys(lastUpdated).forEach(id => {
+        const dropdownElement = document.querySelector(`#dropdown-${id}`);
+        if (!dropdownElement) return;
+        
+        // Check if marker update time is older than threshold
+        const timeSinceUpdate = now - lastUpdated[id];
+        const AGED_THRESHOLD = MARKER_TIMEOUT; // 3 minutes, same as marker timeout
+        
+        if (timeSinceUpdate > AGED_THRESHOLD) {
+          // Mark dropdown as aged
+          dropdownElement.classList.add('aged');
+          
+          // Update the timestamp to show "old data"
+          const timestampElement = document.getElementById(`lastUpdate-${id}`);
+          if (timestampElement) {
+            const minutesAgo = Math.floor(timeSinceUpdate / 60000);
+            timestampElement.textContent = `No updates: ${minutesAgo}m ago`;
+          }
+        }
+      });
+    }
+    
+    function startAgedMarkersCheck() {
+      // Only set up interval once
+      if (!agedMarkersInterval) {
+        agedMarkersInterval = setInterval(checkForAgedMarkers, 30000); // Check every 30 seconds
+        // Run once immediately
+        checkForAgedMarkers();
+      }
+    }
 
     function showJsonMessage(id, event) {
       // Prevent the default behavior which would close the dropdown
@@ -1054,7 +1123,93 @@
         console.log('Text content was empty despite finding <pre> elements.');
         alert('Console content appears empty.');
       }
+    });    // Add event listener for toggle console button
+    document.getElementById('toggleConsoleButton').addEventListener('click', () => {
+      const jsonConsole = document.getElementById('jsonConsole');
+      if (jsonConsole) {
+        // Toggle the display property between 'none' and 'block'
+        const newDisplay = jsonConsole.style.display === 'none' ? 'block' : 'none';
+        jsonConsole.style.display = newDisplay;
+        
+        // Update button text to indicate current state
+        const toggleButton = document.getElementById('toggleConsoleButton');
+        toggleButton.textContent = newDisplay === 'none' ? 'Show Debug Console' : 'Hide Debug Console';
+      }
     });
+    
+    // Add sorting functionality for cat dropdowns
+    document.getElementById('sortByName').addEventListener('click', function() {
+      const container = document.getElementById('catDropdownContainer');
+      const dropdowns = Array.from(container.children);
+      
+      dropdowns.sort((a, b) => {
+        const nameA = a.querySelector('.btn').textContent.trim().toLowerCase();
+        const nameB = b.querySelector('.btn').textContent.trim().toLowerCase();
+        return nameA.localeCompare(nameB);
+      });
+      
+      // Clear and re-append in new order
+      container.innerHTML = '';
+      dropdowns.forEach(dropdown => container.appendChild(dropdown));
+    });
+    
+    document.getElementById('sortByStatus').addEventListener('click', function() {
+      const container = document.getElementById('catDropdownContainer');
+      const dropdowns = Array.from(container.children);
+      
+      // Define status priority (lower number = higher priority)
+      const statusPriority = {
+        'status-error': 1,
+        'status-outanabout': 2,
+        'status-home': 3,
+        'status-offline': 4
+      };
+      
+      dropdowns.sort((a, b) => {
+        // Get button element
+        const btnA = a.querySelector('.btn');
+        const btnB = b.querySelector('.btn');
+        
+        // Find active status class
+        let statusA = 5; // Default priority if no status class
+        let statusB = 5;
+        
+        Object.keys(statusPriority).forEach(status => {
+          if (btnA.classList.contains(status)) statusA = statusPriority[status];
+          if (btnB.classList.contains(status)) statusB = statusPriority[status];
+        });
+        
+        // Sort by status priority, then by name if same status
+        if (statusA !== statusB) {
+          return statusA - statusB;
+        } else {
+          const nameA = btnA.textContent.trim().toLowerCase();
+          const nameB = btnB.textContent.trim().toLowerCase();
+          return nameA.localeCompare(nameB);
+        }
+      });
+      
+      // Clear and re-append in new order
+      container.innerHTML = '';
+      dropdowns.forEach(dropdown => container.appendChild(dropdown));
+    });
+    
+    // Function to update active cat count
+    function updateCatCount() {
+      const container = document.getElementById('catDropdownContainer');
+      const count = container.children.length;
+      const countElement = document.getElementById('activeCatCount');
+      countElement.textContent = `${count} Cat${count !== 1 ? 's' : ''} Tracking`;
+    }
+    
+    // Observe changes to catDropdownContainer to update cat count
+    const catContainerObserver = new MutationObserver(updateCatCount);
+    catContainerObserver.observe(document.getElementById('catDropdownContainer'), {
+      childList: true
+    });
+    
+    // Initial count update
+    updateCatCount();
 
   </script>
 
