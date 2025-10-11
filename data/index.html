@@ -6,11 +6,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/x-icon" href="/icons/favicon.ico">
 
-  <!-- Leaflet CSS -->  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css"/>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet.locatecontrol/dist/L.Control.Locate.min.css" />
-  <link href="https://cdn.jsdelivr.net/npm/leaflet-measure-path@1.5.0/leaflet-measure-path.min.css" rel="stylesheet">
+  <!-- Leaflet CSS - Local -->
+  <link rel="stylesheet" href="leaflet.css" />
   <link rel="stylesheet" href="cat-tracker.css" />
     <style>
     body { margin: 0; font-family: sans-serif; }
@@ -300,6 +297,126 @@
       border-top: 1px solid #ccc; /* Add a light grey line */
       margin: 10px 0 5px 0; /* Add vertical spacing */
     }
+    
+    /* Basic button styling to replace Bootstrap */
+    .btn {
+      display: inline-block;
+      padding: 8px 16px;
+      margin: 2px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #f8f9fa;
+      color: #333;
+      text-decoration: none;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .btn:hover {
+      background: #e9ecef;
+    }
+    .btn-primary {
+      background: #007bff;
+      border-color: #007bff;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #0056b3;
+    }
+    .btn-secondary {
+      background: #6c757d;
+      border-color: #6c757d;
+      color: white;
+    }
+    .btn-outline-secondary {
+      background: transparent;
+      border-color: #6c757d;
+      color: #6c757d;
+    }
+    .btn-outline-info {
+      background: transparent;
+      border-color: #17a2b8;
+      color: #17a2b8;
+    }
+    /* Simple dropdown styling */
+    .dropdown-menu {
+      display: none;
+      position: absolute;
+      background: white;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      padding: 8px;
+      min-width: 200px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+    .dropdown-item {
+      display: block;
+      padding: 4px 8px;
+      text-decoration: none;
+      color: #333;
+    }
+    .dropdown-item:hover {
+      background: #f8f9fa;
+    }
+    .text-center { text-align: center; }
+    .py-2 { padding-top: 8px; padding-bottom: 8px; }
+    .bg-light { background-color: #f8f9fa; }
+    .mt-2 { margin-top: 8px; }
+    .me-2 { margin-right: 8px; }
+    
+    /* BLE Toggle Switch Styles */
+    .ble-toggle-label {
+      font-size: 16px;
+      font-weight: bold;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 60px;
+      height: 34px;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background-color: #ccc;
+      transition: .4s;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 26px;
+      width: 26px;
+      left: 4px;
+      bottom: 4px;
+      background-color: white;
+      transition: .4s;
+    }
+    input:checked + .slider {
+      background-color: #2196F3;
+    }
+    input:focus + .slider {
+      box-shadow: 0 0 1px #2196F3;
+    }
+    input:checked + .slider:before {
+      transform: translateX(26px);
+    }
+    .slider.round {
+      border-radius: 34px;
+    }
+    .slider.round:before {
+      border-radius: 50%;
+    }
   </style>
 </head>
 <body>
@@ -315,6 +432,19 @@
     </h4>
   </div>
   <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">Connected✔</div>
+  
+  <!-- BLE Beacon Control -->
+  <div class="ble-control-wrapper" style="text-align: center; margin: 10px;">
+    <label class="ble-toggle-label">
+      📶 BLE Beacon: 
+      <label class="switch">
+        <input type="checkbox" id="bleToggle" checked>
+        <span class="slider round"></span>
+      </label>
+      <span id="bleStatus">ON</span>
+    </label>
+  </div>
+  
     <!-- Improved container for cat dropdown buttons with sorting controls -->
   <div class="cat-container-wrapper">
     <div class="container-header d-flex justify-content-between align-items-center px-2">
@@ -333,20 +463,11 @@
     <div id="jsonConsole" style="display: none;" class="mt-2"></div> <!-- Added mt-2 for spacing -->
   </div>
 
-  <!-- Core Leaflet library first -->
+  <!-- Temporarily use CDN for Leaflet core - will work for testing -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-
-  <!-- Leaflet plugins next -->
-  <script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
-  <script src="https://unpkg.com/leaflet-providers/leaflet-providers.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/leaflet.locatecontrol/dist/L.Control.Locate.min.js"></script>
-  <script src="https://unpkg.com/leaflet-geometryutil/src/leaflet.geometryutil.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/leaflet-measure-path@1.5.0/leaflet-measure-path.min.js"></script>
-  <!-- Utility libraries -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/mgrs/1.0.0/mgrs.js"></script>
-
-  <!-- Your custom scripts last -->
-  <script src="Leaflet2.js"></script>
+  
+  <!-- Our minimal cat tracker script -->
+  <script src="Leaflet2_minimal.js"></script>
 
   <script>
     // Declare and initialize global variables at the top
@@ -553,12 +674,12 @@
       
       const dropdownHtml = `
         <div class="btn-group marker-dropdown" id="dropdown-${id}">
-          <button class="btn btn-primary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+          <button class="btn btn-primary dropdown-toggle" type="button" onclick="toggleDropdown('${id}')">
             <img src="${iconUrl}" alt="${id}" class="cat-icon">
             ${id}
             <span class="dropdown-update-time" id="lastUpdate-${id}">Updated: ${timeString}</span>
           </button>
-          <ul class="dropdown-menu">
+          <ul class="dropdown-menu" id="dropdown-menu-${id}">
             <li><div class="dropdown-header">Status: <span id="status-${id}">Unknown</span></div></li>
             <li><hr class="dropdown-divider"></li>
             <li><a class="dropdown-item" href="#" onclick="toggleAutoCenter('${id}'); return false;">
@@ -583,6 +704,19 @@
       
       // Start checking for aged markers
       startAgedMarkersCheck();
+    }
+
+    function toggleDropdown(id) {
+      const menu = document.getElementById(`dropdown-menu-${id}`);
+      if (menu) {
+        if (menu.style.display === 'block') {
+          menu.style.display = 'none';
+        } else {
+          // Hide all other dropdowns first
+          document.querySelectorAll('.dropdown-menu').forEach(m => m.style.display = 'none');
+          menu.style.display = 'block';
+        }
+      }
     }
 
     function toggleAutoCenter(id) {
@@ -618,6 +752,11 @@
         hideBreadcrumbs(id);
       }
     }    function updateBreadcrumbs(id, latLng) {
+      // Initialize breadcrumbs array if it doesn't exist
+      if (!breadcrumbs[id]) {
+        breadcrumbs[id] = [];
+      }
+      
       breadcrumbs[id].push(latLng);
       if (breadcrumbs[id].length > 4) { // Keep only last 4 positions
         breadcrumbs[id].shift();
@@ -647,174 +786,10 @@
       }
     }
 
-    <!-- let ws; -->
+    <!-- WebSocket handled by Leaflet2.js -->
     let failedAttempts = 0;
 
-    function connectWS() {
-      if (ws && ws.readyState === WebSocket.CONNECTING) {
-        return; // Don't try to connect if already connecting
-      }
-
-      try {
-        ws = new WebSocket(`ws://${window.location.hostname}:81/`);
-
-        ws.onopen = () => {
-          console.log("WebSocket connected");
-          updateStatus("Connected✔", 'green'); // Fixed typo here
-          failedAttempts = 0;
-        };
-
-        ws.onclose = () => {
-          console.log("WebSocket closed");
-          failedAttempts++;
-          if (failedAttempts === 1) {
-            updateStatus("Attempting Reconnect🔌", 'orange');
-          } else if (failedAttempts >= 3) {
-            updateStatus("Connection Error - Please refresh page❌", 'red');
-          }
-        };
-
-        ws.onerror = (error) => {
-          console.error("WebSocket error:", error);
-          failedAttempts++;
-          updateStatus("Connection Error - Check device is powered on❌", 'red');
-        };
-
-        ws.onmessage = (event) => {
-          failedAttempts = 0;
-          try {
-            const data = JSON.parse(event.data);
-            messageCount++;
-            const timestamp = new Date().toISOString();
-            const formattedData = {
-              messageNum: messageCount,
-              timestamp: timestamp,
-              data: data
-            };
-
-            // --- New Console Entry Logic ---
-            const jsonConsole = document.getElementById('jsonConsole');
-
-            // Add HR before the new entry, but not if the console is empty
-            if (jsonConsole.firstChild) {
-              const hr = document.createElement('hr');
-              jsonConsole.prepend(hr);
-            }
-
-            const entryDetails = document.createElement('details');
-            entryDetails.className = 'console-entry';
-            entryDetails.open = messageCount <= 2; // Keep first 2 entries open by default
-
-            const entrySummary = document.createElement('summary');
-            const id = data.id || 'N/A';
-            const browserTime = timestamp.split('T')[1].replace('Z', '');
-            const deviceTime = data.time ? (typeof data.time === 'string' && data.time.includes('T') ? data.time.split('T')[1].replace('Z', '') : data.time) : 'N/A'; // Handle different time formats
-            const lat = data.lat ? data.lat.toFixed(6) : 'N/A';
-            const lon = data.lon ? data.lon.toFixed(6) : 'N/A';
-            const status = data.status || 'N/A';
-
-            // Format summary for better readability
-            entrySummary.innerHTML = `<b>Msg ${messageCount}</b> | ID: <b>${id}</b> | Status: ${status}<br>` +
-                                     `&nbsp;&nbsp;Browser Time: ${browserTime} | Device Time: ${deviceTime}<br>` +
-                                     `&nbsp;&nbsp;Coords: ${lat}, ${lon}`;
-
-            const entryPre = document.createElement('pre');
-            entryPre.textContent = JSON.stringify(formattedData, null, 2);
-
-            entryDetails.appendChild(entrySummary);
-            entryDetails.appendChild(entryPre);
-
-            // Prepend the new entry to the top of the console
-            jsonConsole.prepend(entryDetails);
-            // --- End New Console Entry Logic ---
-
-            // Original logic to update markers etc.
-            if (data.id) {
-              // ... (rest of the existing marker update logic remains unchanged) ...
-              createDropdown(id);  // Will only create if doesn't exist
-              lastUpdated[id] = Date.now();  // Update timestamp
-
-              if (!markers[id]) {
-                markers[id] = L.marker([0, 0], {
-                  icon: getMarkerIcon(id, data.status)
-                }).addTo(map);
-              }
-
-              const markerIcon = getMarkerIcon(id, data.status);
-              markers[id].setIcon(markerIcon);
-
-              // Use the same case-tolerant approach for dropdown icons
-              const baseId = KNOWN_CATS.includes(id) ? id : 'generic';
-              // Use our findBestIconMatch function from Leaflet2.js for proper case handling
-              const status = String(data.status || "").trim();
-              const iconStatus = findBestIconMatch(baseId, status);
-              const iconUrl = `/icons/${baseId}_Marker_${iconStatus}.png`;
-              updateDropdownIcon(id, iconUrl, status); // Pass status here
-
-              // Always update marker popup with relevant information
-              updateMarkerPopup(markers[id], data);
-
-              // Update marker position and accuracy circle if valid coordinates are provided
-              if (data.lat && data.lon) {
-                const newPos = [data.lat, data.lon];
-                markers[id].setLatLng(newPos);
-                updateBreadcrumbs(id, newPos);
-
-                // Always update or create a fixed 2-meter accuracy circle
-                const fixedRadius = 2; // Fixed radius in meters
-                if (accuracyCircles[id]) {
-                  accuracyCircles[id].setLatLng(newPos);
-                  accuracyCircles[id].setRadius(fixedRadius); // Ensure radius is fixed
-                } else {
-                  accuracyCircles[id] = L.circle(newPos, {
-                    radius: fixedRadius,
-                    className: 'accuracy-circle' // Apply CSS class
-                  }).addTo(map);
-                  // Ensure circle is behind the marker icon
-                  accuracyCircles[id].bringToBack(); 
-                }
-                // Ensure circle is only shown if marker is visible
-                if (!markerVisibility[id] && map.hasLayer(accuracyCircles[id])) {
-                   map.removeLayer(accuracyCircles[id]);
-                } else if (markerVisibility[id] && !map.hasLayer(accuracyCircles[id])) {
-                   map.addLayer(accuracyCircles[id]);
-                   accuracyCircles[id].bringToBack(); 
-                }
-
-                if (autoCenter[id]) {
-                  map.panTo(newPos);
-                }
-              } else {
-                 // If no lat/lon, remove the accuracy circle as position is unknown
-                 if (accuracyCircles[id]) {
-                   map.removeLayer(accuracyCircles[id]);
-                   delete accuracyCircles[id];
-                 }
-              }
-              
-              // This visibility check might need adjustment depending on how markers are removed/timed out
-              // Re-add marker/circle layers if they should be visible but aren't (e.g., after initial creation)
-              if (markerVisibility[id] && !map.hasLayer(markers[id])) { 
-                 map.addLayer(markers[id]);
-                 if (accuracyCircles[id] && !map.hasLayer(accuracyCircles[id])) {
-                    map.addLayer(accuracyCircles[id]);
-                    accuracyCircles[id].bringToBack();
-                 }
-              } else if (!markerVisibility[id] && map.hasLayer(markers[id])) {
-                 map.removeLayer(markers[id]);
-                 if (accuracyCircles[id] && map.hasLayer(accuracyCircles[id])) {
-                    map.removeLayer(accuracyCircles[id]);
-                 }
-              }
-            }
-          } catch (e) {
-             console.error("Error processing WebSocket message:", e, "Raw data:", event.data); // Log errors
-          }
-        };
-      } catch (error) {
-        // ...existing code...
-      }
-    }    // Enhanced function to update the dropdown icon, status display, and timestamp
+    // Enhanced function to update the dropdown icon, status display, and timestamp
     function updateDropdownIcon(id, iconUrl, status) {
       const dropdownElement = document.querySelector(`#dropdown-${id}`);
       const dropdownButton = dropdownElement?.querySelector('.btn');
@@ -1044,41 +1019,13 @@
           // Extract the JSON string
           const jsonStr = consoleText.substring(startBrace, endBrace);
           
-          // Create a modal to display the JSON
-          const modal = document.createElement('div');
-          modal.className = 'modal fade';
-          modal.id = `jsonModal-${id}`;
-          modal.setAttribute('tabindex', '-1');
-          modal.setAttribute('aria-labelledby', `jsonModalLabel-${id}`);
-          modal.setAttribute('aria-hidden', 'true');
-          
-          modal.innerHTML = `
-            <div class="modal-dialog">
-              <div class="modal-content">
-                <div class="modal-header">
-                  <h5 class="modal-title" id="jsonModalLabel-${id}">JSON Data for ${id}</h5>
-                  <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-                </div>
-                <div class="modal-body">
-                  <pre style="max-height: 400px; overflow-y: auto;">${JSON.stringify(JSON.parse(jsonStr), null, 2)}</pre>
-                </div>
-                <div class="modal-footer">
-                  <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                </div>
-              </div>
-            </div>
-          `;
-          
-          document.body.appendChild(modal);
-          
-          // Initialize and show the modal
-          const modalInstance = new bootstrap.Modal(modal);
-          modalInstance.show();
-          
-          // Remove the modal from DOM when hidden
-          modal.addEventListener('hidden.bs.modal', function () {
-            document.body.removeChild(modal);
-          });
+          // Display JSON in a simple alert (could be enhanced with a custom modal later)
+          try {
+            const prettyJson = JSON.stringify(JSON.parse(jsonStr), null, 2);
+            alert(`JSON Data for ${id}:\n\n${prettyJson}`);
+          } catch (parseErr) {
+            alert(`JSON Data for ${id}:\n\n${jsonStr}`);
+          }
         } else {
           alert(`No data available for ${id}`);
         }
@@ -1211,9 +1158,33 @@
     // Initial count update
     updateCatCount();
 
+    // BLE Toggle Functionality
+    const bleToggle = document.getElementById('bleToggle');
+    const bleStatus = document.getElementById('bleStatus');
+    
+    if (bleToggle && bleStatus) {
+      // Request initial status shortly after DOM is ready
+      setTimeout(() => { if (window.requestBleStatus) window.requestBleStatus(); }, 300);
+
+      bleToggle.addEventListener('change', function() {
+        const isEnabled = this.checked;
+        console.log('BLE toggle clicked, new state:', isEnabled);
+        // Show pending state while command is in-flight
+        bleStatus.textContent = isEnabled ? 'ENABLING...' : 'DISABLING...';
+        bleStatus.style.color = '#ffc107';
+        if (window.sendBle) {
+          window.sendBle(isEnabled);
+        } else {
+          console.warn('sendBle helper not available');
+        }
+      });
+    } else {
+      console.error('BLE toggle elements not found:', { bleToggle, bleStatus });
+    }
+
   </script>
 
-  <!-- Add Bootstrap JS for dropdowns -->
-  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Bootstrap JS disabled for offline operation -->
+  <!-- <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script> -->
 </body>
 </html>

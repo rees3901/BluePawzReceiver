@@ -57,7 +57,7 @@ TinyGPSPlus gps;
 HardwareSerial gpsSerial1(1);
 
 // Add initial location JSON
-DynamicJsonDocument deviceLocation(250);
+JsonDocument deviceLocation;
 const float HOME_LAT = 51.87378215701798;
 const float HOME_LON = -2.239428653198173;
 
@@ -79,10 +79,11 @@ const unsigned long DEVICE_GPS_UPDATE_INTERVAL = 60000; // 1 minute in milliseco
 BLEAdvertising *pAdvertising = nullptr;
 unsigned long lastBLEAdvertTime = 0;
 const unsigned long BLE_ADVERT_INTERVAL = 3000; // 5 seconds
+bool bleEnabled = true;                         // BLE beacon control flag
 
 // Function declarations
 void notifyClients();
-void notifyPosition(const DynamicJsonDocument &doc);
+void notifyPosition(const JsonDocument &doc);
 void handleLoRaPacket();
 void onReceive();
 void setupGPS();
@@ -91,6 +92,10 @@ void handleRoot();
 void handleData();
 void checkWiFiConnection();
 void setupBLE();
+void enableBLE();
+void disableBLE();
+void sendBleStateWS(uint8_t clientId = 255);
+void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length);
 void setup();
 void loop();
 
@@ -113,19 +118,40 @@ void handleLoRaPacket()
 
   if (state == RADIOLIB_ERR_NONE)
   {
-    // Serial.println("[LORA] Packet received: from" + incoming);
+    Serial.println("[LORA] Packet received: " + incoming);
     if (incoming.length() > 0)
     {
-      DynamicJsonDocument doc(250);
+      JsonDocument doc; // Increased buffer size for new format
       DeserializationError error = deserializeJson(doc, incoming);
 
-      if (!error && doc.containsKey("id"))
+      if (error)
       {
+        Serial.println("[LORA] ❌ JSON parse error: " + String(error.c_str()));
+        Serial.println("[LORA] Raw data: " + incoming);
+        return;
+      }
+
+      if (!error && (doc["id"].is<String>() || doc["sender_name"].is<String>()))
+      {
+        // Map new field names to expected format
+        if (doc["sender_name"].is<String>() && !doc["id"].is<String>())
+        {
+          doc["id"] = doc["sender_name"];
+        }
+        if (doc["latitude"].is<float>() && !doc["lat"].is<float>())
+        {
+          doc["lat"] = doc["latitude"];
+        }
+        if (doc["longitude"].is<float>() && !doc["lon"].is<float>())
+        {
+          doc["lon"] = doc["longitude"];
+        }
+
         // Add receiver timestamp before storing and notifying
         doc["received_at"] = millis(); // Add receiver's millis() timestamp
 
-        // Normalize status
-        if (doc.containsKey("status"))
+        // Normalize status to simplified 4-state system
+        if (doc["status"].is<String>())
         {
           String originalStatus = doc["status"].as<String>();
           String lowerStatus = originalStatus;
@@ -135,10 +161,16 @@ void handleLoRaPacket()
           {
             doc["status"] = "Home";
           }
-          else if (lowerStatus.indexOf("ok") != -1 ||
-                   lowerStatus.indexOf("normal") != -1)
+          else if (lowerStatus.indexOf("out") != -1 ||
+                   lowerStatus.indexOf("ok") != -1 ||
+                   lowerStatus.indexOf("normal") != -1 ||
+                   lowerStatus.indexOf("outanabout") != -1)
           {
-            doc["status"] = "Outanabout";
+            doc["status"] = "Out";
+          }
+          else if (lowerStatus.indexOf("offline") != -1)
+          {
+            doc["status"] = "Offline";
           }
           else if (lowerStatus.indexOf("error") != -1 ||
                    lowerStatus.indexOf("invalid") != -1 ||
@@ -150,7 +182,7 @@ void handleLoRaPacket()
           else
           {
             // Default for any other status not matching above
-            doc["status"] = "Error";
+            doc["status"] = "Out";
           }
         }
         else
@@ -290,11 +322,11 @@ void handleRoot()
 
 void handleData()
 {
-  DynamicJsonDocument doc(250);
+  JsonDocument doc;
   JsonArray array = doc.to<JsonArray>();
   for (auto &pair : catPayloads)
   {
-    DynamicJsonDocument singleDoc(250);
+    JsonDocument singleDoc;
     DeserializationError error = deserializeJson(singleDoc, pair.second);
     if (!error)
       array.add(singleDoc);
@@ -334,14 +366,112 @@ void checkWiFiConnection()
 void setupBLE()
 {
   BLEDevice::init(BLE_DEVICE_NAME);
-  BLEServer *pServer = BLEDevice::createServer();
   pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x06);
-  pAdvertising->setMinPreferred(0x12);
+  pAdvertising->setMinPreferred(0x06); // 7.5ms
+  pAdvertising->setMaxPreferred(0x12); // 22.5ms
   BLEDevice::startAdvertising();
   lastBLEAdvertTime = millis();
   Serial.println("[BLE] Advertising started as beacon: " BLE_DEVICE_NAME);
+}
+
+void enableBLE()
+{
+  if (!bleEnabled)
+  {
+    bleEnabled = true;
+    // Always log the request
+    Serial.println("[BLE] ✅ Beacon enabled (requested)");
+    if (pAdvertising)
+    {
+      BLEDevice::startAdvertising();
+      lastBLEAdvertTime = millis();
+    }
+    // Notify all clients of new state
+    sendBleStateWS();
+  }
+}
+
+void disableBLE()
+{
+  if (bleEnabled)
+  {
+    bleEnabled = false;
+    // Always log the request
+    Serial.println("[BLE] ❌ Beacon disabled (requested)");
+    if (pAdvertising)
+    {
+      BLEDevice::stopAdvertising();
+    }
+    // Notify all clients of new state
+    sendBleStateWS();
+  }
+}
+
+// Broadcast or unicast current BLE state over WebSocket
+void sendBleStateWS(uint8_t clientId)
+{
+  // Build tiny JSON manually to avoid any serialization pitfalls
+  String out = String("{\"type\":\"ble_state\",\"on\":") + (bleEnabled ? "true" : "false") + "}";
+  if (clientId == 255)
+  {
+    Serial.printf("[WS] Sending ble_state to ALL: %s\n", out.c_str());
+    webSocket.broadcastTXT(out);
+  }
+  else
+  {
+    Serial.printf("[WS] Sending ble_state to client %u: %s\n", clientId, out.c_str());
+    webSocket.sendTXT(clientId, out);
+  }
+}
+
+void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
+{
+  // Log payload as string for debug (safe copy)
+  String message;
+  message.reserve(length + 1);
+  for (size_t i = 0; i < length; i++)
+    message += (char)payload[i];
+  Serial.printf("[WS] Client %u sent: %s\n", num, message.c_str());
+
+  // Parse JSON command directly from payload buffer
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, payload, length);
+
+  if (!error && doc["type"].is<String>())
+  {
+    String commandType = doc["type"].as<String>();
+
+    if (commandType == "ble_set")
+    {
+      bool turnOn = false;
+      if (doc["on"].is<bool>())
+      {
+        turnOn = doc["on"].as<bool>();
+      }
+      Serial.printf("[WS] BLE set from client %u: %s\n", num, turnOn ? "ON" : "OFF");
+      if (turnOn)
+      {
+        enableBLE();
+      }
+      else
+      {
+        disableBLE();
+      }
+
+      // Send confirmation back to client
+      sendBleStateWS(num);
+      return;
+    }
+
+    if (commandType == "ble_get")
+    {
+      Serial.printf("[WS] BLE get requested by client %u\n", num);
+      // Reply to requester with current state
+      sendBleStateWS(num);
+      return;
+    }
+  }
 }
 
 void setup()
@@ -427,11 +557,12 @@ void setup()
     {
       Serial.printf("[WS] Client %u connected\n", num);
       connectedClients++;
+      // Immediately send current BLE status to this client
+      sendBleStateWS(num);
     }
     else if (type == WStype_TEXT)
     {
-      String msg = String((char *)payload);
-      Serial.printf("[WS] Client %u sent: %s\n", num, msg.c_str());
+      handleWebSocketMessage(num, payload, length);
     }
     else if (type == WStype_DISCONNECTED)
     {
@@ -440,7 +571,7 @@ void setup()
     else if (type == WStype_ERROR)
     {
       Serial.printf("[WS] Client %u error: %s\n", num, payload);
-    } }); // <-- Add this closing parenthesis and semicolon {
+    } });
   LoRaSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
   int state = lora.begin(915.0);
@@ -503,7 +634,7 @@ void loop()
   handleLoRaPacket();
 
   // ───── BLE beacon non-blocking refresh every 5 seconds ─────
-  if (millis() - lastBLEAdvertTime >= BLE_ADVERT_INTERVAL)
+  if (bleEnabled && millis() - lastBLEAdvertTime >= BLE_ADVERT_INTERVAL)
   {
     if (pAdvertising)
     {
@@ -514,7 +645,7 @@ void loop()
   }
 }
 
-void notifyPosition(const DynamicJsonDocument &doc)
+void notifyPosition(const JsonDocument &doc)
 {
   String jsonString;
   serializeJson(doc, jsonString);
