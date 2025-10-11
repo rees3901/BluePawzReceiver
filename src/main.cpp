@@ -367,12 +367,25 @@ void setupBLE()
 {
   BLEDevice::init(BLE_DEVICE_NAME);
   pAdvertising = BLEDevice::getAdvertising();
+
+  // Configure minimal, non-connectable advertising payload
+  BLEAdvertisementData advData;
+  advData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
+  advData.setName("HOME"); // keep payload small (<31B)
+  pAdvertising->setAdvertisementData(advData);
+
+  // Non-scannable, non-connectable advertisement to reduce controller load
   pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x06); // 7.5ms
-  pAdvertising->setMaxPreferred(0x12); // 22.5ms
+  pAdvertising->setAdvertisementType(ADV_TYPE_NONCONN_IND);
+
+  // Set a conservative advertising interval (~1.0s) to minimize HCI traffic
+  // Units are 0.625ms; 0x0640 = 1600 * 0.625ms = 1000ms
+  pAdvertising->setMinInterval(0x0640);
+  pAdvertising->setMaxInterval(0x0640);
+
   BLEDevice::startAdvertising();
   lastBLEAdvertTime = millis();
-  Serial.println("[BLE] Advertising started as beacon: " BLE_DEVICE_NAME);
+  Serial.println("[BLE] Advertising started (non-connectable) with name: HOME");
 }
 
 void enableBLE()
@@ -633,16 +646,7 @@ void loop()
   // Handle LoRa packets
   handleLoRaPacket();
 
-  // ───── BLE beacon non-blocking refresh every 5 seconds ─────
-  if (bleEnabled && millis() - lastBLEAdvertTime >= BLE_ADVERT_INTERVAL)
-  {
-    if (pAdvertising)
-    {
-      BLEDevice::startAdvertising();
-      // Serial.println("[BLE] Beacon re-advertised");
-    }
-    lastBLEAdvertTime = millis();
-  }
+  // No periodic re-advertising; BLE continues advertising until explicitly stopped/started
 }
 
 void notifyPosition(const JsonDocument &doc)
