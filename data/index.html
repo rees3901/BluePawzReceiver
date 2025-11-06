@@ -516,65 +516,6 @@
       }
     });
 
-    // Add draw control
-    const drawnItems = new L.FeatureGroup();
-    map.addLayer(drawnItems);
-
-    const drawControl = new L.Control.Draw({
-      position: 'topleft',
-      draw: {
-        polyline: {
-          metric: true,
-          showLength: true,
-        },
-        polygon: {
-          metric: true,
-          showArea: true,
-          allowIntersection: false
-        },
-        circle: false,
-        rectangle: true,
-        marker: false,
-        circlemarker: false
-      },
-      edit: {
-        featureGroup: drawnItems,
-        remove: true
-      }
-    });
-    map.addControl(drawControl);
-
-    // Collapse draw control by default and add hover behavior
-    const drawToolbar = document.querySelector('.leaflet-draw.leaflet-control');
-    if (drawToolbar) {
-      drawToolbar.classList.add('leaflet-draw-toolbar-collapsed');
-      const buttons = drawToolbar.querySelectorAll('.leaflet-draw-toolbar');
-      buttons.forEach(button => {
-        button.style.display = 'none';
-      });
-    }
-
-    // Update coordinate control to start collapsed
-    const coordElement = document.querySelector('.coordinate-control');
-    if (coordElement) {
-      coordElement.classList.add('collapsed');
-    }
-
-    // Handle drawn items
-    map.on('draw:created', function(e) {
-      const layer = e.layer;
-      drawnItems.addLayer(layer);
-      
-      // Remove manual calculation and popup binding - leaflet-measure-path should handle this
-      // if (e.layerType === 'polyline') {
-      //   const distance = calculatePolylineDistance(layer);
-      //   layer.bindPopup(`Distance: ${distance.toFixed(1)} meters`);
-      // } else if (e.layerType === 'polygon') {
-      //   const area = calculatePolygonArea(layer);
-      //   layer.bindPopup(`Area: ${area.toFixed(1)} sq meters`);
-      // }
-    });
-
     function updateStatus(text, color) {
       const status = document.getElementById('statusBanner');
       status.textContent = text;
