@@ -8,12 +8,47 @@ const map = L.map("map", {
   maxZoom: 23,
 });
 
-// Use only OpenStreetMap - no providers needed
-const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19,
-  attribution:
-    '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-}).addTo(map);
+// Define multiple map layers
+const osmLayer = L.tileLayer(
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  {
+    maxZoom: 19,
+    attribution:
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  }
+).addTo(map);
+
+const satelliteLayer = L.tileLayer(
+  "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+  {
+    maxZoom: 19,
+    attribution: "Tiles &copy; Esri",
+  }
+);
+
+const topoLayer = L.tileLayer(
+  "https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png",
+  {
+    maxZoom: 17,
+    attribution:
+      "Map data: &copy; OpenStreetMap contributors, SRTM | Map style: &copy; OpenTopoMap",
+  }
+);
+
+// Create layer control with all map options
+const baseMaps = {
+  "Street Map": osmLayer,
+  Satellite: satelliteLayer,
+  Topographic: topoLayer,
+};
+
+// Add layer control to map (top-right corner)
+L.control
+  .layers(baseMaps, null, {
+    position: "topright",
+    collapsed: false, // Set to true to collapse the control
+  })
+  .addTo(map);
 
 // Define KNOWN_CATS
 const KNOWN_CATS = ["Podge", "Macy", "Gizmo", "Simba"];
