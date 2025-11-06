@@ -241,3 +241,226 @@ function connectWebSocket() {
 connectWebSocket();
 
 console.log("Minimal Leaflet2.js loaded successfully");
+
+// ===== 3. LOCATE ME CONTROL (Geolocation) =====
+const locateControl = L.control({ position: "topleft" });
+locateControl.onAdd = function (map) {
+  const div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
+  div.innerHTML =
+    '<a href="#" title="Find my location" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📍</a>';
+
+  L.DomEvent.on(div, "click", function (e) {
+    L.DomEvent.stopPropagation(e);
+    L.DomEvent.preventDefault(e);
+
+    if (navigator.geolocation) {
+      div.innerHTML =
+        '<a href="#" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">⏳</a>';
+
+      navigator.geolocation.getCurrentPosition(
+        function (position) {
+          div.innerHTML =
+            '<a href="#" title="Find my location" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📍</a>';
+
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          const accuracy = position.coords.accuracy;
+
+          // Remove old location marker if exists
+          if (window.userLocationMarker) {
+            map.removeLayer(window.userLocationMarker);
+            if (window.userAccuracyCircle) {
+              map.removeLayer(window.userAccuracyCircle);
+            }
+          }
+
+          // Add accuracy circle
+          window.userAccuracyCircle = L.circle([lat, lng], {
+            radius: accuracy,
+            color: "#3388ff",
+            fillColor: "#3388ff",
+            fillOpacity: 0.15,
+            weight: 2,
+          }).addTo(map);
+
+          // Add marker for your location
+          window.userLocationMarker = L.marker([lat, lng], {
+            icon: L.icon({
+              iconUrl:
+                "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0Ij48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSIjMzM4OGZmIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIzIiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==",
+              iconSize: [24, 24],
+              iconAnchor: [12, 12],
+            }),
+          })
+            .addTo(map)
+            .bindPopup(
+              `<b>Your Location</b><br>Accuracy: ±${accuracy.toFixed(0)}m`
+            )
+            .openPopup();
+          map.setView([lat, lng], 16);
+        },
+        function (error) {
+          div.innerHTML =
+            '<a href="#" title="Find my location" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📍</a>';
+          alert("Unable to get your location: " + error.message);
+        }
+      );
+    } else {
+      alert("Geolocation is not supported by your browser");
+    }
+  });
+
+  return div;
+};
+locateControl.addTo(map);
+
+// ===== 4. MEASURE TOOL (Distance/Area) =====
+let measurePath = null;
+let measureMarkers = [];
+let isMeasuring = false;
+
+const measureControl = L.control({ position: "topleft" });
+measureControl.onAdd = function (map) {
+  const div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
+  div.innerHTML =
+    '<a href="#" title="Measure distance (click to start/stop)" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📏</a>';
+
+  L.DomEvent.on(div, "click", function (e) {
+    L.DomEvent.stopPropagation(e);
+    L.DomEvent.preventDefault(e);
+
+    if (!isMeasuring) {
+      // Start measuring
+      isMeasuring = true;
+      div.style.backgroundColor = "#ffc107";
+      div.title = "Click map to add points, click here to finish";
+      measurePath = L.polyline([], {
+        color: "#ff0000",
+        weight: 3,
+        dashArray: "10, 10",
+      }).addTo(map);
+
+      map.on("click", addMeasurePoint);
+      map.getContainer().style.cursor = "crosshair";
+    } else {
+      // Stop measuring
+      stopMeasuring();
+      div.style.backgroundColor = "";
+      div.title = "Measure distance (click to start/stop)";
+    }
+  });
+
+  return div;
+};
+measureControl.addTo(map);
+
+function addMeasurePoint(e) {
+  const latlng = e.latlng;
+
+  // Add point to path
+  const latlngs = measurePath.getLatLngs();
+  latlngs.push(latlng);
+  measurePath.setLatLngs(latlngs);
+
+  // Add marker
+  const marker = L.circleMarker(latlng, {
+    radius: 5,
+    color: "#ff0000",
+    fillColor: "#ffffff",
+    fillOpacity: 1,
+    weight: 2,
+  })
+    .addTo(map)
+    .bindPopup(`<b>Start Point</b><br><small>Click to add more points</small>`)
+    .openPopup();
+  measureMarkers.push(marker);
+
+  // Calculate and show distance
+  if (latlngs.length > 1) {
+    let totalDistance = 0;
+    for (let i = 1; i < latlngs.length; i++) {
+      totalDistance += latlngs[i - 1].distanceTo(latlngs[i]);
+    }
+
+    const distanceText =
+      totalDistance < 1000
+        ? `${totalDistance.toFixed(1)} m`
+        : `${(totalDistance / 1000).toFixed(2)} km`;
+
+    marker
+      .bindPopup(
+        `<b>Total Distance:</b> ${distanceText}<br><small>Point ${latlngs.length}</small>`
+      )
+      .openPopup();
+  }
+}
+
+function stopMeasuring() {
+  isMeasuring = false;
+  map.off("click", addMeasurePoint);
+  map.getContainer().style.cursor = "";
+
+  // Clear measuring elements
+  if (measurePath) {
+    map.removeLayer(measurePath);
+    measurePath = null;
+  }
+  measureMarkers.forEach((m) => map.removeLayer(m));
+  measureMarkers = [];
+}
+
+// ===== 6. SIMPLE MINIMAP (No plugin required) =====
+const minimapControl = L.control({ position: "bottomleft" });
+minimapControl.onAdd = function (mainMap) {
+  const container = L.DomUtil.create(
+    "div",
+    "leaflet-control minimap-container"
+  );
+  container.style.cssText =
+    "width:150px;height:150px;border:2px solid rgba(0,0,0,0.2);border-radius:4px;background:white;box-shadow:0 1px 5px rgba(0,0,0,0.4);cursor:pointer;overflow:hidden;";
+
+  // Create minimap
+  const minimap = L.map(container, {
+    center: mainMap.getCenter(),
+    zoom: mainMap.getZoom() - 5,
+    dragging: false,
+    doubleClickZoom: false,
+    scrollWheelZoom: false,
+    attributionControl: false,
+    zoomControl: false,
+  });
+
+  // Add tile layer to minimap
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    minZoom: 0,
+    maxZoom: 13,
+  }).addTo(minimap);
+
+  // Add rectangle showing main map view
+  const viewRect = L.rectangle(mainMap.getBounds(), {
+    color: "#ff7800",
+    weight: 2,
+    fillOpacity: 0.1,
+  }).addTo(minimap);
+
+  // Update minimap when main map moves
+  mainMap.on("moveend", function () {
+    minimap.setView(mainMap.getCenter(), mainMap.getZoom() - 5);
+    viewRect.setBounds(mainMap.getBounds());
+  });
+
+  // Click minimap to center main map
+  L.DomEvent.on(container, "click", function (e) {
+    L.DomEvent.stopPropagation(e);
+    const bounds = mainMap.getBounds();
+    const center = mainMap.getCenter();
+    // Optional: Add interaction here
+  });
+
+  // Prevent map interactions from bubbling to main map
+  L.DomEvent.disableClickPropagation(container);
+  L.DomEvent.disableScrollPropagation(container);
+
+  return container;
+};
+minimapControl.addTo(map);
