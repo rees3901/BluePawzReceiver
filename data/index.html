@@ -417,6 +417,156 @@
     .slider.round:before {
       border-radius: 50%;
     }
+    
+    /* Marker Card Styles */
+    .marker-card {
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      padding: 15px;
+      width: 280px;
+      transition: all 0.3s ease;
+      border: 2px solid #e0e0e0;
+    }
+    
+    .marker-card:hover {
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+      transform: translateY(-2px);
+    }
+    
+    .marker-card.status-home {
+      border-color: #28a745;
+    }
+    
+    .marker-card.status-error {
+      border-color: #dc3545;
+    }
+    
+    .marker-card.status-out {
+      border-color: #007bff;
+    }
+    
+    .marker-card.status-offline {
+      border-color: #6c757d;
+    }
+    
+    .marker-card-header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 2px solid #f0f0f0;
+    }
+    
+    .marker-card-icon {
+      width: 48px;
+      height: 48px;
+      object-fit: contain;
+    }
+    
+    .marker-card-title {
+      flex: 1;
+    }
+    
+    .marker-card-name {
+      font-size: 1.3em;
+      font-weight: bold;
+      margin: 0;
+      color: #333;
+    }
+    
+    .marker-card-status {
+      font-size: 0.9em;
+      color: #666;
+      margin: 2px 0 0 0;
+    }
+    
+    .marker-card-actions {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    
+    .marker-card-btn {
+      padding: 8px 12px;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    
+    .marker-card-btn:hover {
+      transform: scale(1.02);
+    }
+    
+    .btn-jump {
+      background: #007bff;
+      color: white;
+    }
+    
+    .btn-jump:hover {
+      background: #0056b3;
+    }
+    
+    .btn-breadcrumb {
+      background: #6c757d;
+      color: white;
+    }
+    
+    .btn-breadcrumb:hover {
+      background: #5a6268;
+    }
+    
+    .btn-breadcrumb.active {
+      background: #28a745;
+    }
+    
+    .btn-console {
+      background: #17a2b8;
+      color: white;
+    }
+    
+    .btn-console:hover {
+      background: #138496;
+    }
+    
+    .marker-card-console {
+      margin-top: 10px;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+      font-family: monospace;
+      font-size: 11px;
+      display: none;
+    }
+    
+    .marker-card-console.show {
+      display: block;
+    }
+    
+    .console-message {
+      padding: 5px;
+      border-bottom: 1px solid #e0e0e0;
+      margin-bottom: 5px;
+    }
+    
+    .console-message:last-child {
+      border-bottom: none;
+    }
+    
+    .console-time {
+      color: #666;
+      font-weight: bold;
+    }
   </style>
 </head>
 <body>
@@ -445,16 +595,9 @@
     </label>
   </div>
   
-    <!-- Improved container for cat dropdown buttons with sorting controls -->
-  <div class="cat-container-wrapper">
-    <div class="container-header d-flex justify-content-between align-items-center px-2">
-      <span class="cat-count" id="activeCatCount">0 Cats Tracking</span>
-      <div class="btn-group btn-group-sm" role="group">
-        <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByName">Sort by Name</button>
-        <button type="button" class="btn btn-outline-secondary btn-sm" id="sortByStatus">Sort by Status</button>
-      </div>
-    </div>
-    <div id="catDropdownContainer"></div>
+    <!-- Dynamic Marker Cards Container -->
+  <div class="marker-cards-container" style="display: flex; flex-wrap: wrap; gap: 15px; padding: 15px; justify-content: center;">
+    <!-- Marker cards will be dynamically inserted here -->
   </div>
   
   <div id="map"></div>  <div id="consoleWrapper" class="text-left p-2">
@@ -1024,80 +1167,7 @@
         toggleButton.textContent = newDisplay === 'none' ? 'Show Debug Console' : 'Hide Debug Console';
       }
     });
-    
-    // Add sorting functionality for cat dropdowns
-    document.getElementById('sortByName').addEventListener('click', function() {
-      const container = document.getElementById('catDropdownContainer');
-      const dropdowns = Array.from(container.children);
-      
-      dropdowns.sort((a, b) => {
-        const nameA = a.querySelector('.btn').textContent.trim().toLowerCase();
-        const nameB = b.querySelector('.btn').textContent.trim().toLowerCase();
-        return nameA.localeCompare(nameB);
-      });
-      
-      // Clear and re-append in new order
-      container.innerHTML = '';
-      dropdowns.forEach(dropdown => container.appendChild(dropdown));
-    });
-    
-    document.getElementById('sortByStatus').addEventListener('click', function() {
-      const container = document.getElementById('catDropdownContainer');
-      const dropdowns = Array.from(container.children);
-      
-      // Define status priority (lower number = higher priority)
-      const statusPriority = {
-        'status-error': 1,
-        'status-outanabout': 2,
-        'status-home': 3,
-        'status-offline': 4
-      };
-      
-      dropdowns.sort((a, b) => {
-        // Get button element
-        const btnA = a.querySelector('.btn');
-        const btnB = b.querySelector('.btn');
-        
-        // Find active status class
-        let statusA = 5; // Default priority if no status class
-        let statusB = 5;
-        
-        Object.keys(statusPriority).forEach(status => {
-          if (btnA.classList.contains(status)) statusA = statusPriority[status];
-          if (btnB.classList.contains(status)) statusB = statusPriority[status];
-        });
-        
-        // Sort by status priority, then by name if same status
-        if (statusA !== statusB) {
-          return statusA - statusB;
-        } else {
-          const nameA = btnA.textContent.trim().toLowerCase();
-          const nameB = btnB.textContent.trim().toLowerCase();
-          return nameA.localeCompare(nameB);
-        }
-      });
-      
-      // Clear and re-append in new order
-      container.innerHTML = '';
-      dropdowns.forEach(dropdown => container.appendChild(dropdown));
-    });
-    
-    // Function to update active cat count
-    function updateCatCount() {
-      const container = document.getElementById('catDropdownContainer');
-      const count = container.children.length;
-      const countElement = document.getElementById('activeCatCount');
-      countElement.textContent = `${count} Cat${count !== 1 ? 's' : ''} Tracking`;
-    }
-    
-    // Observe changes to catDropdownContainer to update cat count
-    const catContainerObserver = new MutationObserver(updateCatCount);
-    catContainerObserver.observe(document.getElementById('catDropdownContainer'), {
-      childList: true
-    });
-    
-    // Initial count update
-    updateCatCount();
+
 
     // BLE Toggle Functionality
     const bleToggle = document.getElementById('bleToggle');

@@ -109,16 +109,187 @@ function getMarkerIcon(id, status) {
   });
 }
 
-// Basic dropdown creation function
-function createCatDropdown(id, iconUrl, status) {
+// Store message history for each marker
+const markerHistory = {};
+
+// Create marker card dynamically
+function createMarkerCard(id, status) {
   if (dropdowns.has(id)) return;
 
-  console.log(`Creating dropdown for ${id} with status ${status}`);
+  console.log(`Creating marker card for ${id} with status ${status}`);
   dropdowns.add(id);
 
-  // This would normally create the HTML dropdown
-  // For now, just log it
-  console.log(`Cat ${id} would appear here with status ${status}`);
+  // Initialize message history
+  if (!markerHistory[id]) {
+    markerHistory[id] = [];
+  }
+
+  const baseId = KNOWN_CATS.includes(id) ? id : "generic";
+  const iconUrl = `/icons/${baseId}_Marker_Home.png`;
+
+  const statusClass = status
+    ? `status-${status.toLowerCase()}`
+    : "status-offline";
+
+  const card = document.createElement("div");
+  card.className = `marker-card ${statusClass}`;
+  card.id = `marker-card-${id}`;
+
+  card.innerHTML = `
+    <div class="marker-card-header">
+      <img src="${iconUrl}" alt="${id}" class="marker-card-icon" id="card-icon-${id}">
+      <div class="marker-card-title">
+        <h3 class="marker-card-name">${id}</h3>
+        <p class="marker-card-status" id="card-status-${id}">${
+    status || "Unknown"
+  }</p>
+      </div>
+    </div>
+    <div class="marker-card-actions">
+      <button class="marker-card-btn btn-jump" onclick="jumpToMarker('${id}')">
+        🎯 Jump to Location
+      </button>
+      <button class="marker-card-btn btn-breadcrumb" id="breadcrumb-btn-${id}" onclick="toggleBreadcrumbsCard('${id}')">
+        📍 Trail: OFF
+      </button>
+      <button class="marker-card-btn btn-console" onclick="toggleConsoleCard('${id}')">
+        📄 Message Log
+      </button>
+    </div>
+    <div class="marker-card-console" id="console-${id}">
+      <div class="console-messages" id="console-messages-${id}">
+        No messages yet
+      </div>
+    </div>
+  `;
+
+  document.querySelector(".marker-cards-container").appendChild(card);
+}
+
+// Jump to marker location
+window.jumpToMarker = function (id) {
+  if (markers[id]) {
+    const latlng = markers[id].getLatLng();
+    map.setView(latlng, 18);
+    markers[id].openPopup();
+  }
+};
+
+// Toggle breadcrumb trail
+window.toggleBreadcrumbsCard = function (id) {
+  const btn = document.getElementById(`breadcrumb-btn-${id}`);
+  const isShowing = btn.classList.contains("active");
+
+  if (isShowing) {
+    hideBreadcrumbs(id);
+    btn.classList.remove("active");
+    btn.innerHTML = "📍 Trail: OFF";
+  } else {
+    showBreadcrumbs(id);
+    btn.classList.add("active");
+    btn.innerHTML = "✅ Trail: ON";
+  }
+};
+
+// Toggle console log
+window.toggleConsoleCard = function (id) {
+  const console = document.getElementById(`console-${id}`);
+  console.classList.toggle("show");
+};
+
+// Update marker card with new data
+function updateMarkerCard(id, status, data) {
+  const card = document.getElementById(`marker-card-${id}`);
+  if (!card) return;
+
+  // Update status class
+  card.className = `marker-card status-${status.toLowerCase()}`;
+
+  // Update status text
+  const statusEl = document.getElementById(`card-status-${id}`);
+  if (statusEl) {
+    statusEl.textContent = status;
+  }
+
+  // Update icon
+  const baseId = KNOWN_CATS.includes(id) ? id : "generic";
+  let iconStatus;
+  switch (status) {
+    case "Home":
+      iconStatus = "Home";
+      break;
+    case "Out":
+      iconStatus = "Outanabout";
+      break;
+    case "Offline":
+      iconStatus = "Offline";
+      break;
+    case "Error":
+      iconStatus = "Error";
+      break;
+    default:
+      iconStatus = "Error";
+  }
+  const iconEl = document.getElementById(`card-icon-${id}`);
+  if (iconEl) {
+    iconEl.src = `/icons/${baseId}_Marker_${iconStatus}.png`;
+  }
+
+  // Add message to history (keep last 5)
+  if (!markerHistory[id]) {
+    markerHistory[id] = [];
+  }
+  const now = new Date();
+  const timeStr = now.toLocaleTimeString();
+  markerHistory[id].unshift({
+    time: timeStr,
+    data: data,
+  });
+  if (markerHistory[id].length > 5) {
+    markerHistory[id].pop();
+  }
+
+  // Update console messages
+  const consoleMessages = document.getElementById(`console-messages-${id}`);
+  if (consoleMessages) {
+    consoleMessages.innerHTML = markerHistory[id]
+      .map(
+        (msg) => `
+      <div class="console-message">
+        <span class="console-time">${msg.time}</span><br>
+        <pre style="margin: 0; white-space: pre-wrap; word-break: break-all;">${JSON.stringify(
+          msg.data,
+          null,
+          2
+        )}</pre>
+      </div>
+    `
+      )
+      .join("");
+  }
+}
+
+// Helper functions for breadcrumbs
+function showBreadcrumbs(id) {
+  if (!window.breadcrumbs[id] || window.breadcrumbs[id].length < 2) return;
+
+  if (window.breadcrumbLines[id]) {
+    map.removeLayer(window.breadcrumbLines[id]);
+  }
+
+  window.breadcrumbLines[id] = L.polyline(window.breadcrumbs[id], {
+    color: "#007bff",
+    weight: 3,
+    dashArray: "10, 10",
+    opacity: 0.7,
+  }).addTo(map);
+}
+
+function hideBreadcrumbs(id) {
+  if (window.breadcrumbLines[id]) {
+    map.removeLayer(window.breadcrumbLines[id]);
+    window.breadcrumbLines[id] = null;
+  }
 }
 
 // WebSocket + BLE helpers
@@ -188,15 +359,16 @@ function connectWebSocket() {
 
       if (data.id) {
         const id = data.id;
+        const status = data.status || "Unknown";
 
-        // Create dropdown
-        createCatDropdown(id, "", data.status || "Unknown");
+        // Create marker card if it doesn't exist
+        createMarkerCard(id, status);
 
         // Create or update marker
         if (!markers[id]) {
           console.log(`Creating new marker for ${id}`);
           markers[id] = L.marker([0, 0], {
-            icon: getMarkerIcon(id, data.status),
+            icon: getMarkerIcon(id, status),
           }).addTo(map);
           markerVisibility[id] = true;
         }
@@ -207,18 +379,42 @@ function connectWebSocket() {
           const newPos = [data.lat, data.lon];
           markers[id].setLatLng(newPos);
 
+          // Update marker icon based on status
+          markers[id].setIcon(getMarkerIcon(id, status));
+
+          // Update breadcrumbs trail (keep last 3 positions)
+          if (!window.breadcrumbs[id]) {
+            window.breadcrumbs[id] = [];
+          }
+          window.breadcrumbs[id].push(newPos);
+          if (window.breadcrumbs[id].length > 3) {
+            window.breadcrumbs[id].shift();
+          }
+
+          // Update breadcrumb line if it's enabled
+          const btn = document.getElementById(`breadcrumb-btn-${id}`);
+          if (btn && btn.classList.contains("active")) {
+            showBreadcrumbs(id);
+          }
+
           // Update marker popup
+          const distance = (map.distance(newPos, HOME_LOCATION) / 1000).toFixed(
+            2
+          );
           markers[id].bindPopup(`
             <h5>${id}</h5>
-            <p><strong>Status:</strong> ${data.status || "Unknown"}</p>
+            <p><strong>Status:</strong> ${status}</p>
             <p><strong>Coordinates:</strong> ${data.lat.toFixed(
               6
             )}, ${data.lon.toFixed(6)}</p>
+            <p><strong>Distance from home:</strong> ${distance} km</p>
           `);
 
-          // Skip breadcrumbs in minimal version
           console.log(`Position updated for ${id}:`, data.lat, data.lon);
         }
+
+        // Update marker card
+        updateMarkerCard(id, status, data);
       }
     } catch (error) {
       console.error("Error processing WebSocket message:", error);
