@@ -567,6 +567,117 @@
       color: #666;
       font-weight: bold;
     }
+    
+    /* Debug Console Styles - Compact Developer View */
+    .debug-console-card {
+      background: #f8f9fa;
+      border-radius: 4px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+      overflow: hidden;
+      opacity: 0.85;
+      transition: opacity 0.2s;
+    }
+    
+    .debug-console-card:hover {
+      opacity: 1;
+    }
+    
+    .debug-console-header {
+      background: #6c757d;
+      color: white;
+      padding: 6px 12px;
+      cursor: pointer;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      user-select: none;
+      font-size: 0.85em;
+    }
+    
+    .debug-console-header:hover {
+      background: #5a6268;
+    }
+    
+    .debug-console-title {
+      margin: 0;
+      font-size: 0.9em;
+      font-weight: 500;
+    }
+    
+    .debug-console-title span {
+      font-size: 0.85em;
+      opacity: 0.8;
+      font-weight: 400;
+    }
+    
+    .debug-console-toggle {
+      font-size: 1em;
+      transition: transform 0.2s ease;
+    }
+    
+    .debug-console-toggle.collapsed {
+      transform: rotate(-90deg);
+    }
+    
+    .debug-console-actions {
+      padding: 5px 12px;
+      background: #e9ecef;
+      border-bottom: 1px solid #dee2e6;
+      display: flex;
+      gap: 6px;
+    }
+    
+    .debug-console-actions .btn {
+      font-size: 0.75em;
+      padding: 4px 8px;
+    }
+    
+    .debug-console-body {
+      max-height: 300px;
+      overflow-y: auto;
+      transition: max-height 0.2s ease;
+    }
+    
+    .debug-console-body.collapsed {
+      max-height: 0;
+      overflow: hidden;
+    }
+    
+    .debug-console-messages {
+      padding: 8px;
+    }
+    
+    .debug-message-entry {
+      background: white;
+      border-left: 2px solid #6c757d;
+      border-radius: 2px;
+      padding: 6px 8px;
+      margin-bottom: 6px;
+      font-family: 'Courier New', monospace;
+      font-size: 0.75em;
+    }
+    
+    .debug-message-entry:last-child {
+      margin-bottom: 0;
+    }
+    
+    .debug-message-time {
+      color: #6c757d;
+      font-weight: bold;
+      margin-bottom: 3px;
+      font-size: 0.9em;
+    }
+    
+    .debug-message-content {
+      background: #f8f9fa;
+      padding: 6px;
+      border-radius: 2px;
+      white-space: pre-wrap;
+      word-break: break-all;
+      max-height: 200px;
+      overflow-y: auto;
+      font-size: 0.95em;
+    }
   </style>
 </head>
 <body>
@@ -600,10 +711,25 @@
     <!-- Marker cards will be dynamically inserted here -->
   </div>
   
-  <div id="map"></div>  <div id="consoleWrapper" class="text-left p-2">
-    <button class="btn btn-outline-secondary me-2" id="toggleConsoleButton">Show Debug Console</button>
-    <button class="btn btn-outline-info" id="copyConsoleButton">Copy Console 📋</button> <!-- Added Copy Button -->
-    <div id="jsonConsole" style="display: none;" class="mt-2"></div> <!-- Added mt-2 for spacing -->
+  <div id="map"></div>
+  
+  <!-- Debug Console Card - Compact Developer View -->
+  <div class="debug-console-container" style="padding: 8px; max-width: 800px; margin: 0 auto;">
+    <div class="debug-console-card">
+      <div class="debug-console-header" onclick="toggleDebugConsole()">
+        <h3 class="debug-console-title">🐛 Debug Console <span id="debug-message-count">(0 messages)</span></h3>
+        <span class="debug-console-toggle" id="debug-toggle-icon">▼</span>
+      </div>
+      <div class="debug-console-actions">
+        <button class="btn btn-outline-info" onclick="copyDebugConsole()">📋 Copy All Messages</button>
+        <button class="btn btn-outline-secondary" onclick="clearDebugConsole()">🗑️ Clear Console</button>
+      </div>
+      <div class="debug-console-body" id="debugConsoleBody">
+        <div class="debug-console-messages" id="debugConsoleMessages">
+          <div style="color: #999; text-align: center; padding: 20px;">No messages yet. Waiting for WebSocket data...</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Temporarily use CDN for Leaflet core - will work for testing -->
@@ -710,11 +836,18 @@
 
     document.getElementById('toggleConsoleButton').addEventListener('click', () => {
       const jsonConsole = document.getElementById('jsonConsole');
+      const toggleBtn = document.getElementById('toggleConsoleButton');
       if (jsonConsole.style.display === 'none') {
         jsonConsole.style.display = 'block';
+        toggleBtn.textContent = 'Hide Debug Console';
+        // Update console content when showing
+        if (window.updateGlobalConsole) {
+          window.updateGlobalConsole();
+        }
         jsonConsole.scrollIntoView({ behavior: 'smooth', block: 'start' }); // Scroll to the JSON console
       } else {
         jsonConsole.style.display = 'none';
+        toggleBtn.textContent = 'Show Debug Console';
       }
     });
 
@@ -1119,54 +1252,71 @@
       }
     }
 
-    // Add event listener for the new copy button
-    document.getElementById('copyConsoleButton').addEventListener('click', () => {
-      const jsonConsole = document.getElementById('jsonConsole');
-      if (!jsonConsole) {
-          console.error('Could not find #jsonConsole element');
-          alert('Error: Console element not found!');
-          return;
-      }
-      console.log('Copy button clicked. Console element:', jsonConsole);
-
-      // Select all <pre> elements directly within the console div
-      const preElements = jsonConsole.querySelectorAll('pre'); // Changed selector
-      console.log(`Found ${preElements.length} <pre> elements inside #jsonConsole.`);
-
-      if (preElements.length === 0) {
-          // If still not found, maybe the structure is different? Log innerHTML.
-          console.log('No <pre> elements found. Console innerHTML:', jsonConsole.innerHTML);
-          alert('Console appears empty or structure is unexpected.');
-          return;
-      }
-
-      // Get text content from all found <pre> tags
-      const textToCopy = Array.from(preElements)
-                              .map(pre => pre.textContent)
-                              .join('\n\n'); // Add double newline between entries
-
-      console.log('Text to copy length:', textToCopy.length);
-
-      if (textToCopy) {
-        copyToClipboard(textToCopy);
+    // Debug Console Functions
+    function toggleDebugConsole() {
+      const body = document.getElementById('debugConsoleBody');
+      const toggle = document.getElementById('debug-toggle-icon');
+      
+      if (body.classList.contains('collapsed')) {
+        body.classList.remove('collapsed');
+        toggle.classList.remove('collapsed');
       } else {
-        // This case might occur if <pre> tags exist but are empty
-        console.log('Text content was empty despite finding <pre> elements.');
-        alert('Console content appears empty.');
+        body.classList.add('collapsed');
+        toggle.classList.add('collapsed');
       }
-    });    // Add event listener for toggle console button
-    document.getElementById('toggleConsoleButton').addEventListener('click', () => {
-      const jsonConsole = document.getElementById('jsonConsole');
-      if (jsonConsole) {
-        // Toggle the display property between 'none' and 'block'
-        const newDisplay = jsonConsole.style.display === 'none' ? 'block' : 'none';
-        jsonConsole.style.display = newDisplay;
-        
-        // Update button text to indicate current state
-        const toggleButton = document.getElementById('toggleConsoleButton');
-        toggleButton.textContent = newDisplay === 'none' ? 'Show Debug Console' : 'Hide Debug Console';
+    }
+    
+    function copyDebugConsole() {
+      if (!window.globalMessageLog || window.globalMessageLog.length === 0) {
+        alert('No messages to copy.');
+        return;
       }
-    });
+      
+      const textToCopy = window.globalMessageLog
+        .map(entry => `[${entry.timestamp}]\n${JSON.stringify(entry.data, null, 2)}`)
+        .join('\n\n---\n\n');
+      
+      copyToClipboard(textToCopy);
+    }
+    
+    function clearDebugConsole() {
+      if (confirm('Clear all debug messages?')) {
+        if (window.globalMessageLog) {
+          window.globalMessageLog.length = 0;
+        }
+        updateDebugConsole();
+      }
+    }
+    
+    function updateDebugConsole() {
+      const messagesDiv = document.getElementById('debugConsoleMessages');
+      const countSpan = document.getElementById('debug-message-count');
+      
+      if (!messagesDiv || !countSpan) return;
+      
+      if (!window.globalMessageLog || window.globalMessageLog.length === 0) {
+        messagesDiv.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">No messages yet. Waiting for WebSocket data...</div>';
+        countSpan.textContent = '(0 messages)';
+        return;
+      }
+      
+      countSpan.textContent = `(${window.globalMessageLog.length} messages)`;
+      
+      messagesDiv.innerHTML = window.globalMessageLog
+        .map(entry => `
+          <div class="debug-message-entry">
+            <div class="debug-message-time">${entry.timestamp}</div>
+            <div class="debug-message-content">${JSON.stringify(entry.data, null, 2)}</div>
+          </div>
+        `)
+        .join('');
+      
+      // Auto-scroll to top to show latest
+      messagesDiv.scrollTop = 0;
+    }
+    
+    // Expose globally
+    window.updateDebugConsole = updateDebugConsole;
 
 
     // BLE Toggle Functionality

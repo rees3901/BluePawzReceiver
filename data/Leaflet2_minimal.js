@@ -296,6 +296,11 @@ function hideBreadcrumbs(id) {
 window.ws = null; // Make globally accessible
 let debugMessageCount = 0;
 
+// Global message log - expose globally for debug console access
+window.globalMessageLog = [];
+const globalMessageLog = window.globalMessageLog; // Local reference
+const MAX_GLOBAL_LOG_ENTRIES = 50; // Keep last 50 messages
+
 function handleBleState(data) {
   if (!data || data.type !== "ble_state") return;
   const bleToggle = document.getElementById("bleToggle");
@@ -345,6 +350,30 @@ function connectWebSocket() {
 
   window.ws.onmessage = (event) => {
     console.log("WebSocket message received:", event.data);
+
+    // Add to global message log with parsed data
+    const timestamp = new Date().toLocaleTimeString();
+    let parsedData;
+    try {
+      parsedData = JSON.parse(event.data);
+    } catch (e) {
+      parsedData = event.data;
+    }
+
+    globalMessageLog.unshift({
+      timestamp: timestamp,
+      data: parsedData,
+    });
+
+    // Keep only last MAX_GLOBAL_LOG_ENTRIES
+    if (globalMessageLog.length > MAX_GLOBAL_LOG_ENTRIES) {
+      globalMessageLog.pop();
+    }
+
+    // Update debug console if function exists
+    if (window.updateDebugConsole) {
+      window.updateDebugConsole();
+    }
 
     try {
       const data = JSON.parse(event.data);
@@ -432,6 +461,8 @@ function connectWebSocket() {
     console.log("WebSocket readyState:", window.ws.readyState);
   };
 }
+
+// Old updateGlobalConsole function removed - now handled in index.html
 
 // Start WebSocket connection
 connectWebSocket();
