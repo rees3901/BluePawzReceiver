@@ -645,6 +645,7 @@
     
     .debug-console-messages {
       padding: 8px;
+      text-align: left;
     }
     
     .debug-message-entry {
@@ -655,6 +656,7 @@
       margin-bottom: 6px;
       font-family: 'Courier New', monospace;
       font-size: 0.75em;
+      text-align: left;
     }
     
     .debug-message-entry:last-child {
@@ -677,6 +679,7 @@
       max-height: 200px;
       overflow-y: auto;
       font-size: 0.95em;
+      text-align: left;
     }
   </style>
 </head>
@@ -714,7 +717,7 @@
   <div id="map"></div>
   
   <!-- Debug Console Card - Compact Developer View -->
-  <div class="debug-console-container" style="padding: 8px; max-width: 800px; margin: 0 auto;">
+  <div class="debug-console-container" style="padding: 8px; max-width: 800px; margin: 0 0 0 15px;">
     <div class="debug-console-card">
       <div class="debug-console-header" onclick="toggleDebugConsole()">
         <h3 class="debug-console-title">🐛 Debug Console <span id="debug-message-count">(0 messages)</span></h3>

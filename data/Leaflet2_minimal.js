@@ -53,6 +53,20 @@ L.control
 // Define KNOWN_CATS
 const KNOWN_CATS = ["Podge", "Macy", "Gizmo", "Simba"];
 
+// Breadcrumb trail colors for each cat
+const BREADCRUMB_COLORS = {
+  Podge: "#FF6B6B", // Red
+  Macy: "#4ECDC4", // Turquoise
+  Gizmo: "#FFD93D", // Yellow
+  Simba: "#A78BFA", // Purple
+  generic: "#007bff", // Default blue
+};
+
+// Function to get breadcrumb color for a marker
+function getBreadcrumbColor(id) {
+  return BREADCRUMB_COLORS[id] || BREADCRUMB_COLORS["generic"];
+}
+
 // Essential variables
 const dropdowns = new Set();
 const markers = {};
@@ -202,6 +216,25 @@ function updateMarkerCard(id, status, data) {
   const card = document.getElementById(`marker-card-${id}`);
   if (!card) return;
 
+  // Flash green border 3 times in quick succession
+  let flashCount = 0;
+  const flashInterval = setInterval(() => {
+    if (flashCount % 2 === 0) {
+      card.style.borderColor = "#28a745";
+      card.style.borderWidth = "3px";
+    } else {
+      card.style.borderColor = "";
+      card.style.borderWidth = "";
+    }
+    flashCount++;
+    if (flashCount >= 6) {
+      // 3 flashes = 6 toggles (on-off-on-off-on-off)
+      clearInterval(flashInterval);
+      card.style.borderColor = "";
+      card.style.borderWidth = "";
+    }
+  }, 150); // 150ms per toggle = 300ms per flash
+
   // Update status class
   card.className = `marker-card status-${status.toLowerCase()}`;
 
@@ -278,7 +311,7 @@ function showBreadcrumbs(id) {
   }
 
   window.breadcrumbLines[id] = L.polyline(window.breadcrumbs[id], {
-    color: "#007bff",
+    color: getBreadcrumbColor(id),
     weight: 3,
     dashArray: "10, 10",
     opacity: 0.7,
@@ -402,21 +435,33 @@ function connectWebSocket() {
           markerVisibility[id] = true;
         }
 
+        // Always update marker icon based on status (even without coordinates)
+        if (markers[id]) {
+          markers[id].setIcon(getMarkerIcon(id, status));
+
+          // Animate marker - grow 50% and return to normal over 1 second
+          const markerElement = markers[id].getElement();
+          if (markerElement) {
+            markerElement.style.transition = "transform 0.5s ease-out";
+            markerElement.style.transform = "scale(1.5)";
+            setTimeout(() => {
+              markerElement.style.transform = "scale(1)";
+            }, 500);
+          }
+        }
+
         // Update position if we have coordinates
         if (data.lat && data.lon) {
           console.log(`Updating ${id} position to:`, data.lat, data.lon);
           const newPos = [data.lat, data.lon];
           markers[id].setLatLng(newPos);
 
-          // Update marker icon based on status
-          markers[id].setIcon(getMarkerIcon(id, status));
-
-          // Update breadcrumbs trail (keep last 3 positions)
+          // Update breadcrumbs trail (keep last 4 positions)
           if (!window.breadcrumbs[id]) {
             window.breadcrumbs[id] = [];
           }
           window.breadcrumbs[id].push(newPos);
-          if (window.breadcrumbs[id].length > 3) {
+          if (window.breadcrumbs[id].length > 4) {
             window.breadcrumbs[id].shift();
           }
 

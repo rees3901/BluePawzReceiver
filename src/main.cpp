@@ -37,6 +37,7 @@ std::map<String, String> catPayloads;
 #define LORA_RST 42
 #define LORA_BUSY 40
 #define LORA_DIO1 39
+#define LORA_LED 48 // LoRa chip LED on GPIO 48
 
 SPIClass LoRaSPI(HSPI);
 SX1262 lora = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY, LoRaSPI);
@@ -96,8 +97,21 @@ void enableBLE();
 void disableBLE();
 void sendBleStateWS(uint8_t clientId = 255);
 void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length);
+void LED_flicker();
 void setup();
 void loop();
+
+// LED flicker function - 5 rapid flashes
+void LED_flicker()
+{
+  for (int i = 0; i < 5; i++)
+  {
+    digitalWrite(LORA_LED, HIGH);
+    delay(50);
+    digitalWrite(LORA_LED, LOW);
+    delay(50);
+  }
+}
 
 // Improve WebSocket notification with connection tracking
 
@@ -119,6 +133,10 @@ void handleLoRaPacket()
   if (state == RADIOLIB_ERR_NONE)
   {
     Serial.println("[LORA] Packet received: " + incoming);
+
+    // Flash LoRa LED 5 times on message receipt
+    LED_flicker();
+
     if (incoming.length() > 0)
     {
       JsonDocument doc; // Increased buffer size for new format
@@ -493,6 +511,8 @@ void setup()
   Serial.println("[BOOT] Starting setup...");
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW); // Turn off the LED
+  pinMode(LORA_LED, OUTPUT);      // Initialize LoRa LED pin
+  digitalWrite(LORA_LED, LOW);    // Turn off LoRa LED
   setupBLE();
 
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -608,6 +628,16 @@ void setup()
   }
 
   setupGPS();
+
+  // Flash builtin LED 5 times to indicate setup complete
+  Serial.println("[BOOT] Setup complete - signaling ready");
+  for (int i = 0; i < 5; i++)
+  {
+    digitalWrite(LED_BUILTIN, HIGH);
+    delay(100);
+    digitalWrite(LED_BUILTIN, LOW);
+    delay(100);
+  }
 }
 
 void loop()
