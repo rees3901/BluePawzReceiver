@@ -167,7 +167,7 @@ function createMarkerCard(id, status) {
         🎯 Jump to Location
       </button>
       <button class="marker-card-btn btn-follow" id="follow-btn-${id}" onclick="toggleFollowMarker('${id}')">
-        � Follow: OFF
+        📌 Follow: OFF
       </button>
       <button class="marker-card-btn btn-breadcrumb" id="breadcrumb-btn-${id}" onclick="toggleBreadcrumbsCard('${id}')">
         📍 Trail: OFF
@@ -226,14 +226,14 @@ window.toggleFollowMarker = function (id) {
     // Turn off follow for this marker
     followedMarkerId = null;
     btn.classList.remove("active");
-    btn.innerHTML = "� Follow: OFF";
+    btn.innerHTML = "📌 Follow: OFF";
   } else {
     // Turn off any previously followed marker
     if (followedMarkerId) {
       const oldBtn = document.getElementById(`follow-btn-${followedMarkerId}`);
       if (oldBtn) {
         oldBtn.classList.remove("active");
-        oldBtn.innerHTML = "� Follow: OFF";
+        oldBtn.innerHTML = "📌 Follow: OFF";
       }
     }
 
