@@ -418,13 +418,50 @@
       border-radius: 50%;
     }
     
+    
+    /* Marker Cards Container - Grid Layout with Scrolling */
+    .marker-cards-container {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      padding: 15px;
+      max-height: 400px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      background: #f8f9fa;
+      border-radius: 8px;
+      margin: 10px;
+      transition: max-height 0.3s ease, padding 0.3s ease;
+    }
+    
+    /* Scrollbar styling for marker cards container */
+    .marker-cards-container::-webkit-scrollbar {
+      width: 8px;
+    }
+    
+    .marker-cards-container::-webkit-scrollbar-track {
+      background: #e9ecef;
+      border-radius: 4px;
+    }
+    
+    .marker-cards-container::-webkit-scrollbar-thumb {
+      background: #6c757d;
+      border-radius: 4px;
+    }
+    
+    .marker-cards-container::-webkit-scrollbar-thumb:hover {
+      background: #495057;
+    }
+    
     /* Marker Card Styles */
     .marker-card {
       background: white;
       border-radius: 12px;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
       padding: 15px;
-      width: 280px;
+      width: 100%;
+      max-width: 400px;
+      min-width: 250px;
       transition: all 0.3s ease;
       border: 2px solid #e0e0e0;
     }
@@ -725,8 +762,15 @@
     </label>
   </div>
   
+  <!-- Marker Cards Control -->
+  <div style="text-align: center; margin: 10px;">
+    <button id="toggleAllCardsBtn" class="btn btn-secondary" onclick="toggleAllMarkerCards()">
+      ➖ Collapse All Cards
+    </button>
+  </div>
+  
     <!-- Dynamic Marker Cards Container -->
-  <div class="marker-cards-container" style="display: flex; flex-wrap: wrap; gap: 15px; padding: 15px; justify-content: center;">
+  <div class="marker-cards-container">
     <!-- Marker cards will be dynamically inserted here -->
   </div>
   
@@ -1161,7 +1205,34 @@
       
       // Handle marker visibility
       // ... existing marker visibility code ...
-    }    // --- Live connection indicator polling ---
+    }
+
+    // Toggle all marker cards visibility
+    let allCardsCollapsed = false;
+    function toggleAllMarkerCards() {
+      const container = document.querySelector('.marker-cards-container');
+      const btn = document.getElementById('toggleAllCardsBtn');
+      
+      allCardsCollapsed = !allCardsCollapsed;
+      
+      if (allCardsCollapsed) {
+        container.style.maxHeight = '0';
+        container.style.padding = '0';
+        container.style.overflow = 'hidden';
+        btn.innerHTML = '➕ Expand All Cards';
+        btn.classList.remove('btn-secondary');
+        btn.classList.add('btn-primary');
+      } else {
+        container.style.maxHeight = '400px';
+        container.style.padding = '15px';
+        container.style.overflow = 'auto';
+        btn.innerHTML = '➖ Collapse All Cards';
+        btn.classList.remove('btn-primary');
+        btn.classList.add('btn-secondary');
+      }
+    }
+
+    // --- Live connection indicator polling ---
     function pollConnectionStatus() {
       fetch('/data', { method: 'GET', cache: 'no-store' })
         .then(response => {
