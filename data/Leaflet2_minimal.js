@@ -72,6 +72,8 @@ const dropdowns = new Set();
 const markers = {};
 const markerVisibility = {};
 const autoCenter = {};
+// Track which marker is being followed (only one at a time)
+let followedMarkerId = null;
 // Provide globals used by index.html helpers
 window.breadcrumbs = window.breadcrumbs || {};
 window.breadcrumbLines = window.breadcrumbLines || {};
@@ -84,7 +86,8 @@ const HOME_ICON = L.icon({
   popupAnchor: [0, -32],
 });
 
-L.marker(HOME_LOCATION, {
+// Create home marker as a global variable so it can be updated
+window.homeMarker = L.marker(HOME_LOCATION, {
   icon: HOME_ICON,
 })
   .addTo(map)
@@ -163,6 +166,9 @@ function createMarkerCard(id, status) {
       <button class="marker-card-btn btn-jump" onclick="jumpToMarker('${id}')">
         🎯 Jump to Location
       </button>
+      <button class="marker-card-btn btn-follow" id="follow-btn-${id}" onclick="toggleFollowMarker('${id}')">
+        � Follow: OFF
+      </button>
       <button class="marker-card-btn btn-breadcrumb" id="breadcrumb-btn-${id}" onclick="toggleBreadcrumbsCard('${id}')">
         📍 Trail: OFF
       </button>
@@ -211,7 +217,38 @@ window.toggleConsoleCard = function (id) {
   console.classList.toggle("show");
 };
 
-// Update marker card with new data
+// Toggle follow marker - only one can be active at a time
+window.toggleFollowMarker = function (id) {
+  const btn = document.getElementById(`follow-btn-${id}`);
+  const isFollowing = followedMarkerId === id;
+
+  if (isFollowing) {
+    // Turn off follow for this marker
+    followedMarkerId = null;
+    btn.classList.remove("active");
+    btn.innerHTML = "� Follow: OFF";
+  } else {
+    // Turn off any previously followed marker
+    if (followedMarkerId) {
+      const oldBtn = document.getElementById(`follow-btn-${followedMarkerId}`);
+      if (oldBtn) {
+        oldBtn.classList.remove("active");
+        oldBtn.innerHTML = "� Follow: OFF";
+      }
+    }
+
+    // Turn on follow for this marker
+    followedMarkerId = id;
+    btn.classList.add("active");
+    btn.innerHTML = "✅ Following";
+
+    // Center map on this marker immediately
+    if (markers[id]) {
+      const latlng = markers[id].getLatLng();
+      map.setView(latlng, 18);
+    }
+  }
+}; // Update marker card with new data
 function updateMarkerCard(id, status, data) {
   const card = document.getElementById(`marker-card-${id}`);
   if (!card) return;
@@ -419,6 +456,29 @@ function connectWebSocket() {
         return; // Don't process as position data
       }
 
+      // Handle home GPS update from device itself
+      if (data.type === "home_gps" && data.lat && data.lon) {
+        console.log("Home GPS update received:", data.lat, data.lon);
+        const homePos = [data.lat, data.lon];
+        if (window.homeMarker) {
+          window.homeMarker.setLatLng(homePos);
+          window.homeMarker.bindPopup(`
+            <h5>Home Base</h5>
+            <p><strong>Device GPS:</strong> ${data.lat.toFixed(
+              6
+            )}, ${data.lon.toFixed(6)}</p>
+            ${
+              data.accuracy
+                ? `<p><strong>Accuracy:</strong> ±${data.accuracy.toFixed(
+                    1
+                  )}m</p>`
+                : ""
+            }
+          `);
+        }
+        return;
+      }
+
       if (data.id) {
         const id = data.id;
         const status = data.status || "Unknown";
@@ -471,10 +531,11 @@ function connectWebSocket() {
             showBreadcrumbs(id);
           }
 
-          // Update marker popup
+          // Update marker popup with hover behavior
           const distance = (map.distance(newPos, HOME_LOCATION) / 1000).toFixed(
             2
           );
+          markers[id].unbindPopup(); // Remove any existing popup
           markers[id].bindPopup(`
             <h5>${id}</h5>
             <p><strong>Status:</strong> ${status}</p>
@@ -483,6 +544,19 @@ function connectWebSocket() {
             )}, ${data.lon.toFixed(6)}</p>
             <p><strong>Distance from home:</strong> ${distance} km</p>
           `);
+
+          // Add hover events for popup
+          markers[id].off("mouseover").on("mouseover", function () {
+            this.openPopup();
+          });
+          markers[id].off("mouseout").on("mouseout", function () {
+            this.closePopup();
+          });
+
+          // Auto-center map if this marker is being followed
+          if (followedMarkerId === id) {
+            map.setView(newPos, 18);
+          }
 
           console.log(`Position updated for ${id}:`, data.lat, data.lon);
         }

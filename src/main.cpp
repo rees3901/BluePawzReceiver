@@ -85,6 +85,7 @@ bool bleEnabled = true;                         // BLE beacon control flag
 // Function declarations
 void notifyClients();
 void notifyPosition(const JsonDocument &doc);
+void notifyHomeGPS();
 void handleLoRaPacket();
 void onReceive();
 void setupGPS();
@@ -310,7 +311,7 @@ void handleDeviceOwnGPS()
   // Only send update if data was processed and the interval has passed
   if (gpsDataProcessed && (millis() - lastDeviceGPSUpdateTime >= DEVICE_GPS_UPDATE_INTERVAL))
   {
-    notifyPosition(deviceLocation);
+    notifyHomeGPS();                    // Send home GPS update instead of regular position
     lastDeviceGPSUpdateTime = millis(); // Reset timer after sending update
   }
   // Also send an update immediately if the status changes to "No GPS Fix" after having a fix
@@ -321,7 +322,7 @@ void handleDeviceOwnGPS()
     // Check if the previous status was different (optional, needs state tracking)
     // For simplicity, we just send if status is "No GPS Fix" and interval hasn't passed
     // This ensures the UI reflects the loss of fix promptly.
-    notifyPosition(deviceLocation);
+    notifyHomeGPS(); // Send home GPS update instead of regular position
     // We don't reset lastDeviceGPSUpdateTime here, so the next *timed* update still happens on schedule
   }
 }
@@ -685,4 +686,41 @@ void notifyPosition(const JsonDocument &doc)
   serializeJson(doc, jsonString);
   webSocket.broadcastTXT(jsonString); // Broadcast the JSON to all WebSocket clients
   Serial.println("[WS] Position updated: " + jsonString);
+}
+
+// Send device's own GPS position as home marker update
+void notifyHomeGPS()
+{
+  JsonDocument homeDoc;
+  homeDoc["type"] = "home_gps";
+
+  // Only send if we have valid GPS data
+  if (deviceLocation.containsKey("lat") && deviceLocation.containsKey("lon"))
+  {
+    homeDoc["lat"] = deviceLocation["lat"];
+    homeDoc["lon"] = deviceLocation["lon"];
+
+    // Add accuracy if available (calculated from HDOP)
+    if (deviceLocation.containsKey("hdop"))
+    {
+      float hdop = deviceLocation["hdop"];
+      // Rough accuracy estimation: HDOP * 5 meters
+      homeDoc["accuracy"] = hdop * 5.0;
+    }
+
+    // Add satellite count if available
+    if (deviceLocation.containsKey("satellites"))
+    {
+      homeDoc["satellites"] = deviceLocation["satellites"];
+    }
+
+    String jsonString;
+    serializeJson(homeDoc, jsonString);
+    webSocket.broadcastTXT(jsonString);
+    Serial.println("[WS] Home GPS updated: " + jsonString);
+  }
+  else
+  {
+    Serial.println("[WS] No valid GPS data to send for home marker");
+  }
 }
