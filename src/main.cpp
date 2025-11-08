@@ -50,8 +50,8 @@ unsigned long lastToggle = 0;
 const unsigned long toggleInterval = 4000;
 
 // ───────────── GPS Configuration ─────────────
-#define GPS_RX D0
-#define GPS_TX D1
+#define GPS_RX D7
+#define GPS_TX D6
 #define GPS_BAUD 9600
 
 TinyGPSPlus gps;
@@ -73,7 +73,7 @@ uint8_t connectedClients = 0;
 
 // Add timer for device GPS updates
 unsigned long lastDeviceGPSUpdateTime = 0;
-const unsigned long DEVICE_GPS_UPDATE_INTERVAL = 60000; // 1 minute in milliseconds
+const unsigned long DEVICE_GPS_UPDATE_INTERVAL = 10000; // 10 seconds in milliseconds
 
 // ───────────── BLE Beacon Config ─────────────
 #define BLE_DEVICE_NAME "CAT_TRACKER_HQ"
@@ -85,7 +85,6 @@ bool bleEnabled = true;                         // BLE beacon control flag
 // Function declarations
 void notifyClients();
 void notifyPosition(const JsonDocument &doc);
-void notifyHomeGPS();
 void handleLoRaPacket();
 void onReceive();
 void setupGPS();
@@ -276,7 +275,7 @@ void handleDeviceOwnGPS()
       {
         deviceLocation["lat"] = gps.location.lat();
         deviceLocation["lon"] = gps.location.lng();
-        deviceLocation["status"] = "GPS Fix";
+        deviceLocation["status"] = "Home"; // Use standard status: Home when GPS has fix
         deviceLocation["satellites"] = gps.satellites.value();
         deviceLocation["hdop"] = gps.hdop.value();
         deviceLocation["received_at"] = millis(); // Add receiver timestamp here too
@@ -300,7 +299,7 @@ void handleDeviceOwnGPS()
       else
       {
         // Keep last known good location but update status
-        deviceLocation["status"] = "No GPS Fix";
+        deviceLocation["status"] = "Error";       // Use standard status: Error when no GPS fix
         deviceLocation["received_at"] = millis(); // Update timestamp even if no fix
       }
       // We break after the first valid sentence processing to avoid multiple updates from one burst
@@ -308,22 +307,15 @@ void handleDeviceOwnGPS()
     }
   }
 
-  // Only send update if data was processed and the interval has passed
-  if (gpsDataProcessed && (millis() - lastDeviceGPSUpdateTime >= DEVICE_GPS_UPDATE_INTERVAL))
+  // Send update every 10 seconds regardless of GPS data availability
+  if (millis() - lastDeviceGPSUpdateTime >= DEVICE_GPS_UPDATE_INTERVAL)
   {
-    notifyHomeGPS();                    // Send home GPS update instead of regular position
+    // Update timestamp
+    deviceLocation["received_at"] = millis();
+
+    Serial.println("[GPS] Sending MyDevice update");
+    notifyPosition(deviceLocation);     // Send as regular marker position
     lastDeviceGPSUpdateTime = millis(); // Reset timer after sending update
-  }
-  // Also send an update immediately if the status changes to "No GPS Fix" after having a fix
-  else if (gpsDataProcessed && deviceLocation["status"] == "No GPS Fix" &&
-           (millis() - lastDeviceGPSUpdateTime < DEVICE_GPS_UPDATE_INTERVAL) && // Ensure we don't double-send if interval also passed
-           (millis() - lastDeviceGPSUpdateTime > 1000))                         // Add a small delay to prevent spamming "No GPS Fix"
-  {
-    // Check if the previous status was different (optional, needs state tracking)
-    // For simplicity, we just send if status is "No GPS Fix" and interval hasn't passed
-    // This ensures the UI reflects the loss of fix promptly.
-    notifyHomeGPS(); // Send home GPS update instead of regular position
-    // We don't reset lastDeviceGPSUpdateTime here, so the next *timed* update still happens on schedule
   }
 }
 
@@ -686,41 +678,4 @@ void notifyPosition(const JsonDocument &doc)
   serializeJson(doc, jsonString);
   webSocket.broadcastTXT(jsonString); // Broadcast the JSON to all WebSocket clients
   Serial.println("[WS] Position updated: " + jsonString);
-}
-
-// Send device's own GPS position as home marker update
-void notifyHomeGPS()
-{
-  JsonDocument homeDoc;
-  homeDoc["type"] = "home_gps";
-
-  // Only send if we have valid GPS data
-  if (deviceLocation.containsKey("lat") && deviceLocation.containsKey("lon"))
-  {
-    homeDoc["lat"] = deviceLocation["lat"];
-    homeDoc["lon"] = deviceLocation["lon"];
-
-    // Add accuracy if available (calculated from HDOP)
-    if (deviceLocation.containsKey("hdop"))
-    {
-      float hdop = deviceLocation["hdop"];
-      // Rough accuracy estimation: HDOP * 5 meters
-      homeDoc["accuracy"] = hdop * 5.0;
-    }
-
-    // Add satellite count if available
-    if (deviceLocation.containsKey("satellites"))
-    {
-      homeDoc["satellites"] = deviceLocation["satellites"];
-    }
-
-    String jsonString;
-    serializeJson(homeDoc, jsonString);
-    webSocket.broadcastTXT(jsonString);
-    Serial.println("[WS] Home GPS updated: " + jsonString);
-  }
-  else
-  {
-    Serial.println("[WS] No valid GPS data to send for home marker");
-  }
 }

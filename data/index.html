@@ -13,12 +13,16 @@
     body { margin: 0; font-family: sans-serif; }
     #map { height: 70vh; margin: 10px; border: 2px solid #888; border-radius: 10px; }
     #statusBanner {
-      text-align: center;
-      font-weight: bold;
-      padding: 6px;
-      border-radius: 6px;
-      margin: 5px;
-      display: inline-block;
+      position: fixed;
+      top: 10px;
+      right: 10px;
+      font-size: 0.75em;
+      font-weight: normal;
+      padding: 4px 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.9);
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      z-index: 1000;
     }
     #statusBanner.flash {
       animation: status-flash 1.2s linear infinite alternate;
@@ -26,6 +30,15 @@
     @keyframes status-flash {
       0% { opacity: 1; }
       100% { opacity: 0.3; }
+    }
+    /* Marker pulse animation - doesn't interfere with Leaflet positioning */
+    @keyframes marker-pulse {
+      0% { transform: scale(1); }
+      50% { transform: scale(1.3); }
+      100% { transform: scale(1); }
+    }
+    .marker-pulse {
+      animation: marker-pulse 0.6s ease-out;
     }
     /* Add animation for connected status poll */
     #statusBanner.connected-flash {
@@ -487,6 +500,18 @@
       border-color: #6c757d;
     }
     
+    /* Special styling for MyDevice card */
+    .marker-card.my-device-card {
+      border: 3px solid #007bff;
+      background: linear-gradient(135deg, #ffffff 0%, #f0f8ff 100%);
+      order: -1; /* Always appears first in grid */
+    }
+    
+    .marker-card.my-device-card:hover {
+      border-color: #0056b3;
+      box-shadow: 0 6px 20px rgba(0, 123, 255, 0.3);
+    }
+    
     .marker-card-header {
       display: flex;
       align-items: center;
@@ -748,7 +773,7 @@
       </span>
     </h4>
   </div>
-  <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">Connected✔</div>
+  <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</div>
   
   <!-- BLE Beacon Control -->
   <div class="ble-control-wrapper" style="text-align: center; margin: 10px;">

@@ -51,7 +51,7 @@ L.control
   .addTo(map);
 
 // Define KNOWN_CATS
-const KNOWN_CATS = ["Podge", "Macy", "Gizmo", "Simba"];
+const KNOWN_CATS = ["Podge", "Macy", "Gizmo", "Simba", "MyDevice"];
 
 // Breadcrumb trail colors for each cat
 const BREADCRUMB_COLORS = {
@@ -59,6 +59,7 @@ const BREADCRUMB_COLORS = {
   Macy: "#4ECDC4", // Turquoise
   Gizmo: "#FFD93D", // Yellow
   Simba: "#A78BFA", // Purple
+  MyDevice: "#00CED1", // Dark Turquoise for the device
   generic: "#007bff", // Default blue
 };
 
@@ -78,25 +79,18 @@ let followedMarkerId = null;
 window.breadcrumbs = window.breadcrumbs || {};
 window.breadcrumbLines = window.breadcrumbLines || {};
 
-// Home marker
-const HOME_ICON = L.icon({
-  iconUrl: "/icons/Home.png",
-  iconSize: [32, 32],
-  iconAnchor: [16, 32],
-  popupAnchor: [0, -32],
-});
-
-// Create home marker as a global variable so it can be updated
-window.homeMarker = L.marker(HOME_LOCATION, {
-  icon: HOME_ICON,
-})
-  .addTo(map)
-  .bindPopup("Home Base")
-  .openPopup();
-
-// Basic breadcrumb function
 // Basic marker icon function
 function getMarkerIcon(id, status) {
+  // Special handling for MyDevice - use Device_Marker.png
+  if (id === "MyDevice") {
+    return L.icon({
+      iconUrl: `/icons/Device_Marker.png`,
+      iconSize: [32, 32],
+      iconAnchor: [16, 32],
+      popupAnchor: [0, -32],
+    });
+  }
+
   const baseId = KNOWN_CATS.includes(id) ? id : "generic";
   let iconStatus;
 
@@ -141,22 +135,32 @@ function createMarkerCard(id, status) {
     markerHistory[id] = [];
   }
 
-  const baseId = KNOWN_CATS.includes(id) ? id : "generic";
-  const iconUrl = `/icons/${baseId}_Marker_Home.png`;
+  // Special handling for MyDevice card icon
+  const iconUrl =
+    id === "MyDevice"
+      ? `/icons/Device_Marker.png`
+      : `/icons/${KNOWN_CATS.includes(id) ? id : "generic"}_Marker_Home.png`;
 
   const statusClass = status
     ? `status-${status.toLowerCase()}`
     : "status-offline";
 
+  // Special styling for MyDevice
+  const isMyDevice = id === "MyDevice";
+  const myDeviceClass = isMyDevice ? " my-device-card" : "";
+  const deviceLabel = isMyDevice
+    ? '<span style="background: #007bff; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; margin-left: 8px;">🏠 This Device</span>'
+    : "";
+
   const card = document.createElement("div");
-  card.className = `marker-card ${statusClass}`;
+  card.className = `marker-card ${statusClass}${myDeviceClass}`;
   card.id = `marker-card-${id}`;
 
   card.innerHTML = `
     <div class="marker-card-header">
       <img src="${iconUrl}" alt="${id}" class="marker-card-icon" id="card-icon-${id}">
       <div class="marker-card-title">
-        <h3 class="marker-card-name">${id}</h3>
+        <h3 class="marker-card-name">${id}${deviceLabel}</h3>
         <p class="marker-card-status" id="card-status-${id}">${
     status || "Unknown"
   }</p>
@@ -456,29 +460,6 @@ function connectWebSocket() {
         return; // Don't process as position data
       }
 
-      // Handle home GPS update from device itself
-      if (data.type === "home_gps" && data.lat && data.lon) {
-        console.log("Home GPS update received:", data.lat, data.lon);
-        const homePos = [data.lat, data.lon];
-        if (window.homeMarker) {
-          window.homeMarker.setLatLng(homePos);
-          window.homeMarker.bindPopup(`
-            <h5>Home Base</h5>
-            <p><strong>Device GPS:</strong> ${data.lat.toFixed(
-              6
-            )}, ${data.lon.toFixed(6)}</p>
-            ${
-              data.accuracy
-                ? `<p><strong>Accuracy:</strong> ±${data.accuracy.toFixed(
-                    1
-                  )}m</p>`
-                : ""
-            }
-          `);
-        }
-        return;
-      }
-
       if (data.id) {
         const id = data.id;
         const status = data.status || "Unknown";
@@ -500,13 +481,19 @@ function connectWebSocket() {
           markers[id].setIcon(getMarkerIcon(id, status));
 
           // Animate marker - grow 50% and return to normal over 1 second
+          // Using a separate animation layer to avoid interfering with Leaflet positioning
           const markerElement = markers[id].getElement();
           if (markerElement) {
-            markerElement.style.transition = "transform 0.5s ease-out";
-            markerElement.style.transform = "scale(1.5)";
+            // Remove any existing animation class first
+            markerElement.classList.remove("marker-pulse");
+            // Force reflow to restart animation
+            void markerElement.offsetWidth;
+            // Add animation class
+            markerElement.classList.add("marker-pulse");
+            // Remove class after animation completes
             setTimeout(() => {
-              markerElement.style.transform = "scale(1)";
-            }, 500);
+              markerElement.classList.remove("marker-pulse");
+            }, 600);
           }
         }
 
@@ -514,7 +501,12 @@ function connectWebSocket() {
         if (data.lat && data.lon) {
           console.log(`Updating ${id} position to:`, data.lat, data.lon);
           const newPos = [data.lat, data.lon];
+
+          // Use setLatLng without animation to avoid rendering issues
           markers[id].setLatLng(newPos);
+
+          // Force map to recalculate marker positions
+          markers[id]._updateZIndex();
 
           // Update breadcrumbs trail (keep last 4 positions)
           if (!window.breadcrumbs[id]) {
@@ -532,7 +524,11 @@ function connectWebSocket() {
           }
 
           // Update marker popup with hover behavior
-          const distance = (map.distance(newPos, HOME_LOCATION) / 1000).toFixed(
+          // Calculate distance from MyDevice if available, otherwise use HOME_LOCATION
+          const referencePos = markers["MyDevice"]
+            ? markers["MyDevice"].getLatLng()
+            : HOME_LOCATION;
+          const distance = (map.distance(newPos, referencePos) / 1000).toFixed(
             2
           );
           markers[id].unbindPopup(); // Remove any existing popup
@@ -585,6 +581,9 @@ function connectWebSocket() {
 
 // Start WebSocket connection
 connectWebSocket();
+
+// Create MyDevice marker card immediately on page load
+createMarkerCard("MyDevice", "Starting up");
 
 console.log("Minimal Leaflet2.js loaded successfully");
 
