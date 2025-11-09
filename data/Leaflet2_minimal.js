@@ -259,24 +259,39 @@ function updateMarkerCard(id, status, data) {
   const card = document.getElementById(`marker-card-${id}`);
   if (!card) return;
 
-  // Flash green border 3 times in quick succession
-  let flashCount = 0;
-  const flashInterval = setInterval(() => {
-    if (flashCount % 2 === 0) {
+  // Pulse green border 2 times with growing/shrinking effect
+  // Compensate for border growth with negative margin to prevent layout shift
+  let pulseCount = 0;
+  const pulseInterval = setInterval(() => {
+    if (pulseCount % 2 === 0) {
+      // Grow: increase border to 100% larger (6px from 2px = +4px)
+      // Compensate with -4px margin to prevent shifting other elements
       card.style.borderColor = "#28a745";
-      card.style.borderWidth = "3px";
+      card.style.borderWidth = "6px";
+      card.style.margin = "-4px";
+      card.style.transition =
+        "border-width 0.25s ease-out, margin 0.25s ease-out";
     } else {
-      card.style.borderColor = "";
-      card.style.borderWidth = "";
+      // Shrink: back to normal size
+      card.style.borderColor = "#28a745";
+      card.style.borderWidth = "2px";
+      card.style.margin = "0px";
+      card.style.transition =
+        "border-width 0.25s ease-in, margin 0.25s ease-in";
     }
-    flashCount++;
-    if (flashCount >= 6) {
-      // 3 flashes = 6 toggles (on-off-on-off-on-off)
-      clearInterval(flashInterval);
-      card.style.borderColor = "";
-      card.style.borderWidth = "";
+    pulseCount++;
+    if (pulseCount >= 4) {
+      // 2 pulses = 4 toggles (grow-shrink-grow-shrink)
+      clearInterval(pulseInterval);
+      // Return to default border after animation
+      setTimeout(() => {
+        card.style.borderColor = "";
+        card.style.borderWidth = "";
+        card.style.margin = "";
+        card.style.transition = "";
+      }, 250);
     }
-  }, 150); // 150ms per toggle = 300ms per flash
+  }, 250); // 250ms per toggle = 500ms per pulse, total 1 second for 2 pulses
 
   // Update status class
   card.className = `marker-card status-${status.toLowerCase()}`;
@@ -499,8 +514,8 @@ function connectWebSocket() {
 
         // Create or update marker
         if (!markers[id]) {
-          console.log(`Creating new marker for ${id}`);
-          markers[id] = L.marker([0, 0], {
+          console.log(`Creating new marker for ${id} at HOME_LOCATION`);
+          markers[id] = L.marker(HOME_LOCATION, {
             icon: getMarkerIcon(id, status),
           }).addTo(map);
           markerVisibility[id] = true;
@@ -613,79 +628,7 @@ setTimeout(() => {
 
 console.log("Minimal Leaflet2.js loaded successfully");
 
-// ===== 3. LOCATE ME CONTROL (Geolocation) =====
-const locateControl = L.control({ position: "topleft" });
-locateControl.onAdd = function (map) {
-  const div = L.DomUtil.create("div", "leaflet-bar leaflet-control");
-  div.innerHTML =
-    '<a href="#" title="Find my location" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📍</a>';
-
-  L.DomEvent.on(div, "click", function (e) {
-    L.DomEvent.stopPropagation(e);
-    L.DomEvent.preventDefault(e);
-
-    if (navigator.geolocation) {
-      div.innerHTML =
-        '<a href="#" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">⏳</a>';
-
-      navigator.geolocation.getCurrentPosition(
-        function (position) {
-          div.innerHTML =
-            '<a href="#" title="Find my location" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📍</a>';
-
-          const lat = position.coords.latitude;
-          const lng = position.coords.longitude;
-          const accuracy = position.coords.accuracy;
-
-          // Remove old location marker if exists
-          if (window.userLocationMarker) {
-            map.removeLayer(window.userLocationMarker);
-            if (window.userAccuracyCircle) {
-              map.removeLayer(window.userAccuracyCircle);
-            }
-          }
-
-          // Add accuracy circle
-          window.userAccuracyCircle = L.circle([lat, lng], {
-            radius: accuracy,
-            color: "#3388ff",
-            fillColor: "#3388ff",
-            fillOpacity: 0.15,
-            weight: 2,
-          }).addTo(map);
-
-          // Add marker for your location
-          window.userLocationMarker = L.marker([lat, lng], {
-            icon: L.icon({
-              iconUrl:
-                "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0Ij48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSI4IiBmaWxsPSIjMzM4OGZmIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiLz48Y2lyY2xlIGN4PSIxMiIgY3k9IjEyIiByPSIzIiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==",
-              iconSize: [24, 24],
-              iconAnchor: [12, 12],
-            }),
-          })
-            .addTo(map)
-            .bindPopup(
-              `<b>Your Location</b><br>Accuracy: ±${accuracy.toFixed(0)}m`
-            )
-            .openPopup();
-          map.setView([lat, lng], 16);
-        },
-        function (error) {
-          div.innerHTML =
-            '<a href="#" title="Find my location" style="width:30px;height:30px;line-height:30px;text-align:center;text-decoration:none;font-size:18px;">📍</a>';
-          alert("Unable to get your location: " + error.message);
-        }
-      );
-    } else {
-      alert("Geolocation is not supported by your browser");
-    }
-  });
-
-  return div;
-};
-locateControl.addTo(map);
-
-// ===== 4. MEASURE TOOL (Distance/Area) =====
+// ===== 3. MEASURE TOOL (Distance/Area) =====
 let measurePath = null;
 let measureMarkers = [];
 let isMeasuring = false;
