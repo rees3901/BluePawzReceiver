@@ -73,6 +73,7 @@ const dropdowns = new Set();
 const markers = {};
 const markerVisibility = {};
 const autoCenter = {};
+const markerLastUpdate = {}; // Track last update time for each marker
 // Track which marker is being followed (only one at a time)
 let followedMarkerId = null;
 // Provide globals used by index.html helpers
@@ -509,6 +510,9 @@ function connectWebSocket() {
         const id = data.id;
         const status = data.status || "Unknown";
 
+        // Update last received time for this marker
+        markerLastUpdate[id] = Date.now();
+
         // Create marker card if it doesn't exist
         createMarkerCard(id, status);
 
@@ -613,8 +617,43 @@ function connectWebSocket() {
 
 // Old updateGlobalConsole function removed - now handled in index.html
 
+// Function to check for markers that haven't been updated in 10 minutes
+function checkMarkerTimeouts() {
+  const now = Date.now();
+  const TIMEOUT_THRESHOLD = 10 * 60 * 1000; // 10 minutes in milliseconds
+
+  Object.keys(markers).forEach((id) => {
+    // Don't timeout MyDevice (the receiver's own GPS)
+    if (id === "MyDevice") return;
+
+    const lastUpdate = markerLastUpdate[id];
+    if (lastUpdate && now - lastUpdate > TIMEOUT_THRESHOLD) {
+      // Update to Offline status if not already offline
+      const card = document.getElementById(`dropdown-${id}`);
+      if (card && markers[id]) {
+        // Get current status from card to avoid redundant updates
+        const statusElement = card.querySelector(".status");
+        const currentStatus = statusElement
+          ? statusElement.textContent.trim()
+          : "";
+
+        if (!currentStatus.includes("Offline")) {
+          updateCard(id, "Offline");
+          markers[id].setIcon(getMarkerIcon(id, "Offline"));
+          console.log(
+            `[TIMEOUT] Marker ${id} set to Offline (no update for 10 minutes)`
+          );
+        }
+      }
+    }
+  });
+}
+
 // Start WebSocket connection
 connectWebSocket();
+
+// Check for timed-out markers every 30 seconds
+setInterval(checkMarkerTimeouts, 30000);
 
 // Create MyDevice marker card immediately on page load
 createMarkerCard("MyDevice", "Starting up");

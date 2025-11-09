@@ -500,9 +500,9 @@
       justify-content: center;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
       transition: all 0.3s ease;
-      opacity: 0;
-      visibility: hidden;
-      transform: translateY(20px);
+      opacity: 0.85;
+      visibility: visible;
+      transform: translateY(0);
     }
     
     .scroll-to-top.visible {
@@ -1992,14 +1992,8 @@
     
     const scrollToTopBtn = document.getElementById('scrollToTopBtn');
     
-    // Show/hide scroll to top button based on scroll position
-    window.addEventListener('scroll', () => {
-      if (window.pageYOffset > 300) { // Show after scrolling 300px
-        scrollToTopBtn.classList.add('visible');
-      } else {
-        scrollToTopBtn.classList.remove('visible');
-      }
-    });
+    // Scroll to top button is now always visible
+    // No scroll listener needed
     
     // Scroll to top function with smooth animation
     function scrollToTop() {
