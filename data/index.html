@@ -550,6 +550,15 @@
       gap: 8px;
     }
     
+    .button-row {
+      display: flex;
+      gap: 8px;
+    }
+    
+    .button-row .marker-card-btn {
+      flex: 1;
+    }
+    
     .marker-card-btn {
       padding: 8px 12px;
       border: none;
@@ -827,6 +836,9 @@
   <script src="Leaflet2_minimal.js"></script>
 
   <script>
+    // ===== DEBUG: Verify JavaScript is loading =====
+    console.log('🚀 index.html JavaScript is loading...');
+    
     // Declare and initialize global variables at the top
     // Variables are now defined in Leaflet2.js, no need to redeclare them here
     const MARKER_TIMEOUT = 180000; // 3 minutes in milliseconds
@@ -922,22 +934,7 @@
       }
     }
 
-    document.getElementById('toggleConsoleButton').addEventListener('click', () => {
-      const jsonConsole = document.getElementById('jsonConsole');
-      const toggleBtn = document.getElementById('toggleConsoleButton');
-      if (jsonConsole.style.display === 'none') {
-        jsonConsole.style.display = 'block';
-        toggleBtn.textContent = 'Hide Debug Console';
-        // Update console content when showing
-        if (window.updateGlobalConsole) {
-          window.updateGlobalConsole();
-        }
-        jsonConsole.scrollIntoView({ behavior: 'smooth', block: 'start' }); // Scroll to the JSON console
-      } else {
-        jsonConsole.style.display = 'none';
-        toggleBtn.textContent = 'Show Debug Console';
-      }
-    });
+    // Old toggleConsoleButton removed - functionality now in debug console card
 
     function toggleVisibility(id) {
       markerVisibility[id] = !markerVisibility[id];
@@ -1092,7 +1089,6 @@
     }
 
     <!-- WebSocket handled by Leaflet2.js -->
-    let failedAttempts = 0;
 
     // Enhanced function to update the dropdown icon, status display, and timestamp
     function updateDropdownIcon(id, iconUrl, status) {
@@ -1232,8 +1228,9 @@
       // ... existing marker visibility code ...
     }
 
-    // Toggle all marker cards visibility
-    let allCardsCollapsed = false;
+    // Toggle all marker cards visibility - declare variable first
+    var allCardsCollapsed = false;
+    
     function toggleAllMarkerCards() {
       const container = document.querySelector('.marker-cards-container');
       const btn = document.getElementById('toggleAllCardsBtn');
@@ -1256,24 +1253,56 @@
         btn.classList.add('btn-secondary');
       }
     }
+    
+    // Make function globally accessible
+    window.toggleAllMarkerCards = toggleAllMarkerCards;
 
-    // --- Live connection indicator polling ---
+    // --- Simple connection polling - HTTP GET every 5 seconds ---
+    let failedAttempts = 0;
+    const MAX_ATTEMPTS = 1; // After 1 failed attempt (5 seconds), show disconnected
+    
     function pollConnectionStatus() {
-      fetch('/data', { method: 'GET', cache: 'no-store' })
+      console.log('[Connection Check] Starting poll, current failures:', failedAttempts);
+      
+      fetch('/data', { 
+        method: 'GET',
+        cache: 'no-store'
+      })
         .then(response => {
+          console.log('[Connection Check] Response received:', response.status, response.ok);
           if (response.ok) {
-            updateStatus('Connected✔', 'green');
+            // Connection successful - reset counter
+            failedAttempts = 0;
+            console.log('[Connection Check] ✅ Connected');
+            updateStatus('WiFi/Network Connected: ✔', 'green');
           } else {
-            // Handle HTTP errors (e.g., 404, 500) from the server
-            updateStatus(`Disconnected (Server: ${response.status})❌`, 'red');
+            // Server responded but with error
+            failedAttempts++;
+            console.log('[Connection Check] ⚠️ Server error, failures:', failedAttempts);
+            if (failedAttempts >= MAX_ATTEMPTS) {
+              updateStatus('Disconnected (Server Error)❌', 'red');
+            } else {
+              updateStatus('Attempting Reconnect...⚠️', 'orange');
+            }
           }
         })
-        .catch(() => {
-          // Handle network errors (e.g., server down, no network)
-          updateStatus('Disconnected (Network Error)❌', 'red');
+        .catch((error) => {
+          // Network error - device unreachable
+          failedAttempts++;
+          console.log('[Connection Check] ❌ Fetch failed:', error.message, 'Failures:', failedAttempts);
+          
+          if (failedAttempts >= MAX_ATTEMPTS) {
+            console.log('[Connection Check] 🔴 Device offline after', MAX_ATTEMPTS, 'attempts');
+            updateStatus('Device Offline (No Response)❌', 'red');
+          } else {
+            console.log('[Connection Check] 🟡 Attempting reconnect...');
+            updateStatus('Attempting Reconnect...⚠️', 'orange');
+          }
         });
     }
-    setInterval(pollConnectionStatus, 5000); // Poll every 5 seconds
+    
+    console.log('[Connection Check] Initializing - will poll every 5 seconds');
+    setInterval(pollConnectionStatus, 5000); // Check every 5 seconds
     pollConnectionStatus(); // Run once on page load
     
     // --- Check for aged markers and dim them ---

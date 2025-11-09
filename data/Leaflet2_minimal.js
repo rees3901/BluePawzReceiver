@@ -167,12 +167,14 @@ function createMarkerCard(id, status) {
       </div>
     </div>
     <div class="marker-card-actions">
-      <button class="marker-card-btn btn-jump" onclick="jumpToMarker('${id}')">
-        🎯 Jump to Location
-      </button>
-      <button class="marker-card-btn btn-follow" id="follow-btn-${id}" onclick="toggleFollowMarker('${id}')">
-        📌 Follow: OFF
-      </button>
+      <div class="button-row">
+        <button class="marker-card-btn btn-jump" onclick="jumpToMarker('${id}')">
+          🎯 Jump
+        </button>
+        <button class="marker-card-btn btn-follow" id="follow-btn-${id}" onclick="toggleFollowMarker('${id}')">
+          📌 Follow: OFF
+        </button>
+      </div>
       <button class="marker-card-btn btn-breadcrumb" id="breadcrumb-btn-${id}" onclick="toggleBreadcrumbsCard('${id}')">
         📍 Trail: OFF
       </button>
@@ -419,7 +421,35 @@ function connectWebSocket() {
   window.ws.onopen = () => {
     console.log("WebSocket connected successfully to ESP32");
     console.log("WebSocket readyState:", window.ws.readyState);
+
+    // Update connection status immediately
+    if (window.updateStatus) {
+      window.updateStatus("WiFi/Network Connected: ✔", "green");
+    }
+
     requestBleStatus();
+  };
+
+  window.ws.onerror = (error) => {
+    console.error("WebSocket error:", error);
+    console.log("WebSocket readyState:", window.ws.readyState);
+
+    // Update connection status immediately
+    if (window.updateStatus) {
+      window.updateStatus("WebSocket Error❌", "red");
+    }
+  };
+
+  window.ws.onclose = () => {
+    console.log("WebSocket closed. Attempting to reconnect...");
+    console.log("WebSocket readyState:", window.ws.readyState);
+
+    // Update connection status immediately
+    if (window.updateStatus) {
+      window.updateStatus("Disconnected (Reconnecting...)❌", "red");
+    }
+
+    setTimeout(connectWebSocket, 2000); // Reconnect after 2 seconds
   };
 
   window.ws.onmessage = (event) => {
@@ -564,17 +594,6 @@ function connectWebSocket() {
       console.error("Error processing WebSocket message:", error);
     }
   };
-
-  window.ws.onclose = () => {
-    console.log("WebSocket closed. Attempting to reconnect...");
-    console.log("WebSocket readyState:", window.ws.readyState);
-    setTimeout(connectWebSocket, 5000);
-  };
-
-  window.ws.onerror = (error) => {
-    console.error("WebSocket error:", error);
-    console.log("WebSocket readyState:", window.ws.readyState);
-  };
 }
 
 // Old updateGlobalConsole function removed - now handled in index.html
@@ -584,6 +603,13 @@ connectWebSocket();
 
 // Create MyDevice marker card immediately on page load
 createMarkerCard("MyDevice", "Starting up");
+
+// Enable follow for MyDevice by default after a short delay (to ensure button exists)
+setTimeout(() => {
+  if (window.toggleFollowMarker) {
+    window.toggleFollowMarker("MyDevice");
+  }
+}, 100);
 
 console.log("Minimal Leaflet2.js loaded successfully");
 
