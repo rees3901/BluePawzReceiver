@@ -260,42 +260,22 @@ function updateMarkerCard(id, status, data) {
   const card = document.getElementById(`marker-card-${id}`);
   if (!card) return;
 
-  // Pulse green border 2 times with growing/shrinking effect
-  // Compensate for border growth with negative margin to prevent layout shift
-  let pulseCount = 0;
-  const pulseInterval = setInterval(() => {
-    if (pulseCount % 2 === 0) {
-      // Grow: increase border to 100% larger (6px from 2px = +4px)
-      // Compensate with -4px margin to prevent shifting other elements
-      card.style.borderColor = "#28a745";
-      card.style.borderWidth = "6px";
-      card.style.margin = "-4px";
-      card.style.transition =
-        "border-width 0.25s ease-out, margin 0.25s ease-out";
-    } else {
-      // Shrink: back to normal size
-      card.style.borderColor = "#28a745";
-      card.style.borderWidth = "2px";
-      card.style.margin = "0px";
-      card.style.transition =
-        "border-width 0.25s ease-in, margin 0.25s ease-in";
-    }
-    pulseCount++;
-    if (pulseCount >= 4) {
-      // 2 pulses = 4 toggles (grow-shrink-grow-shrink)
-      clearInterval(pulseInterval);
-      // Return to default border after animation
-      setTimeout(() => {
-        card.style.borderColor = "";
-        card.style.borderWidth = "";
-        card.style.margin = "";
-        card.style.transition = "";
-      }, 250);
-    }
-  }, 250); // 250ms per toggle = 500ms per pulse, total 1 second for 2 pulses
+  // Apply sheen effect to indicate update
+  // Remove any existing sheen animation
+  card.classList.remove("card-sheen");
+  // Force reflow to restart animation
+  void card.offsetWidth;
+  // Add sheen animation class
+  card.classList.add("card-sheen");
+  // Remove class after animation completes
+  setTimeout(() => {
+    card.classList.remove("card-sheen");
+  }, 800);
 
   // Update status class
   card.className = `marker-card status-${status.toLowerCase()}`;
+  // Re-add sheen class (since we just overwrote className)
+  card.classList.add("card-sheen");
 
   // Update status text
   const statusEl = document.getElementById(`card-status-${id}`);
