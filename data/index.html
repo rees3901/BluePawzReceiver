@@ -431,6 +431,248 @@
       border-radius: 50%;
     }
     
+    /* ═══════════════════════════════════════════════════════════ */
+    /* HAMBURGER MENU STYLES */
+    /* ═══════════════════════════════════════════════════════════ */
+    
+    /* Hamburger button - fixed top-left */
+    .hamburger-btn {
+      position: fixed;
+      top: 15px;
+      left: 15px;
+      z-index: 10001;
+      width: 50px;
+      height: 50px;
+      background: white;
+      border: 2px solid #007bff;
+      border-radius: 8px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+      transition: all 0.3s ease;
+    }
+    
+    .hamburger-btn:hover {
+      background: #007bff;
+      transform: scale(1.05);
+    }
+    
+    .hamburger-btn span {
+      width: 30px;
+      height: 3px;
+      background: #007bff;
+      border-radius: 2px;
+      transition: all 0.3s ease;
+    }
+    
+    .hamburger-btn:hover span {
+      background: white;
+    }
+    
+    /* Overlay - dark background when menu is open */
+    .menu-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 9999;
+      opacity: 0;
+      visibility: hidden;
+      transition: all 0.3s ease;
+    }
+    
+    .menu-overlay.active {
+      opacity: 1;
+      visibility: visible;
+    }
+    
+    /* Side menu panel */
+    .side-menu {
+      position: fixed;
+      top: 0;
+      left: -350px;
+      width: 350px;
+      height: 100%;
+      background: white;
+      z-index: 10000;
+      box-shadow: 2px 0 15px rgba(0, 0, 0, 0.3);
+      transition: left 0.3s ease;
+      overflow-y: auto;
+      overflow-x: hidden;
+    }
+    
+    .side-menu.active {
+      left: 0;
+    }
+    
+    .menu-header {
+      background: linear-gradient(135deg, #007bff 0%, #0056b3 100%);
+      color: white;
+      padding: 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 2px solid #0056b3;
+    }
+    
+    .menu-header h2 {
+      margin: 0;
+      font-size: 1.5em;
+      font-weight: 600;
+    }
+    
+    .menu-close-btn {
+      background: transparent;
+      border: none;
+      color: white;
+      font-size: 2em;
+      cursor: pointer;
+      width: 40px;
+      height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      transition: background 0.2s ease;
+    }
+    
+    .menu-close-btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+    
+    .menu-content {
+      padding: 20px;
+    }
+    
+    .menu-section {
+      margin-bottom: 25px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .menu-section:last-child {
+      border-bottom: none;
+    }
+    
+    .menu-section h3 {
+      margin: 0 0 15px 0;
+      font-size: 1.1em;
+      color: #333;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    
+    .menu-item {
+      margin-bottom: 15px;
+    }
+    
+    .menu-item label {
+      display: block;
+      margin-bottom: 5px;
+      font-size: 0.9em;
+      color: #666;
+      font-weight: 500;
+    }
+    
+    .menu-item input[type="range"] {
+      width: 100%;
+      height: 6px;
+      border-radius: 3px;
+      background: #e0e0e0;
+      outline: none;
+      -webkit-appearance: none;
+    }
+    
+    .menu-item input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #007bff;
+      cursor: pointer;
+    }
+    
+    .menu-item input[type="range"]::-moz-range-thumb {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: #007bff;
+      cursor: pointer;
+      border: none;
+    }
+    
+    .menu-btn {
+      width: 100%;
+      padding: 12px;
+      border: none;
+      border-radius: 6px;
+      font-size: 0.95em;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+    }
+    
+    .menu-btn-primary {
+      background: #007bff;
+      color: white;
+    }
+    
+    .menu-btn-primary:hover {
+      background: #0056b3;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 8px rgba(0, 123, 255, 0.3);
+    }
+    
+    .menu-btn-secondary {
+      background: #6c757d;
+      color: white;
+    }
+    
+    .menu-btn-secondary:hover {
+      background: #5a6268;
+    }
+    
+    .menu-btn-danger {
+      background: #dc3545;
+      color: white;
+    }
+    
+    .menu-btn-danger:hover {
+      background: #c82333;
+    }
+    
+    .menu-info {
+      display: flex;
+      justify-content: space-between;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      font-size: 0.9em;
+    }
+    
+    .menu-info-label {
+      color: #666;
+      font-weight: 500;
+    }
+    
+    .menu-info-value {
+      color: #333;
+      font-weight: 600;
+    }
+    
     
     /* Marker Cards Container - Grid Layout with Scrolling */
     .marker-cards-container {
@@ -771,6 +1013,94 @@
   </style>
 </head>
 <body>
+  <!-- Hamburger Menu Button -->
+  <div class="hamburger-btn" onclick="toggleMenu()">
+    <span></span>
+    <span></span>
+    <span></span>
+  </div>
+  
+  <!-- Menu Overlay -->
+  <div class="menu-overlay" onclick="closeMenu()"></div>
+  
+  <!-- Side Menu Panel -->
+  <div class="side-menu">
+    <div class="menu-header">
+      <h2>⚙️ Settings</h2>
+      <button class="menu-close-btn" onclick="closeMenu()">×</button>
+    </div>
+    
+    <div class="menu-content">
+      <!-- Map Settings -->
+      <div class="menu-section">
+        <h3>🗺️ Map Settings</h3>
+        <div class="menu-item">
+          <label for="defaultZoom">Default Zoom Level: <span id="zoomValue">19</span></label>
+          <input type="range" id="defaultZoom" min="10" max="23" value="19" oninput="updateZoomValue(this.value)">
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-secondary" onclick="resetMapView()">🎯 Reset View to Home</button>
+        </div>
+      </div>
+      
+      <!-- Marker Settings -->
+      <div class="menu-section">
+        <h3>📍 Marker Settings</h3>
+        <div class="menu-item">
+          <label for="trailLength">Breadcrumb Trail Length: <span id="trailValue">4</span> points</label>
+          <input type="range" id="trailLength" min="2" max="10" value="4" oninput="updateTrailLength(this.value)">
+        </div>
+      </div>
+      
+      <!-- Data & Logging -->
+      <div class="menu-section">
+        <h3>💾 Data & Logging</h3>
+        <div class="menu-info">
+          <span class="menu-info-label">Messages Logged:</span>
+          <span class="menu-info-value" id="messageCount">—</span>
+        </div>
+        <div class="menu-info">
+          <span class="menu-info-label">Log File Size:</span>
+          <span class="menu-info-value" id="logFileSize">—</span>
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-primary" onclick="exportMessageLog()">📥 Export Message Log</button>
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-danger" onclick="clearMessageLog()">🗑️ Clear Message Log</button>
+        </div>
+      </div>
+      
+      <!-- System Info -->
+      <div class="menu-section">
+        <h3>ℹ️ System Info</h3>
+        <div class="menu-info">
+          <span class="menu-info-label">WiFi Status:</span>
+          <span class="menu-info-value" id="menuWifiStatus">—</span>
+        </div>
+        <div class="menu-info">
+          <span class="menu-info-label">WebSocket:</span>
+          <span class="menu-info-value" id="menuWsStatus">—</span>
+        </div>
+        <div class="menu-info">
+          <span class="menu-info-label">Page Loaded:</span>
+          <span class="menu-info-value" id="pageUptime">—</span>
+        </div>
+      </div>
+      
+      <!-- Developer Tools -->
+      <div class="menu-section">
+        <h3>🛠️ Developer Tools</h3>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-secondary" onclick="scrollToDebugConsole()">📄 View Debug Console</button>
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-secondary" onclick="window.location.href='/data'">📊 View Raw Data (/data)</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  
   <div class="text-center py-2 bg-light main-logo-title">
     <h4>
       <span class="title-favicon">
@@ -1462,6 +1792,133 @@
     // Expose globally
     window.updateDebugConsole = updateDebugConsole;
 
+    // ═══════════════════════════════════════════════════════════
+    // HAMBURGER MENU FUNCTIONS
+    // ═══════════════════════════════════════════════════════════
+    
+    let pageLoadTime = Date.now();
+    
+    function toggleMenu() {
+      const menu = document.querySelector('.side-menu');
+      const overlay = document.querySelector('.menu-overlay');
+      const isActive = menu.classList.contains('active');
+      
+      if (isActive) {
+        closeMenu();
+      } else {
+        menu.classList.add('active');
+        overlay.classList.add('active');
+        updateMenuInfo();
+      }
+    }
+    
+    function closeMenu() {
+      document.querySelector('.side-menu').classList.remove('active');
+      document.querySelector('.menu-overlay').classList.remove('active');
+    }
+    
+    function updateZoomValue(value) {
+      document.getElementById('zoomValue').textContent = value;
+    }
+    
+    function updateTrailLength(value) {
+      document.getElementById('trailValue').textContent = value;
+      // TODO: Apply trail length change to breadcrumb system
+    }
+    
+    function resetMapView() {
+      if (typeof map !== 'undefined') {
+        map.setView(HOME_LOCATION, 19);
+        closeMenu();
+      }
+    }
+    
+    function clearMessageLog() {
+      if (confirm('⚠️ Are you sure you want to clear ALL message logs?\n\nThis will delete the /messages.json file on the device.\nThis action cannot be undone!')) {
+        fetch('/clear-log', { method: 'POST' })
+          .then(response => {
+            if (response.ok) {
+              alert('✅ Message log cleared successfully!');
+              updateMenuInfo();
+            } else {
+              alert('❌ Failed to clear message log');
+            }
+          })
+          .catch(err => {
+            console.error('Failed to clear log:', err);
+            alert('❌ Error: ' + err.message);
+          });
+      }
+    }
+    
+    function scrollToDebugConsole() {
+      const debugConsole = document.querySelector('.debug-console-card');
+      if (debugConsole) {
+        debugConsole.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        closeMenu();
+      }
+    }
+    
+    function updateMenuInfo() {
+      // Update WiFi status
+      const wifiStatus = document.getElementById('menuWifiStatus');
+      const wsStatus = document.getElementById('menuWsStatus');
+      const uptime = document.getElementById('pageUptime');
+      
+      // Check current connection status from status banner
+      const statusBanner = document.getElementById('statusBanner');
+      if (statusBanner) {
+        if (statusBanner.textContent.includes('Connected')) {
+          wifiStatus.textContent = '✅ Connected';
+          wifiStatus.style.color = '#28a745';
+        } else {
+          wifiStatus.textContent = '❌ Offline';
+          wifiStatus.style.color = '#dc3545';
+        }
+      }
+      
+      // Check WebSocket status
+      if (window.ws && window.ws.readyState === 1) {
+        wsStatus.textContent = '✅ Connected';
+        wsStatus.style.color = '#28a745';
+      } else {
+        wsStatus.textContent = '❌ Disconnected';
+        wsStatus.style.color = '#dc3545';
+      }
+      
+      // Calculate uptime
+      const uptimeMs = Date.now() - pageLoadTime;
+      const uptimeMinutes = Math.floor(uptimeMs / 60000);
+      const uptimeSeconds = Math.floor((uptimeMs % 60000) / 1000);
+      uptime.textContent = `${uptimeMinutes}m ${uptimeSeconds}s`;
+      
+      // Fetch log statistics
+      fetch('/messages.json')
+        .then(response => response.json())
+        .then(data => {
+          const messageCount = data.messages ? data.messages.length : 0;
+          document.getElementById('messageCount').textContent = messageCount;
+          
+          // Calculate approximate file size
+          const jsonSize = JSON.stringify(data).length;
+          const sizeKB = (jsonSize / 1024).toFixed(2);
+          document.getElementById('logFileSize').textContent = `${sizeKB} KB`;
+        })
+        .catch(err => {
+          console.warn('Failed to fetch log stats:', err);
+          document.getElementById('messageCount').textContent = 'Error';
+          document.getElementById('logFileSize').textContent = 'Error';
+        });
+    }
+    
+    // Update menu info every 5 seconds when menu is open
+    setInterval(() => {
+      const menu = document.querySelector('.side-menu');
+      if (menu.classList.contains('active')) {
+        updateMenuInfo();
+      }
+    }, 5000);
+
 
     // BLE Toggle Functionality
     const bleToggle = document.getElementById('bleToggle');
@@ -1486,6 +1943,26 @@
     } else {
       console.error('BLE toggle elements not found:', { bleToggle, bleStatus });
     }
+
+    // Export message log function
+    function exportMessageLog() {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      const filename = `cattracker_messages_${timestamp}.json`;
+      
+      // Create download link
+      const link = document.createElement('a');
+      link.href = '/messages.json';
+      link.download = filename;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      
+      console.log(`📥 Downloading message log as: ${filename}`);
+    }
+    
+    // Make function globally accessible
+    window.exportMessageLog = exportMessageLog;
 
   </script>
 

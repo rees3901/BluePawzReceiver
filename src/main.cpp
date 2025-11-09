@@ -15,7 +15,8 @@
 #include <WebServer.h>        // Include the WebServer library for HTTP server
 #include <WebSocketsServer.h> // Include the WebSockets library for WebSocket server
 #include <LittleFS.h>
-#include <map> // Include the map library
+#include <map>    // Include the map library
+#include <vector> // Include for message log buffer
 #include <TinyGPS++.h>
 #include <ESPmDNS.h> // Add mDNS library
 #include <BLEDevice.h>
@@ -82,6 +83,14 @@ unsigned long lastBLEAdvertTime = 0;
 const unsigned long BLE_ADVERT_INTERVAL = 3000; // 5 seconds
 bool bleEnabled = true;                         // BLE beacon control flag
 
+// ───────────── Message Logging Config ─────────────
+#define LOG_FILE_PATH "/messages.json"
+#define MAX_LOG_MESSAGES 500     // Circular buffer size
+#define LOG_FLUSH_INTERVAL 60000 // Flush to file every 60 seconds
+unsigned long lastLogFlushTime = 0;
+std::vector<String> messageLogBuffer; // In-memory buffer
+bool logFileInitialized = false;
+
 // Function declarations
 void notifyClients();
 void notifyPosition(const JsonDocument &doc);
@@ -101,6 +110,14 @@ void LED_flicker();
 void setup();
 void loop();
 
+// Message logging functions
+String getGPSTimestamp();
+void initMessageLog();
+void logMessage(const JsonDocument &doc, const String &type);
+void flushMessageLog();
+void handleMessagesExport();
+void handleClearLog();
+
 // LED flicker function - 5 rapid flashes
 void LED_flicker()
 {
@@ -110,6 +127,223 @@ void LED_flicker()
     delay(50);
     digitalWrite(LORA_LED, LOW);
     delay(50);
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// MESSAGE LOGGING FUNCTIONS
+// ═════════════════════════════════════════════════════════════════════
+
+// Get GPS-based ISO 8601 timestamp, fallback to millis() if GPS invalid
+String getGPSTimestamp()
+{
+  if (gps.time.isValid() && gps.date.isValid())
+  {
+    char timestamp[32];
+    snprintf(timestamp, sizeof(timestamp), "%04d-%02d-%02dT%02d:%02d:%02dZ",
+             gps.date.year(), gps.date.month(), gps.date.day(),
+             gps.time.hour(), gps.time.minute(), gps.time.second());
+    return String(timestamp);
+  }
+  else
+  {
+    // Fallback to millis() if GPS time not valid
+    return String("MILLIS_") + String(millis());
+  }
+}
+
+// Initialize message log file
+void initMessageLog()
+{
+  if (logFileInitialized)
+    return;
+
+  // Check if file exists
+  if (!LittleFS.exists(LOG_FILE_PATH))
+  {
+    Serial.println("[LOG] Creating new message log file");
+    File logFile = LittleFS.open(LOG_FILE_PATH, "w");
+    if (logFile)
+    {
+      // Initialize with empty JSON array
+      logFile.print("{\"device\":\"BluePawzReceiver\",\"messages\":[]}");
+      logFile.close();
+      Serial.println("[LOG] ✅ Message log file created");
+    }
+    else
+    {
+      Serial.println("[LOG] ❌ Failed to create message log file");
+      return;
+    }
+  }
+  else
+  {
+    Serial.println("[LOG] Message log file exists");
+  }
+
+  logFileInitialized = true;
+}
+
+// Add message to in-memory buffer
+void logMessage(const JsonDocument &doc, const String &type)
+{
+  if (!logFileInitialized)
+    return;
+
+  // Create log entry with GPS timestamp
+  JsonDocument logEntry;
+  logEntry["timestamp"] = getGPSTimestamp();
+  logEntry["gps_time_valid"] = gps.time.isValid() && gps.date.isValid();
+  logEntry["type"] = type; // "lora", "mydevice", "event"
+
+  // Copy all fields from original message
+  JsonObjectConst sourceObj = doc.as<JsonObjectConst>();
+  for (JsonPairConst kv : sourceObj)
+  {
+    logEntry[kv.key()] = kv.value();
+  }
+
+  // Serialize to string and add to buffer
+  String jsonString;
+  serializeJson(logEntry, jsonString);
+  messageLogBuffer.push_back(jsonString);
+
+  Serial.printf("[LOG] Buffered message (type=%s, buffer size=%d)\n",
+                type.c_str(), messageLogBuffer.size());
+
+  // If buffer is getting large, flush immediately
+  if (messageLogBuffer.size() >= MAX_LOG_MESSAGES)
+  {
+    Serial.println("[LOG] ⚠️ Buffer full, flushing now...");
+    flushMessageLog();
+  }
+}
+
+// Flush in-memory buffer to LittleFS (circular buffer with max messages)
+void flushMessageLog()
+{
+  if (messageLogBuffer.empty() || !logFileInitialized)
+    return;
+
+  Serial.printf("[LOG] Flushing %d messages to file...\n", messageLogBuffer.size());
+
+  // Read existing log file
+  File logFile = LittleFS.open(LOG_FILE_PATH, "r");
+  if (!logFile)
+  {
+    Serial.println("[LOG] ❌ Failed to open log file for reading");
+    return;
+  }
+
+  JsonDocument existingDoc;
+  DeserializationError error = deserializeJson(existingDoc, logFile);
+  logFile.close();
+
+  if (error)
+  {
+    Serial.printf("[LOG] ❌ Failed to parse existing log: %s\n", error.c_str());
+    // Recreate file if corrupted
+    initMessageLog();
+    messageLogBuffer.clear();
+    return;
+  }
+
+  // Get existing messages array
+  JsonArray messages = existingDoc["messages"].as<JsonArray>();
+
+  // Add new messages from buffer
+  for (const String &msgStr : messageLogBuffer)
+  {
+    JsonDocument msgDoc;
+    if (deserializeJson(msgDoc, msgStr) == DeserializationError::Ok)
+    {
+      messages.add(msgDoc.as<JsonObject>());
+    }
+  }
+
+  // Implement circular buffer - keep only last MAX_LOG_MESSAGES
+  while (messages.size() > MAX_LOG_MESSAGES)
+  {
+    messages.remove(0); // Remove oldest message
+  }
+
+  // Write back to file
+  logFile = LittleFS.open(LOG_FILE_PATH, "w");
+  if (!logFile)
+  {
+    Serial.println("[LOG] ❌ Failed to open log file for writing");
+    return;
+  }
+
+  serializeJson(existingDoc, logFile);
+  logFile.close();
+
+  Serial.printf("[LOG] ✅ Flushed successfully. Total messages in file: %d\n", messages.size());
+
+  // Clear buffer
+  messageLogBuffer.clear();
+  lastLogFlushTime = millis();
+}
+
+// HTTP handler for exporting messages.json
+void handleMessagesExport()
+{
+  // Flush any pending messages first
+  flushMessageLog();
+
+  if (!LittleFS.exists(LOG_FILE_PATH))
+  {
+    server.send(404, "text/plain", "Message log not found");
+    return;
+  }
+
+  File logFile = LittleFS.open(LOG_FILE_PATH, "r");
+  if (!logFile)
+  {
+    server.send(500, "text/plain", "Failed to open message log");
+    return;
+  }
+
+  // Stream file to client with proper headers for download
+  server.sendHeader("Content-Disposition", "attachment; filename=messages.json");
+  server.streamFile(logFile, "application/json");
+  logFile.close();
+
+  Serial.println("[LOG] 📥 Message log exported to client");
+}
+
+// HTTP handler for clearing message log
+void handleClearLog()
+{
+  // Flush any pending messages first
+  flushMessageLog();
+
+  // Delete the log file
+  if (LittleFS.exists(LOG_FILE_PATH))
+  {
+    if (LittleFS.remove(LOG_FILE_PATH))
+    {
+      Serial.println("[LOG] 🗑️ Message log cleared");
+
+      // Reinitialize the log file
+      logFileInitialized = false;
+      initMessageLog();
+
+      server.send(200, "text/plain", "Message log cleared successfully");
+    }
+    else
+    {
+      Serial.println("[LOG] ❌ Failed to delete log file");
+      server.send(500, "text/plain", "Failed to delete log file");
+    }
+  }
+  else
+  {
+    Serial.println("[LOG] ⚠️ Log file does not exist");
+    // Create new empty log file
+    logFileInitialized = false;
+    initMessageLog();
+    server.send(200, "text/plain", "No log file to clear, created new empty log");
   }
 }
 
@@ -217,6 +451,9 @@ void handleLoRaPacket()
         serializeJsonPretty(doc, Serial);
         Serial.println();
 
+        // Log LoRa message to file
+        logMessage(doc, "lora");
+
         notifyPosition(doc); // Send the doc *with* the added timestamp
       }
       else
@@ -314,6 +551,10 @@ void handleDeviceOwnGPS()
     deviceLocation["received_at"] = millis();
 
     Serial.println("[GPS] Sending MyDevice update");
+
+    // Log MyDevice GPS update
+    logMessage(deviceLocation, "mydevice");
+
     notifyPosition(deviceLocation);     // Send as regular marker position
     lastDeviceGPSUpdateTime = millis(); // Reset timer after sending update
   }
@@ -355,6 +596,12 @@ void checkWiFiConnection()
     {
       Serial.println("[WIFI] Connection lost");
       isWiFiConnected = false;
+
+      // Log WiFi disconnect event
+      JsonDocument eventDoc;
+      eventDoc["event"] = "wifi_disconnected";
+      eventDoc["description"] = "WiFi connection lost";
+      logMessage(eventDoc, "event");
     }
     Serial.print("[WIFI] Reconnecting...");
     WiFi.reconnect();
@@ -370,6 +617,12 @@ void checkWiFiConnection()
       isWiFiConnected = true;
       Serial.println("\n[WIFI] Reconnected!");
       Serial.println(WiFi.localIP());
+
+      // Log WiFi reconnect event
+      JsonDocument eventDoc;
+      eventDoc["event"] = "wifi_reconnected";
+      eventDoc["description"] = "WiFi connection restored";
+      logMessage(eventDoc, "event");
     }
   }
 }
@@ -571,6 +824,8 @@ void setup()
   delay(3000); // Give time for the filesystem to settle and viewthe setup messages
   server.on("/", HTTP_GET, handleRoot);
   server.on("/data", HTTP_GET, handleData);
+  server.on("/messages.json", HTTP_GET, handleMessagesExport);
+  server.on("/clear-log", HTTP_POST, handleClearLog);
   server.serveStatic("/", LittleFS, "/");
   server.begin();
   Serial.println("[INFO] HTTP server started");
@@ -622,6 +877,9 @@ void setup()
 
   setupGPS();
 
+  // Initialize message logging system
+  initMessageLog();
+
   // Flash builtin LED 5 times to indicate setup complete
   Serial.println("[BOOT] Setup complete - signaling ready");
   for (int i = 0; i < 5; i++)
@@ -668,6 +926,12 @@ void loop()
 
   // Handle LoRa packets
   handleLoRaPacket();
+
+  // Periodic flush of message log to LittleFS
+  if (millis() - lastLogFlushTime >= LOG_FLUSH_INTERVAL)
+  {
+    flushMessageLog();
+  }
 
   // No periodic re-advertising; BLE continues advertising until explicitly stopped/started
 }
