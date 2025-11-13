@@ -82,10 +82,10 @@ window.breadcrumbLines = window.breadcrumbLines || {};
 
 // Basic marker icon function
 function getMarkerIcon(id, status) {
-  // Special handling for MyDevice - use Device_Marker.png
+  // Special handling for MyDevice - use Device_Marker.avif
   if (id === "MyDevice") {
     return L.icon({
-      iconUrl: `/icons/Device_Marker.png`,
+      iconUrl: `/icons/Device_Marker.avif`,
       iconSize: [32, 32],
       iconAnchor: [16, 32],
       popupAnchor: [0, -32],
@@ -114,7 +114,7 @@ function getMarkerIcon(id, status) {
   }
 
   return L.icon({
-    iconUrl: `/icons/${baseId}_Marker_${iconStatus}.png`,
+    iconUrl: `/icons/${baseId}_Marker_${iconStatus}.avif`,
     iconSize: [32, 32],
     iconAnchor: [16, 32],
     popupAnchor: [0, -32],
@@ -139,8 +139,8 @@ function createMarkerCard(id, status) {
   // Special handling for MyDevice card icon
   const iconUrl =
     id === "MyDevice"
-      ? `/icons/Device_Marker.png`
-      : `/icons/${KNOWN_CATS.includes(id) ? id : "generic"}_Marker_Home.png`;
+      ? `/icons/Device_Marker.avif`
+      : `/icons/${KNOWN_CATS.includes(id) ? id : "generic"}_Marker_Home.avif`;
 
   const statusClass = status
     ? `status-${status.toLowerCase()}`
@@ -304,7 +304,7 @@ function updateMarkerCard(id, status, data) {
   }
   const iconEl = document.getElementById(`card-icon-${id}`);
   if (iconEl) {
-    iconEl.src = `/icons/${baseId}_Marker_${iconStatus}.png`;
+    iconEl.src = `/icons/${baseId}_Marker_${iconStatus}.avif`;
   }
 
   // Add message to history (keep last 5)
