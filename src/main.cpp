@@ -11,6 +11,7 @@
 #include <RadioLib.h>
 #include <ArduinoJson.h>
 #include <secrets.h> // Include your secrets.h file for WiFi credentials
+#include <config.h>  // Shared configuration with TX nodes
 #include <WiFi.h>
 #include <WebServer.h>        // Include the WebServer library for HTTP server
 #include <WebSocketsServer.h> // Include the WebSockets library for WebSocket server
@@ -91,6 +92,33 @@ unsigned long lastLogFlushTime = 0;
 std::vector<String> messageLogBuffer; // In-memory buffer
 bool logFileInitialized = false;
 
+// ───────────── Node State Tracking (Operating Modes) ─────────────
+struct NodeState
+{
+  String deviceId;
+  String currentMode = "unknown";
+  int8_t txPower = 0;
+  uint16_t sleepInterval = 0;
+  uint32_t lastSeen = 0;          // millis() timestamp
+  uint32_t lostModeStartTime = 0; // millis() when lost mode activated (0 = not in lost mode)
+  bool modeKnown = false;
+};
+
+std::map<String, NodeState> nodeStates; // Track state of each TX node
+
+// ───────────── LoRa Command Queue ─────────────
+struct LoRaCommand
+{
+  String targetDevice; // Device ID or "broadcast"
+  String jsonCommand;  // JSON command string
+  uint32_t timestamp;  // When command was queued
+};
+
+std::vector<LoRaCommand> commandQueue;
+bool loraTransmitting = false;
+unsigned long lastCommandTxTime = 0;
+const unsigned long COMMAND_TX_INTERVAL = 3000; // 3 seconds between command transmissions
+
 // Function declarations
 void notifyClients();
 void notifyPosition(const JsonDocument &doc);
@@ -117,6 +145,17 @@ void logMessage(const JsonDocument &doc, const String &type);
 void flushMessageLog();
 void handleMessagesExport();
 void handleClearLog();
+
+// Node state and command functions
+void updateNodeState(const JsonDocument &doc);
+void queueCommand(const String &deviceId, const String &command);
+void processCommandQueue();
+void sendModeCommand(const String &deviceId, const String &profile);
+void sendStatusRequest(const String &deviceId);
+void handleNodeResponse(const JsonDocument &doc);
+void handleNodeStates();    // HTTP handler for /node-states
+void handleSendCommand();   // HTTP handler for /send-command
+void broadcastNodeStates(); // WebSocket broadcast of node states
 
 // LED flicker function - 5 rapid flashes
 void LED_flicker()
@@ -347,6 +386,360 @@ void handleClearLog()
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// NODE STATE TRACKING AND COMMAND FUNCTIONS
+// ═════════════════════════════════════════════════════════════════════
+
+// Update node state based on received message or ACK
+void updateNodeState(const JsonDocument &doc)
+{
+  String deviceId = "";
+
+  // Extract device ID from various possible fields
+  if (doc["id"].is<String>())
+  {
+    deviceId = doc["id"].as<String>();
+  }
+  else if (doc["device"].is<String>())
+  {
+    deviceId = doc["device"].as<String>();
+  }
+
+  if (deviceId.isEmpty() || deviceId == "MyDevice")
+  {
+    return; // Don't track base station's own device
+  }
+
+  // Get or create node state
+  NodeState &state = nodeStates[deviceId];
+  state.deviceId = deviceId;
+  state.lastSeen = millis();
+
+  // Check if this is an ACK response
+  if (doc["ack"].is<String>() && doc["ack"].as<String>() == "mode")
+  {
+    // Mode change acknowledgment
+    if (doc["profile"].is<String>())
+    {
+      state.currentMode = doc["profile"].as<String>();
+      state.modeKnown = true;
+    }
+    if (doc["power"].is<int>())
+    {
+      state.txPower = doc["power"].as<int>();
+    }
+    if (doc["sleep"].is<int>())
+    {
+      state.sleepInterval = doc["sleep"].as<int>();
+    }
+
+    // Track lost mode activation
+    if (state.currentMode == "lost" && state.lostModeStartTime == 0)
+    {
+      state.lostModeStartTime = millis();
+    }
+    else if (state.currentMode != "lost")
+    {
+      state.lostModeStartTime = 0; // Reset if exiting lost mode
+    }
+
+    Serial.printf("[NODE] %s confirmed mode: %s (Power: %ddBm, Sleep: %ds)\n",
+                  deviceId.c_str(), state.currentMode.c_str(),
+                  state.txPower, state.sleepInterval);
+
+    // Broadcast state update via WebSocket
+    broadcastNodeStates();
+  }
+  // Check if this is a status response
+  else if (doc["status"].is<String>() && doc["mode"].is<String>())
+  {
+    // Status query response
+    state.currentMode = doc["mode"].as<String>();
+    state.modeKnown = true;
+
+    if (doc["power"].is<int>())
+    {
+      state.txPower = doc["power"].as<int>();
+    }
+    if (doc["sleep"].is<int>())
+    {
+      state.sleepInterval = doc["sleep"].as<int>();
+    }
+
+    if (doc["lost_mode_s"].is<int>())
+    {
+      // Lost mode is active, calculate start time
+      uint32_t elapsedSecs = doc["lost_mode_s"].as<int>();
+      state.lostModeStartTime = millis() - (elapsedSecs * 1000);
+    }
+    else
+    {
+      state.lostModeStartTime = 0;
+    }
+
+    Serial.printf("[NODE] %s status: mode=%s, power=%ddBm, sleep=%ds\n",
+                  deviceId.c_str(), state.currentMode.c_str(),
+                  state.txPower, state.sleepInterval);
+
+    // Broadcast state update via WebSocket
+    broadcastNodeStates();
+  }
+  // Check for lost mode timeout alert
+  else if (doc["alert"].is<String>() && doc["alert"].as<String>() == "lost_mode_timeout")
+  {
+    Serial.printf("[NODE] ⚠️ %s lost mode timed out - auto-reverted to %s\n",
+                  deviceId.c_str(), doc["new_mode"].as<String>().c_str());
+
+    state.currentMode = doc["new_mode"].as<String>();
+    state.lostModeStartTime = 0;
+    state.modeKnown = true;
+
+    // Broadcast alert via WebSocket
+    JsonDocument alertDoc;
+    alertDoc["type"] = "node_alert";
+    alertDoc["device"] = deviceId;
+    alertDoc["alert"] = "lost_mode_timeout";
+    alertDoc["new_mode"] = doc["new_mode"].as<String>();
+    alertDoc["duration_s"] = doc["duration_s"].as<int>();
+
+    String alertJson;
+    serializeJson(alertDoc, alertJson);
+    webSocket.broadcastTXT(alertJson);
+
+    broadcastNodeStates();
+  }
+}
+
+// Queue a command to be transmitted via LoRa
+void queueCommand(const String &deviceId, const String &command)
+{
+  LoRaCommand cmd;
+  cmd.targetDevice = deviceId;
+  cmd.jsonCommand = command;
+  cmd.timestamp = millis();
+
+  commandQueue.push_back(cmd);
+
+  Serial.printf("[CMD] Queued for %s: %s\n", deviceId.c_str(), command.c_str());
+}
+
+// Process command queue and transmit via LoRa
+void processCommandQueue()
+{
+  // Rate limit command transmission
+  if (loraTransmitting || millis() - lastCommandTxTime < COMMAND_TX_INTERVAL)
+  {
+    return;
+  }
+
+  if (commandQueue.empty())
+  {
+    return;
+  }
+
+  // Get next command
+  LoRaCommand cmd = commandQueue.front();
+  commandQueue.erase(commandQueue.begin());
+
+  Serial.printf("[LoRa] Transmitting command to %s: %s\n",
+                cmd.targetDevice.c_str(), cmd.jsonCommand.c_str());
+
+  // Switch LoRa to standby before transmit
+  lora.standby();
+
+  // Transmit command
+  int state = lora.transmit(cmd.jsonCommand);
+
+  if (state == RADIOLIB_ERR_NONE)
+  {
+    Serial.println("[LoRa] ✅ Command transmitted successfully");
+
+    // Flash LoRa LED to indicate TX
+    LED_flicker();
+
+    // Log command transmission
+    JsonDocument cmdDoc;
+    cmdDoc["event"] = "command_sent";
+    cmdDoc["target"] = cmd.targetDevice;
+    cmdDoc["command"] = cmd.jsonCommand;
+    logMessage(cmdDoc, "event");
+  }
+  else
+  {
+    Serial.printf("[LoRa] ❌ Command transmission failed: %d\n", state);
+
+    // Log failure
+    JsonDocument cmdDoc;
+    cmdDoc["event"] = "command_failed";
+    cmdDoc["target"] = cmd.targetDevice;
+    cmdDoc["command"] = cmd.jsonCommand;
+    cmdDoc["error_code"] = state;
+    logMessage(cmdDoc, "event");
+  }
+
+  // Return to receive mode
+  lora.startReceive();
+
+  lastCommandTxTime = millis();
+  loraTransmitting = false;
+}
+
+// Send mode change command to a specific node
+void sendModeCommand(const String &deviceId, const String &profile)
+{
+  // Validate profile name
+  const OperatingMode *mode = getModeByName(profile.c_str());
+  if (mode == nullptr)
+  {
+    Serial.printf("[CMD] ❌ Invalid profile: %s\n", profile.c_str());
+    return;
+  }
+
+  // Build command JSON
+  JsonDocument cmdDoc;
+  cmdDoc["cmd"] = "mode";
+  cmdDoc["profile"] = profile;
+
+  String cmdJson;
+  serializeJson(cmdDoc, cmdJson);
+
+  // Queue command for transmission
+  queueCommand(deviceId, cmdJson);
+
+  Serial.printf("[CMD] Mode change queued: %s -> %s\n",
+                deviceId.c_str(), profile.c_str());
+}
+
+// Send status request to a specific node
+void sendStatusRequest(const String &deviceId)
+{
+  JsonDocument cmdDoc;
+  cmdDoc["cmd"] = "get_status";
+
+  String cmdJson;
+  serializeJson(cmdDoc, cmdJson);
+
+  queueCommand(deviceId, cmdJson);
+
+  Serial.printf("[CMD] Status request queued for: %s\n", deviceId.c_str());
+}
+
+// HTTP handler: Get node states as JSON
+void handleNodeStates()
+{
+  JsonDocument doc;
+  JsonArray nodes = doc.to<JsonArray>();
+
+  for (auto &pair : nodeStates)
+  {
+    NodeState &state = pair.second;
+
+    JsonObject node = nodes.add<JsonObject>();
+    node["device"] = state.deviceId;
+    node["mode"] = state.currentMode;
+    node["power"] = state.txPower;
+    node["sleep"] = state.sleepInterval;
+    node["last_seen"] = state.lastSeen;
+    node["mode_known"] = state.modeKnown;
+
+    // Calculate lost mode remaining time if applicable
+    if (state.lostModeStartTime > 0)
+    {
+      uint32_t elapsedMs = millis() - state.lostModeStartTime;
+      uint32_t elapsedSecs = elapsedMs / 1000;
+      uint32_t remainingSecs = 0;
+
+      if (elapsedSecs < LOST_MODE_MAX_DURATION_S)
+      {
+        remainingSecs = LOST_MODE_MAX_DURATION_S - elapsedSecs;
+      }
+
+      node["lost_mode_elapsed_s"] = elapsedSecs;
+      node["lost_mode_remaining_s"] = remainingSecs;
+    }
+  }
+
+  String output;
+  serializeJson(doc, output);
+  server.send(200, "application/json", output);
+}
+
+// HTTP handler: Send command to node
+void handleSendCommand()
+{
+  if (!server.hasArg("device") || !server.hasArg("action"))
+  {
+    server.send(400, "text/plain", "Missing parameters: device, action");
+    return;
+  }
+
+  String deviceId = server.arg("device");
+  String action = server.arg("action");
+
+  if (action == "status")
+  {
+    sendStatusRequest(deviceId);
+    server.send(200, "text/plain", "Status request queued");
+  }
+  else if (action == "mode")
+  {
+    if (!server.hasArg("profile"))
+    {
+      server.send(400, "text/plain", "Missing parameter: profile");
+      return;
+    }
+
+    String profile = server.arg("profile");
+    sendModeCommand(deviceId, profile);
+    server.send(200, "text/plain", "Mode change command queued");
+  }
+  else
+  {
+    server.send(400, "text/plain", "Invalid action");
+  }
+}
+
+// Broadcast node states via WebSocket
+void broadcastNodeStates()
+{
+  JsonDocument doc;
+  doc["type"] = "node_states";
+
+  JsonArray nodes = doc["nodes"].to<JsonArray>();
+
+  for (auto &pair : nodeStates)
+  {
+    NodeState &state = pair.second;
+
+    JsonObject node = nodes.add<JsonObject>();
+    node["device"] = state.deviceId;
+    node["mode"] = state.currentMode;
+    node["power"] = state.txPower;
+    node["sleep"] = state.sleepInterval;
+    node["last_seen"] = state.lastSeen;
+    node["mode_known"] = state.modeKnown;
+
+    if (state.lostModeStartTime > 0)
+    {
+      uint32_t elapsedMs = millis() - state.lostModeStartTime;
+      uint32_t elapsedSecs = elapsedMs / 1000;
+      uint32_t remainingSecs = 0;
+
+      if (elapsedSecs < LOST_MODE_MAX_DURATION_S)
+      {
+        remainingSecs = LOST_MODE_MAX_DURATION_S - elapsedSecs;
+      }
+
+      node["lost_mode_elapsed_s"] = elapsedSecs;
+      node["lost_mode_remaining_s"] = remainingSecs;
+    }
+  }
+
+  String output;
+  serializeJson(doc, output);
+  webSocket.broadcastTXT(output);
+}
+
 // Improve WebSocket notification with connection tracking
 
 void onReceive()
@@ -453,6 +846,9 @@ void handleLoRaPacket()
 
         // Log LoRa message to file
         logMessage(doc, "lora");
+
+        // Update node state tracking
+        updateNodeState(doc);
 
         notifyPosition(doc); // Send the doc *with* the added timestamp
       }
@@ -826,6 +1222,8 @@ void setup()
   server.on("/data", HTTP_GET, handleData);
   server.on("/messages.json", HTTP_GET, handleMessagesExport);
   server.on("/clear-log", HTTP_POST, handleClearLog);
+  server.on("/node-states", HTTP_GET, handleNodeStates);    // Get node operating modes
+  server.on("/send-command", HTTP_POST, handleSendCommand); // Send command to node
   server.serveStatic("/", LittleFS, "/");
   server.begin();
   Serial.println("[INFO] HTTP server started");
@@ -926,6 +1324,9 @@ void loop()
 
   // Handle LoRa packets
   handleLoRaPacket();
+
+  // Process command queue for LoRa transmission
+  processCommandQueue();
 
   // Periodic flush of message log to LittleFS
   if (millis() - lastLogFlushTime >= LOG_FLUSH_INTERVAL)

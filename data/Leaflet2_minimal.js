@@ -4,7 +4,7 @@ const HOME_LOCATION = [51.87378215701798, -2.239428653198173];
 // Initialize the map with minimal configuration
 const map = L.map("map", {
   center: HOME_LOCATION,
-  zoom: 19,
+  zoom: 15,
   maxZoom: 23,
 });
 
@@ -182,6 +182,25 @@ function createMarkerCard(id, status) {
       <button class="marker-card-btn btn-console" onclick="toggleConsoleCard('${id}')">
         📄 Message Log
       </button>
+      ${
+        id !== "MyDevice"
+          ? `
+      <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #dee2e6;">
+        <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
+          <select class="node-mode-select" id="card-mode-select-${id}" style="flex: 1; font-size: 0.85em;">
+            <option value="normal">Normal</option>
+            <option value="active">Active</option>
+            <option value="powersave">Powersave</option>
+            <option value="lost">Lost</option>
+          </select>
+          <button class="node-btn node-btn-apply" onclick="window.sendModeChange('${id}')" style="padding: 6px 10px;">✓</button>
+          <button class="node-btn node-btn-status" onclick="window.requestNodeStatus('${id}')" style="padding: 6px 10px;">🔄</button>
+        </div>
+        <div id="card-mode-status-${id}" style="font-size: 0.8em; color: #666; text-align: center;"></div>
+      </div>
+      `
+          : ""
+      }
     </div>
     <div class="marker-card-console" id="console-${id}">
       <div class="console-messages" id="console-messages-${id}">
@@ -484,6 +503,14 @@ function connectWebSocket() {
         console.log("BLE state update received:", data);
         handleBleState(data);
         return; // Don't process as position data
+      }
+
+      // Handle node state updates (Command & Control)
+      if (data.type === "node_states" || data.type === "node_alert") {
+        if (window.handleNodeStateUpdate) {
+          window.handleNodeStateUpdate(data);
+        }
+        // Don't return - position data may also be present
       }
 
       if (data.id) {

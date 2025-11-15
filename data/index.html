@@ -724,6 +724,149 @@
       font-weight: 600;
     }
     
+    /* Node Control Styles */
+    .node-control-item {
+      background: #f8f9fa;
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 12px;
+      border-left: 4px solid #6c757d;
+      transition: all 0.2s ease;
+    }
+    
+    .node-control-item:hover {
+      background: #e9ecef;
+      transform: translateX(2px);
+    }
+    
+    .node-control-item.mode-normal {
+      border-left-color: #007bff;
+    }
+    
+    .node-control-item.mode-active {
+      border-left-color: #28a745;
+    }
+    
+    .node-control-item.mode-powersave {
+      border-left-color: #ffc107;
+    }
+    
+    .node-control-item.mode-lost {
+      border-left-color: #dc3545;
+      background: #fff5f5;
+    }
+    
+    .node-control-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    
+    .node-name {
+      font-weight: 600;
+      font-size: 1em;
+      color: #333;
+    }
+    
+    .node-mode-badge {
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 0.75em;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: white;
+    }
+    
+    .node-mode-badge.mode-normal {
+      background: #007bff;
+    }
+    
+    .node-mode-badge.mode-active {
+      background: #28a745;
+    }
+    
+    .node-mode-badge.mode-powersave {
+      background: #ffc107;
+      color: #333;
+    }
+    
+    .node-mode-badge.mode-lost {
+      background: #dc3545;
+    }
+    
+    .node-mode-badge.mode-unknown {
+      background: #6c757d;
+    }
+    
+    .node-info {
+      font-size: 0.8em;
+      color: #666;
+      margin-bottom: 8px;
+    }
+    
+    .node-last-seen {
+      display: inline-block;
+      margin-right: 10px;
+    }
+    
+    .node-warning {
+      color: #dc3545;
+      font-weight: 600;
+      margin-top: 4px;
+      font-size: 0.85em;
+    }
+    
+    .node-controls {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+    
+    .node-mode-select {
+      flex: 1;
+      padding: 6px 8px;
+      border: 1px solid #ced4da;
+      border-radius: 4px;
+      font-size: 0.85em;
+      background: white;
+      cursor: pointer;
+    }
+    
+    .node-btn {
+      padding: 6px 12px;
+      border: none;
+      border-radius: 4px;
+      font-size: 0.8em;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+    }
+    
+    .node-btn-status {
+      background: #17a2b8;
+      color: white;
+    }
+    
+    .node-btn-status:hover {
+      background: #138496;
+    }
+    
+    .node-btn-apply {
+      background: #28a745;
+      color: white;
+    }
+    
+    .node-btn-apply:hover {
+      background: #218838;
+    }
+    
+    .node-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
     
     /* Marker Cards Container - Grid Layout with Scrolling */
     .marker-cards-container {
@@ -1131,6 +1274,21 @@
         </div>
       </div>
       
+      <!-- BLE Beacon Control -->
+      <div class="menu-section">
+        <h3>📶 BLE Beacon</h3>
+        <div class="menu-item" style="justify-content: space-between; align-items: center;">
+          <span class="menu-info-label">Beacon Status:</span>
+          <label class="ble-toggle-label" style="margin: 0;">
+            <label class="switch">
+              <input type="checkbox" id="bleToggle" checked>
+              <span class="slider round"></span>
+            </label>
+            <span id="bleStatus">ON</span>
+          </label>
+        </div>
+      </div>
+      
       <!-- Marker Settings -->
       <div class="menu-section">
         <h3>📍 Marker Settings</h3>
@@ -1176,6 +1334,16 @@
         </div>
       </div>
       
+      <!-- Command & Control -->
+      <div class="menu-section">
+        <h3>📡 Command & Control</h3>
+        <div id="nodeControlList" style="max-height: 300px; overflow-y: auto;">
+          <div style="color: #999; text-align: center; padding: 20px; font-size: 0.9em;">
+            Waiting for node data...
+          </div>
+        </div>
+      </div>
+      
       <!-- Developer Tools -->
       <div class="menu-section">
         <h3>🛠️ Developer Tools</h3>
@@ -1201,18 +1369,6 @@
     </h4>
   </div>
   <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</div>
-  
-  <!-- BLE Beacon Control -->
-  <div class="ble-control-wrapper" style="text-align: center; margin: 10px;">
-    <label class="ble-toggle-label">
-      📶 BLE Beacon: 
-      <label class="switch">
-        <input type="checkbox" id="bleToggle" checked>
-        <span class="slider round"></span>
-      </label>
-      <span id="bleStatus">ON</span>
-    </label>
-  </div>
   
   <!-- Marker Cards Control -->
   <div style="text-align: center; margin: 10px;">
@@ -2080,6 +2236,269 @@
     
     // Make function globally accessible
     window.exportMessageLog = exportMessageLog;
+
+    // ═══════════════════════════════════════════════════════════
+    // COMMAND & CONTROL - NODE STATE MANAGEMENT
+    // ═══════════════════════════════════════════════════════════
+    
+    let nodeStates = {};
+    let commandPending = {};
+    
+    // Helper: Get cat-specific icon URL based on device ID
+    function getIconForNode(deviceId) {
+      const knownCats = ['Podge', 'Macy', 'Gizmo', 'Simba'];
+      if (deviceId === 'MyDevice') {
+        return '/icons/Device_Marker.avif';
+      }
+      const baseId = knownCats.includes(deviceId) ? deviceId : 'generic';
+      return `/icons/${baseId}_Marker_Home.avif`;
+    }
+    
+    // Fetch and display node states
+    function updateNodeControl() {
+      fetch('/node-states')
+        .then(response => response.json())
+        .then(nodes => {
+          const container = document.getElementById('nodeControlList');
+          
+          if (!nodes || nodes.length === 0) {
+            container.innerHTML = '<div style="color: #999; text-align: center; padding: 20px; font-size: 0.9em;">No nodes detected yet...</div>';
+            return;
+          }
+          
+          // Store node states
+          nodes.forEach(node => {
+            nodeStates[node.device] = node;
+          });
+          
+          // Build node control UI
+          container.innerHTML = nodes.map(node => {
+            const modeClass = `mode-${node.mode_known ? node.mode : 'unknown'}`;
+            const lastSeenMs = Date.now() - node.last_seen;
+            const lastSeenText = formatTimeSince(lastSeenMs);
+            const iconUrl = getIconForNode(node.device);
+            
+            let warningText = '';
+            if (node.mode === 'lost' && node.lost_mode_remaining_s !== undefined) {
+              const remainingMin = Math.floor(node.lost_mode_remaining_s / 60);
+              const remainingSec = node.lost_mode_remaining_s % 60;
+              warningText = `<div class="node-warning">⚠️ Lost mode: ${remainingMin}m ${remainingSec}s remaining</div>`;
+            }
+            
+            return `
+              <div class="node-control-item ${modeClass}" id="node-${node.device}">
+                <div class="node-control-header">
+                  <img src="${iconUrl}" alt="${node.device}" style="width: 24px; height: 24px; margin-right: 8px; border-radius: 50%;">
+                  <span class="node-name">${node.device}</span>
+                  <span class="node-mode-badge ${modeClass}">${node.mode_known ? node.mode : 'unknown'}</span>
+                </div>
+                <div class="node-info">
+                  <span class="node-last-seen">Last seen: ${lastSeenText}</span>
+                  ${node.power > 0 ? `<span>| ${node.power}dBm</span>` : ''}
+                  ${node.sleep > 0 ? `<span>| ${Math.floor(node.sleep / 60)}m sleep</span>` : ''}
+                </div>
+                ${warningText}
+                <div class="node-controls">
+                  <select class="node-mode-select" id="mode-select-${node.device}">
+                    <option value="normal" ${node.mode === 'normal' ? 'selected' : ''}>Normal</option>
+                    <option value="active" ${node.mode === 'active' ? 'selected' : ''}>Active</option>
+                    <option value="powersave" ${node.mode === 'powersave' ? 'selected' : ''}>Powersave</option>
+                    <option value="lost" ${node.mode === 'lost' ? 'selected' : ''}>Lost</option>
+                  </select>
+                  <button class="node-btn node-btn-apply" 
+                          onclick="sendModeChange('${node.device}')" 
+                          id="apply-btn-${node.device}"
+                          ${commandPending[node.device] ? 'disabled' : ''}>
+                    ${commandPending[node.device] ? '⏳' : '✓'}
+                  </button>
+                  <button class="node-btn node-btn-status" 
+                          onclick="requestNodeStatus('${node.device}')"
+                          ${commandPending[node.device] ? 'disabled' : ''}>
+                    🔄
+                  </button>
+                </div>
+              </div>
+            `;
+          }).join('');
+        })
+        .catch(err => {
+          console.warn('Failed to fetch node states:', err);
+        });
+    }
+    
+    // Format milliseconds to readable time
+    function formatTimeSince(ms) {
+      const seconds = Math.floor(ms / 1000);
+      if (seconds < 60) return `${seconds}s ago`;
+      
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return `${minutes}m ago`;
+      
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      return `${hours}h ${mins}m ago`;
+    }
+    
+    // Send mode change command
+    function sendModeChange(deviceId) {
+      const select = document.getElementById(`mode-select-${deviceId}`) || 
+                     document.getElementById(`card-mode-select-${deviceId}`);
+      const newMode = select.value;
+      const currentMode = nodeStates[deviceId]?.mode;
+      
+      // Confirm if switching to lost mode
+      if (newMode === 'lost' && currentMode !== 'lost') {
+        if (!confirm(`⚠️ Switch ${deviceId} to LOST mode?\n\nThis will:\n• Set TX power to maximum (22dBm)\n• Update every 30 seconds\n• Enable LED beacon\n• Drain battery quickly\n\nAuto-reverts to Active mode after 2 hours.\n\nContinue?`)) {
+          select.value = currentMode; // Revert selection
+          return;
+        }
+      }
+      
+      // Send command
+      commandPending[deviceId] = true;
+      updateNodeControlUI(deviceId);
+      
+      fetch(`/send-command?device=${deviceId}&action=mode&profile=${newMode}`, {
+        method: 'POST'
+      })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('Command failed');
+          }
+          console.log(`[CMD] Mode change queued: ${deviceId} -> ${newMode}`);
+          
+          // Update card status if it exists
+          const cardStatus = document.getElementById(`card-mode-status-${deviceId}`);
+          if (cardStatus) {
+            cardStatus.innerHTML = '<span style="color: #ffc107;">⏳ Sending...</span>';
+          }
+          
+          // Command will be sent, wait for ACK via WebSocket
+          setTimeout(() => {
+            if (commandPending[deviceId]) {
+              commandPending[deviceId] = false;
+              updateNodeControlUI(deviceId);
+              const cardStatus = document.getElementById(`card-mode-status-${deviceId}`);
+              if (cardStatus) {
+                cardStatus.innerHTML = '<span style="color: #666;">No response</span>';
+              }
+            }
+          }, 10000); // Clear pending state after 10s if no ACK
+        })
+        .catch(err => {
+          console.error('Failed to send mode command:', err);
+          alert(`❌ Failed to send command to ${deviceId}`);
+          commandPending[deviceId] = false;
+          updateNodeControlUI(deviceId);
+        });
+    }
+    
+    // Request node status
+    function requestNodeStatus(deviceId) {
+      commandPending[deviceId] = true;
+      updateNodeControlUI(deviceId);
+      
+      // Update card status if it exists
+      const cardStatus = document.getElementById(`card-mode-status-${deviceId}`);
+      if (cardStatus) {
+        cardStatus.innerHTML = '<span style="color: #17a2b8;">🔄 Querying...</span>';
+      }
+      
+      fetch(`/send-command?device=${deviceId}&action=status`, {
+        method: 'POST'
+      })
+        .then(response => {
+          if (!response.ok) {
+            throw new Error('Command failed');
+          }
+          console.log(`[CMD] Status request sent to ${deviceId}`);
+          
+          setTimeout(() => {
+            if (commandPending[deviceId]) {
+              commandPending[deviceId] = false;
+              updateNodeControlUI(deviceId);
+              if (cardStatus) {
+                cardStatus.innerHTML = '<span style="color: #666;">No response</span>';
+              }
+            }
+          }, 10000);
+        })
+        .catch(err => {
+          console.error('Failed to request status:', err);
+          alert(`❌ Failed to query ${deviceId}`);
+          commandPending[deviceId] = false;
+          updateNodeControlUI(deviceId);
+          if (cardStatus) {
+            cardStatus.innerHTML = '<span style="color: #dc3545;">Error</span>';
+          }
+        });
+    }
+    
+    // Update UI for a specific node
+    function updateNodeControlUI(deviceId) {
+      const applyBtn = document.getElementById(`apply-btn-${deviceId}`);
+      const statusBtn = document.querySelector(`#node-${deviceId} .node-btn-status`);
+      
+      if (applyBtn) {
+        applyBtn.disabled = commandPending[deviceId];
+        applyBtn.textContent = commandPending[deviceId] ? '⏳' : '✓';
+      }
+      
+      if (statusBtn) {
+        statusBtn.disabled = commandPending[deviceId];
+      }
+    }
+    
+    // Handle node state updates from WebSocket
+    function handleNodeStateUpdate(data) {
+      if (data.type === 'node_states' && data.nodes) {
+        data.nodes.forEach(node => {
+          nodeStates[node.device] = node;
+          
+          // Clear pending state if we got an update
+          if (commandPending[node.device]) {
+            commandPending[node.device] = false;
+          }
+          
+          // Update marker card mode selector if it exists
+          const cardSelect = document.getElementById(`card-mode-select-${node.device}`);
+          if (cardSelect && node.mode_known) {
+            cardSelect.value = node.mode;
+          }
+          
+          // Update card mode status text
+          const cardStatus = document.getElementById(`card-mode-status-${node.device}`);
+          if (cardStatus && node.mode_known) {
+            const modeColors = {
+              'normal': '#007bff',
+              'active': '#28a745',
+              'powersave': '#ffc107',
+              'lost': '#dc3545'
+            };
+            cardStatus.innerHTML = `<span style="color: ${modeColors[node.mode] || '#666'};">● ${node.mode.toUpperCase()}</span>`;
+          }
+        });
+        
+        // Update UI
+        updateNodeControl();
+      }
+      
+      // Handle alerts
+      if (data.type === 'node_alert') {
+        if (data.alert === 'lost_mode_timeout') {
+          alert(`⚠️ ${data.device} lost mode timed out!\n\nAuto-reverted to ${data.new_mode} mode after ${Math.floor(data.duration_s / 60)} minutes.`);
+        }
+      }
+    }
+    
+    // Poll node states every 5 seconds
+    setInterval(updateNodeControl, 5000);
+    
+    // Initial update after short delay
+    setTimeout(updateNodeControl, 2000);
+    
+    // Make functions globally accessible
+    window.handleNodeStateUpdate = handleNodeStateUpdate;
 
   </script>
 
