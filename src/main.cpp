@@ -112,12 +112,14 @@ struct LoRaCommand
   String targetDevice; // Device ID or "broadcast"
   String jsonCommand;  // JSON command string
   uint32_t timestamp;  // When command was queued
+  uint32_t messageId;  // Unique message ID for tracking ACKs
 };
 
 std::vector<LoRaCommand> commandQueue;
 bool loraTransmitting = false;
 unsigned long lastCommandTxTime = 0;
 const unsigned long COMMAND_TX_INTERVAL = 3000; // 3 seconds between command transmissions
+uint32_t nextMessageId = 1;                     // Global message ID counter
 
 // Function declarations
 void notifyClients();
@@ -416,9 +418,33 @@ void updateNodeState(const JsonDocument &doc)
   state.lastSeen = millis();
 
   // Check if this is an ACK response
+  if (doc["ack"].is<String>())
+  {
+    // Extract and validate message_id
+    uint32_t msgId = 0;
+    if (doc["msg_id"].is<uint32_t>())
+    {
+      msgId = doc["msg_id"].as<uint32_t>();
+      Serial.printf("[ACK] %s acknowledged command (msg_id=%lu) ✅\n",
+                    deviceId.c_str(), msgId);
+    }
+    else
+    {
+      Serial.printf("[ACK] %s acknowledged (WARNING: no msg_id)\n",
+                    deviceId.c_str());
+    }
+
+    // Command was acknowledged - we trust the node applied it
+    // The node will send its full status in the next regular GPS update
+    // For now, just clear any pending state and broadcast update
+    broadcastNodeStates();
+    return; // ACK processed
+  }
+
+  // Check if this is a regular GPS position update with mode info
   if (doc["ack"].is<String>() && doc["ack"].as<String>() == "mode")
   {
-    // Mode change acknowledgment
+    // Mode change acknowledgment (old format - still supported)
     if (doc["profile"].is<String>())
     {
       state.currentMode = doc["profile"].as<String>();
@@ -517,10 +543,12 @@ void queueCommand(const String &deviceId, const String &command)
   cmd.targetDevice = deviceId;
   cmd.jsonCommand = command;
   cmd.timestamp = millis();
+  cmd.messageId = nextMessageId++; // Assign unique message ID
 
   commandQueue.push_back(cmd);
 
-  Serial.printf("[CMD] Queued for %s: %s\n", deviceId.c_str(), command.c_str());
+  Serial.printf("[CMD] Queued for %s (msg_id=%lu): %s\n",
+                deviceId.c_str(), cmd.messageId, command.c_str());
 }
 
 // Process command queue and transmit via LoRa
@@ -541,18 +569,34 @@ void processCommandQueue()
   LoRaCommand cmd = commandQueue.front();
   commandQueue.erase(commandQueue.begin());
 
-  Serial.printf("[LoRa] Transmitting command to %s: %s\n",
-                cmd.targetDevice.c_str(), cmd.jsonCommand.c_str());
+  // Parse JSON and inject message_id and device
+  JsonDocument cmdDoc;
+  DeserializationError error = deserializeJson(cmdDoc, cmd.jsonCommand);
+
+  if (error)
+  {
+    Serial.printf("[LoRa] ❌ Failed to parse command JSON: %s\n", error.c_str());
+    return;
+  }
+
+  cmdDoc["msg_id"] = cmd.messageId;    // Add unique message ID
+  cmdDoc["device"] = cmd.targetDevice; // Add target device ID
+
+  String finalJson;
+  serializeJson(cmdDoc, finalJson);
+
+  Serial.printf("[LoRa] Transmitting command to %s (msg_id=%lu): %s\n",
+                cmd.targetDevice.c_str(), cmd.messageId, finalJson.c_str());
 
   // Switch LoRa to standby before transmit
   lora.standby();
 
-  // Transmit command
-  int state = lora.transmit(cmd.jsonCommand);
+  // Transmit command (use finalJson with msg_id and device injected)
+  int state = lora.transmit(finalJson);
 
   if (state == RADIOLIB_ERR_NONE)
   {
-    Serial.println("[LoRa] ✅ Command transmitted successfully");
+    Serial.printf("[LoRa] ✅ Command transmitted successfully (msg_id=%lu)\n", cmd.messageId);
 
     // Flash LoRa LED to indicate TX
     LED_flicker();
@@ -561,18 +605,21 @@ void processCommandQueue()
     JsonDocument cmdDoc;
     cmdDoc["event"] = "command_sent";
     cmdDoc["target"] = cmd.targetDevice;
-    cmdDoc["command"] = cmd.jsonCommand;
+    cmdDoc["command"] = finalJson;
+    cmdDoc["msg_id"] = cmd.messageId;
     logMessage(cmdDoc, "event");
   }
   else
   {
-    Serial.printf("[LoRa] ❌ Command transmission failed: %d\n", state);
+    Serial.printf("[LoRa] ❌ Command transmission failed: %d (msg_id=%lu)\n",
+                  state, cmd.messageId);
 
     // Log failure
     JsonDocument cmdDoc;
     cmdDoc["event"] = "command_failed";
     cmdDoc["target"] = cmd.targetDevice;
-    cmdDoc["command"] = cmd.jsonCommand;
+    cmdDoc["command"] = finalJson;
+    cmdDoc["msg_id"] = cmd.messageId;
     cmdDoc["error_code"] = state;
     logMessage(cmdDoc, "event");
   }
@@ -595,10 +642,12 @@ void sendModeCommand(const String &deviceId, const String &profile)
     return;
   }
 
-  // Build command JSON
+  // Build command JSON with device targeting and message_id
   JsonDocument cmdDoc;
   cmdDoc["cmd"] = "mode";
   cmdDoc["profile"] = profile;
+  cmdDoc["device"] = deviceId;      // Target device ID
+  cmdDoc["msg_id"] = nextMessageId; // Will be updated in queueCommand
 
   String cmdJson;
   serializeJson(cmdDoc, cmdJson);

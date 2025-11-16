@@ -1270,7 +1270,9 @@
           <input type="range" id="defaultZoom" min="10" max="23" value="19" oninput="updateZoomValue(this.value)">
         </div>
         <div class="menu-item">
-          <button class="menu-btn menu-btn-secondary" onclick="resetMapView()">🎯 Reset View to Home</button>
+          <button class="menu-btn menu-btn-secondary" onclick="resetMapView()" title="Reset Map View
+Returns map to home location and default zoom
+Useful when you've panned far away">🎯 Reset View to Home</button>
         </div>
       </div>
       
@@ -1279,7 +1281,10 @@
         <h3>📶 BLE Beacon</h3>
         <div class="menu-item" style="justify-content: space-between; align-items: center;">
           <span class="menu-info-label">Beacon Status:</span>
-          <label class="ble-toggle-label" style="margin: 0;">
+          <label class="ble-toggle-label" style="margin: 0;" title="BLE Beacon Toggle
+Controls Bluetooth beacon on this base station
+Trackers use this to detect when they're home
+Turn off to save power when not needed">
             <label class="switch">
               <input type="checkbox" id="bleToggle" checked>
               <span class="slider round"></span>
@@ -1310,10 +1315,14 @@
           <span class="menu-info-value" id="logFileSize">—</span>
         </div>
         <div class="menu-item">
-          <button class="menu-btn menu-btn-primary" onclick="exportMessageLog()">📥 Export Message Log</button>
+          <button class="menu-btn menu-btn-primary" onclick="exportMessageLog()" title="Export Message Log
+Downloads all logged GPS messages as a JSON file
+Includes timestamps and full message data for offline analysis">📥 Export Message Log</button>
         </div>
         <div class="menu-item">
-          <button class="menu-btn menu-btn-danger" onclick="clearMessageLog()">🗑️ Clear Message Log</button>
+          <button class="menu-btn menu-btn-danger" onclick="clearMessageLog()" title="Clear Message Log
+Deletes all stored messages from the ESP32
+Frees up storage space but cannot be undone">🗑️ Clear Message Log</button>
         </div>
       </div>
       
@@ -1348,10 +1357,14 @@
       <div class="menu-section">
         <h3>🛠️ Developer Tools</h3>
         <div class="menu-item">
-          <button class="menu-btn menu-btn-secondary" onclick="scrollToDebugConsole()">📄 View Debug Console</button>
+          <button class="menu-btn menu-btn-secondary" onclick="scrollToDebugConsole()" title="Debug Console
+Scrolls to the debug console at bottom of page
+Shows all WebSocket messages in real-time">📄 View Debug Console</button>
         </div>
         <div class="menu-item">
-          <button class="menu-btn menu-btn-secondary" onclick="window.location.href='/data'">📊 View Raw Data (/data)</button>
+          <button class="menu-btn menu-btn-secondary" onclick="window.location.href='/data'" title="Raw Data Endpoint
+Opens /data JSON endpoint in new view
+Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
         </div>
       </div>
     </div>
@@ -1372,7 +1385,9 @@
   
   <!-- Marker Cards Control -->
   <div style="text-align: center; margin: 10px;">
-    <button id="toggleAllCardsBtn" class="btn btn-secondary" onclick="toggleAllMarkerCards()">
+    <button id="toggleAllCardsBtn" class="btn btn-secondary" onclick="toggleAllMarkerCards()" title="Collapse/Expand Cards
+Toggles all marker cards between expanded and collapsed states
+Collapsing cards saves screen space when tracking many devices">
       ➖ Collapse All Cards
     </button>
   </div>
@@ -1392,8 +1407,12 @@
         <span class="debug-console-toggle" id="debug-toggle-icon">▼</span>
       </div>
       <div class="debug-console-actions">
-        <button class="btn btn-outline-info" onclick="copyDebugConsole()">📋 Copy All Messages</button>
-        <button class="btn btn-outline-secondary" onclick="clearDebugConsole()">🗑️ Clear Console</button>
+        <button class="btn btn-outline-info" onclick="copyDebugConsole()" title="Copy Messages
+Copies all debug console messages to clipboard
+Use for sharing logs or troubleshooting">📋 Copy All Messages</button>
+        <button class="btn btn-outline-secondary" onclick="clearDebugConsole()" title="Clear Console
+Removes all messages from debug console display
+Does not affect stored data on ESP32">🗑️ Clear Console</button>
       </div>
       <div class="debug-console-body" id="debugConsoleBody">
         <div class="debug-console-messages" id="debugConsoleMessages">
@@ -2299,7 +2318,11 @@
                 </div>
                 ${warningText}
                 <div class="node-controls">
-                  <select class="node-mode-select" id="mode-select-${node.device}">
+                  <select class="node-mode-select" id="mode-select-${node.device}" title="Operating Mode
+Normal: Balanced (5min, 19dBm)
+Active: Frequent updates (1min, 19dBm)
+Powersave: Battery saving (20min, 10dBm)
+Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
                     <option value="normal" ${node.mode === 'normal' ? 'selected' : ''}>Normal</option>
                     <option value="active" ${node.mode === 'active' ? 'selected' : ''}>Active</option>
                     <option value="powersave" ${node.mode === 'powersave' ? 'selected' : ''}>Powersave</option>
@@ -2308,12 +2331,18 @@
                   <button class="node-btn node-btn-apply" 
                           onclick="sendModeChange('${node.device}')" 
                           id="apply-btn-${node.device}"
-                          ${commandPending[node.device] ? 'disabled' : ''}>
+                          ${commandPending[node.device] ? 'disabled' : ''}
+                          title="Apply Mode Change
+Sends command to tracker via LoRa
+Wait for acknowledgment (⏳ shows pending)">
                     ${commandPending[node.device] ? '⏳' : '✓'}
                   </button>
                   <button class="node-btn node-btn-status" 
-                          onclick="requestNodeStatus('${node.device}')"
-                          ${commandPending[node.device] ? 'disabled' : ''}>
+                          onclick="requestNodeStatus('${node.device}'"
+                          ${commandPending[node.device] ? 'disabled' : ''}
+                          title="Query Status
+Requests battery level, GPS lock, and uptime
+Response updates the info display above">
                     🔄
                   </button>
                 </div>
@@ -2368,9 +2397,9 @@
           console.log(`[CMD] Mode change queued: ${deviceId} -> ${newMode}`);
           
           // Update card status if it exists
-          const cardStatus = document.getElementById(`card-mode-status-${deviceId}`);
-          if (cardStatus) {
-            cardStatus.innerHTML = '<span style="color: #ffc107;">⏳ Sending...</span>';
+          const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
+          if (cardModeText) {
+            cardModeText.innerHTML = '<span style="color: #ffc107;">⏳ Sending command...</span>';
           }
           
           // Command will be sent, wait for ACK via WebSocket
@@ -2378,9 +2407,9 @@
             if (commandPending[deviceId]) {
               commandPending[deviceId] = false;
               updateNodeControlUI(deviceId);
-              const cardStatus = document.getElementById(`card-mode-status-${deviceId}`);
-              if (cardStatus) {
-                cardStatus.innerHTML = '<span style="color: #666;">No response</span>';
+              const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
+              if (cardModeText) {
+                cardModeText.innerHTML = '<span style="color: #999;">No response received</span>';
               }
             }
           }, 10000); // Clear pending state after 10s if no ACK
@@ -2399,9 +2428,9 @@
       updateNodeControlUI(deviceId);
       
       // Update card status if it exists
-      const cardStatus = document.getElementById(`card-mode-status-${deviceId}`);
-      if (cardStatus) {
-        cardStatus.innerHTML = '<span style="color: #17a2b8;">🔄 Querying...</span>';
+      const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
+      if (cardModeText) {
+        cardModeText.innerHTML = '<span style="color: #17a2b8;">🔄 Querying status...</span>';
       }
       
       fetch(`/send-command?device=${deviceId}&action=status`, {
@@ -2417,8 +2446,8 @@
             if (commandPending[deviceId]) {
               commandPending[deviceId] = false;
               updateNodeControlUI(deviceId);
-              if (cardStatus) {
-                cardStatus.innerHTML = '<span style="color: #666;">No response</span>';
+              if (cardModeText) {
+                cardModeText.innerHTML = '<span style="color: #999;">No response received</span>';
               }
             }
           }, 10000);
@@ -2428,8 +2457,8 @@
           alert(`❌ Failed to query ${deviceId}`);
           commandPending[deviceId] = false;
           updateNodeControlUI(deviceId);
-          if (cardStatus) {
-            cardStatus.innerHTML = '<span style="color: #dc3545;">Error</span>';
+          if (cardModeText) {
+            cardModeText.innerHTML = '<span style="color: #dc3545;">❌ Error</span>';
           }
         });
     }
@@ -2468,14 +2497,15 @@
           
           // Update card mode status text
           const cardStatus = document.getElementById(`card-mode-status-${node.device}`);
-          if (cardStatus && node.mode_known) {
+          const cardModeText = document.getElementById(`card-mode-text-${node.device}`);
+          if (cardModeText && node.mode_known) {
             const modeColors = {
               'normal': '#007bff',
               'active': '#28a745',
               'powersave': '#ffc107',
               'lost': '#dc3545'
             };
-            cardStatus.innerHTML = `<span style="color: ${modeColors[node.mode] || '#666'};">● ${node.mode.toUpperCase()}</span>`;
+            cardModeText.innerHTML = `<span style="color: ${modeColors[node.mode] || '#666'};">● ${node.mode.toUpperCase()}</span>`;
           }
         });
         

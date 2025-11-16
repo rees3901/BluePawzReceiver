@@ -4,7 +4,7 @@ const HOME_LOCATION = [51.87378215701798, -2.239428653198173];
 // Initialize the map with minimal configuration
 const map = L.map("map", {
   center: HOME_LOCATION,
-  zoom: 15,
+  zoom: 5,
   maxZoom: 23,
 });
 
@@ -169,34 +169,55 @@ function createMarkerCard(id, status) {
     </div>
     <div class="marker-card-actions">
       <div class="button-row">
-        <button class="marker-card-btn btn-jump" onclick="jumpToMarker('${id}')">
+        <button class="marker-card-btn btn-jump" onclick="jumpToMarker('${id}')" title="Jump to Marker
+Centers the map on this tracker's current location
+Uses zoom level 18 for detailed street view">
           🎯 Jump
         </button>
-        <button class="marker-card-btn btn-follow" id="follow-btn-${id}" onclick="toggleFollowMarker('${id}')">
+        <button class="marker-card-btn btn-follow" id="follow-btn-${id}" onclick="toggleFollowMarker('${id}')" title="Follow Marker
+Automatically centers map on this tracker when it moves
+Only one tracker can be followed at a time">
           📌 Follow: OFF
         </button>
       </div>
-      <button class="marker-card-btn btn-breadcrumb" id="breadcrumb-btn-${id}" onclick="toggleBreadcrumbsCard('${id}')">
+      <button class="marker-card-btn btn-breadcrumb" id="breadcrumb-btn-${id}" onclick="toggleBreadcrumbsCard('${id}')" title="Breadcrumb Trail
+Shows the last 4 GPS positions as a colored line
+Helps visualize movement patterns and direction">
         📍 Trail: OFF
       </button>
-      <button class="marker-card-btn btn-console" onclick="toggleConsoleCard('${id}')">
+      <button class="marker-card-btn btn-console" onclick="toggleConsoleCard('${id}')" title="Message Log
+Displays raw GPS messages received from this tracker
+Useful for debugging and seeing exact coordinates">
         📄 Message Log
       </button>
       ${
         id !== "MyDevice"
           ? `
       <div style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #dee2e6;">
+        <div style="font-size: 0.75em; font-weight: 600; color: #666; margin-bottom: 4px; text-transform: uppercase;">
+          Remote Commands
+        </div>
         <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
-          <select class="node-mode-select" id="card-mode-select-${id}" style="flex: 1; font-size: 0.85em;">
+          <select class="node-mode-select" id="card-mode-select-${id}" style="flex: 1; font-size: 0.85em;" title="Operating Mode
+Normal: 5min updates, 19dBm power
+Active: 1min updates, 19dBm power
+Powersave: 20min updates, 10dBm power
+Lost: 30sec updates, 22dBm max power (auto-reverts after 2hrs)">
             <option value="normal">Normal</option>
             <option value="active">Active</option>
             <option value="powersave">Powersave</option>
             <option value="lost">Lost</option>
           </select>
-          <button class="node-btn node-btn-apply" onclick="window.sendModeChange('${id}')" style="padding: 6px 10px;">✓</button>
-          <button class="node-btn node-btn-status" onclick="window.requestNodeStatus('${id}')" style="padding: 6px 10px;">🔄</button>
+          <button class="node-btn node-btn-apply" onclick="window.sendModeChange('${id}')" style="padding: 6px 10px;" title="Apply Mode Change
+Sends selected mode to tracker via LoRa
+Tracker will acknowledge when received">✓</button>
+          <button class="node-btn node-btn-status" onclick="window.requestNodeStatus('${id}')" style="padding: 6px 10px;" title="Query Status
+Requests current battery, GPS lock, and uptime info
+Response appears in Current Status below">🔄</button>
         </div>
-        <div id="card-mode-status-${id}" style="font-size: 0.8em; color: #666; text-align: center;"></div>
+        <div id="card-mode-status-${id}" style="font-size: 0.75em; color: #666;">
+          <strong>Current Status:</strong> <span id="card-mode-text-${id}">Waiting for data...</span>
+        </div>
       </div>
       `
           : ""
@@ -216,7 +237,7 @@ function createMarkerCard(id, status) {
 window.jumpToMarker = function (id) {
   if (markers[id]) {
     const latlng = markers[id].getLatLng();
-    map.setView(latlng, 18);
+    map.setView(latlng, 16);
     markers[id].openPopup();
   }
 };
@@ -271,7 +292,7 @@ window.toggleFollowMarker = function (id) {
     // Center map on this marker immediately
     if (markers[id]) {
       const latlng = markers[id].getLatLng();
-      map.setView(latlng, 18);
+      map.setView(latlng, 16);
     }
   }
 }; // Update marker card with new data
@@ -607,7 +628,7 @@ function connectWebSocket() {
 
           // Auto-center map if this marker is being followed
           if (followedMarkerId === id) {
-            map.setView(newPos, 18);
+            map.setView(newPos, 16);
           }
 
           console.log(`Position updated for ${id}:`, data.lat, data.lon);
