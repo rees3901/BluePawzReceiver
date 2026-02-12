@@ -12,6 +12,7 @@
 #include <ArduinoJson.h>
 #include <secrets.h> // Include your secrets.h file for WiFi credentials
 #include <config.h>  // Shared configuration with TX nodes
+#include "protocol.h"
 #include <WiFi.h>
 #include <WebServer.h>        // Include the WebServer library for HTTP server
 #include <WebSocketsServer.h> // Include the WebSockets library for WebSocket server
@@ -109,10 +110,12 @@ std::map<String, NodeState> nodeStates; // Track state of each TX node
 // ───────────── LoRa Command Queue ─────────────
 struct LoRaCommand
 {
-  String targetDevice; // Device ID or "broadcast"
-  String jsonCommand;  // JSON command string
-  uint32_t timestamp;  // When command was queued
-  uint32_t messageId;  // Unique message ID for tracking ACKs
+  uint8_t buf[BP_MAX_PACKET_SIZE]; // Binary packet buffer
+  uint8_t len;                     // Packet length
+  uint16_t targetDeviceId;         // Target device numeric ID
+  String targetDevice;             // Device name (for logging)
+  uint32_t timestamp;              // When command was queued
+  uint32_t messageId;              // Unique message ID for tracking ACKs
 };
 
 std::vector<LoRaCommand> commandQueue;
@@ -150,7 +153,6 @@ void handleClearLog();
 
 // Node state and command functions
 void updateNodeState(const JsonDocument &doc);
-void queueCommand(const String &deviceId, const String &command);
 void processCommandQueue();
 void sendModeCommand(const String &deviceId, const String &profile);
 void sendStatusRequest(const String &deviceId);
@@ -420,6 +422,8 @@ void updateNodeState(const JsonDocument &doc)
   // Check if this is an ACK response
   if (doc["ack"].is<String>())
   {
+    String ackType = doc["ack"].as<String>();
+
     // Extract and validate message_id
     uint32_t msgId = 0;
     if (doc["msg_id"].is<uint32_t>())
@@ -434,47 +438,40 @@ void updateNodeState(const JsonDocument &doc)
                     deviceId.c_str());
     }
 
-    // Command was acknowledged - we trust the node applied it
-    // The node will send its full status in the next regular GPS update
-    // For now, just clear any pending state and broadcast update
+    // Handle mode ACK: extract profile, power, sleep
+    if (ackType == "mode")
+    {
+      if (doc["profile"].is<String>())
+      {
+        state.currentMode = doc["profile"].as<String>();
+        state.modeKnown = true;
+      }
+      if (doc["power"].is<int>())
+      {
+        state.txPower = doc["power"].as<int>();
+      }
+      if (doc["sleep"].is<int>())
+      {
+        state.sleepInterval = doc["sleep"].as<int>();
+      }
+
+      // Track lost mode activation
+      if (state.currentMode == "lost" && state.lostModeStartTime == 0)
+      {
+        state.lostModeStartTime = millis();
+      }
+      else if (state.currentMode != "lost")
+      {
+        state.lostModeStartTime = 0; // Reset if exiting lost mode
+      }
+
+      Serial.printf("[NODE] %s confirmed mode: %s (Power: %ddBm, Sleep: %ds)\n",
+                    deviceId.c_str(), state.currentMode.c_str(),
+                    state.txPower, state.sleepInterval);
+    }
+
     broadcastNodeStates();
-    return; // ACK processed
-  }
-
-  // Check if this is a regular GPS position update with mode info
-  if (doc["ack"].is<String>() && doc["ack"].as<String>() == "mode")
-  {
-    // Mode change acknowledgment (old format - still supported)
-    if (doc["profile"].is<String>())
-    {
-      state.currentMode = doc["profile"].as<String>();
-      state.modeKnown = true;
-    }
-    if (doc["power"].is<int>())
-    {
-      state.txPower = doc["power"].as<int>();
-    }
-    if (doc["sleep"].is<int>())
-    {
-      state.sleepInterval = doc["sleep"].as<int>();
-    }
-
-    // Track lost mode activation
-    if (state.currentMode == "lost" && state.lostModeStartTime == 0)
-    {
-      state.lostModeStartTime = millis();
-    }
-    else if (state.currentMode != "lost")
-    {
-      state.lostModeStartTime = 0; // Reset if exiting lost mode
-    }
-
-    Serial.printf("[NODE] %s confirmed mode: %s (Power: %ddBm, Sleep: %ds)\n",
-                  deviceId.c_str(), state.currentMode.c_str(),
-                  state.txPower, state.sleepInterval);
-
-    // Broadcast state update via WebSocket
-    broadcastNodeStates();
+    return; // ACK fully processed
   }
   // Check if this is a status response
   else if (doc["status"].is<String>() && doc["mode"].is<String>())
@@ -536,22 +533,7 @@ void updateNodeState(const JsonDocument &doc)
   }
 }
 
-// Queue a command to be transmitted via LoRa
-void queueCommand(const String &deviceId, const String &command)
-{
-  LoRaCommand cmd;
-  cmd.targetDevice = deviceId;
-  cmd.jsonCommand = command;
-  cmd.timestamp = millis();
-  cmd.messageId = nextMessageId++; // Assign unique message ID
-
-  commandQueue.push_back(cmd);
-
-  Serial.printf("[CMD] Queued for %s (msg_id=%lu): %s\n",
-                deviceId.c_str(), cmd.messageId, command.c_str());
-}
-
-// Process command queue and transmit via LoRa
+// Process command queue and transmit via LoRa (binary protocol)
 void processCommandQueue()
 {
   // Rate limit command transmission
@@ -569,59 +551,43 @@ void processCommandQueue()
   LoRaCommand cmd = commandQueue.front();
   commandQueue.erase(commandQueue.begin());
 
-  // Parse JSON and inject message_id and device
-  JsonDocument cmdDoc;
-  DeserializationError error = deserializeJson(cmdDoc, cmd.jsonCommand);
-
-  if (error)
-  {
-    Serial.printf("[LoRa] ❌ Failed to parse command JSON: %s\n", error.c_str());
-    return;
-  }
-
-  cmdDoc["msg_id"] = cmd.messageId;    // Add unique message ID
-  cmdDoc["device"] = cmd.targetDevice; // Add target device ID
-
-  String finalJson;
-  serializeJson(cmdDoc, finalJson);
-
-  Serial.printf("[LoRa] Transmitting command to %s (msg_id=%lu): %s\n",
-                cmd.targetDevice.c_str(), cmd.messageId, finalJson.c_str());
+  Serial.printf("[LoRa] Transmitting binary command to %s (msg_id=%lu, %d bytes)\n",
+                cmd.targetDevice.c_str(), cmd.messageId, cmd.len);
+  pkt_print_hex(cmd.buf, cmd.len);
 
   // Switch LoRa to standby before transmit
   lora.standby();
 
-  // Transmit command (use finalJson with msg_id and device injected)
-  int state = lora.transmit(finalJson);
+  // Transmit binary packet
+  int state = lora.transmit(cmd.buf, cmd.len);
 
   if (state == RADIOLIB_ERR_NONE)
   {
-    Serial.printf("[LoRa] ✅ Command transmitted successfully (msg_id=%lu)\n", cmd.messageId);
+    Serial.printf("[LoRa] Command transmitted successfully (msg_id=%lu)\n", cmd.messageId);
 
     // Flash LoRa LED to indicate TX
     LED_flicker();
 
     // Log command transmission
-    JsonDocument cmdDoc;
-    cmdDoc["event"] = "command_sent";
-    cmdDoc["target"] = cmd.targetDevice;
-    cmdDoc["command"] = finalJson;
-    cmdDoc["msg_id"] = cmd.messageId;
-    logMessage(cmdDoc, "event");
+    JsonDocument logDoc;
+    logDoc["event"] = "command_sent";
+    logDoc["target"] = cmd.targetDevice;
+    logDoc["msg_id"] = cmd.messageId;
+    logDoc["bytes"] = cmd.len;
+    logMessage(logDoc, "event");
   }
   else
   {
-    Serial.printf("[LoRa] ❌ Command transmission failed: %d (msg_id=%lu)\n",
+    Serial.printf("[LoRa] Command transmission failed: %d (msg_id=%lu)\n",
                   state, cmd.messageId);
 
     // Log failure
-    JsonDocument cmdDoc;
-    cmdDoc["event"] = "command_failed";
-    cmdDoc["target"] = cmd.targetDevice;
-    cmdDoc["command"] = finalJson;
-    cmdDoc["msg_id"] = cmd.messageId;
-    cmdDoc["error_code"] = state;
-    logMessage(cmdDoc, "event");
+    JsonDocument logDoc;
+    logDoc["event"] = "command_failed";
+    logDoc["target"] = cmd.targetDevice;
+    logDoc["msg_id"] = cmd.messageId;
+    logDoc["error_code"] = state;
+    logMessage(logDoc, "event");
   }
 
   // Return to receive mode
@@ -631,46 +597,86 @@ void processCommandQueue()
   loraTransmitting = false;
 }
 
-// Send mode change command to a specific node
+// Send mode change command to a specific node (binary protocol)
 void sendModeCommand(const String &deviceId, const String &profile)
 {
   // Validate profile name
   const OperatingMode *mode = getModeByName(profile.c_str());
   if (mode == nullptr)
   {
-    Serial.printf("[CMD] ❌ Invalid profile: %s\n", profile.c_str());
+    Serial.printf("[CMD] Invalid profile: %s\n", profile.c_str());
     return;
   }
 
-  // Build command JSON with device targeting and message_id
-  JsonDocument cmdDoc;
-  cmdDoc["cmd"] = "mode";
-  cmdDoc["profile"] = profile;
-  cmdDoc["device"] = deviceId;      // Target device ID
-  cmdDoc["msg_id"] = nextMessageId; // Will be updated in queueCommand
+  // Resolve device name to numeric ID
+  uint16_t targetId;
+  if (deviceId == "broadcast")
+  {
+    targetId = DEVICE_ID_BROADCAST;
+  }
+  else
+  {
+    targetId = getDeviceIdByName(deviceId.c_str());
+    if (targetId == 0)
+    {
+      Serial.printf("[CMD] Unknown device: %s\n", deviceId.c_str());
+      return;
+    }
+  }
 
-  String cmdJson;
-  serializeJson(cmdDoc, cmdJson);
+  // Build binary command packet
+  LoRaCommand cmd;
+  memset(&cmd, 0, sizeof(cmd));
+  cmd.targetDevice = deviceId;
+  cmd.targetDeviceId = targetId;
+  cmd.timestamp = millis();
+  cmd.messageId = nextMessageId++;
 
-  // Queue command for transmission
-  queueCommand(deviceId, cmdJson);
+  bp_profile_t profileEnum = profileFromName(profile.c_str());
+  pkt_init(cmd.buf, targetId, cmd.messageId, 0, STATUS_OK, PKT_CMD_MODE);
+  pkt_add_tlv_u8(cmd.buf, TLV_PROFILE, profileEnum);
+  cmd.len = pkt_finalize(cmd.buf);
 
-  Serial.printf("[CMD] Mode change queued: %s -> %s\n",
-                deviceId.c_str(), profile.c_str());
+  commandQueue.push_back(cmd);
+
+  Serial.printf("[CMD] Mode change queued: %s -> %s (%d bytes)\n",
+                deviceId.c_str(), profile.c_str(), cmd.len);
 }
 
-// Send status request to a specific node
+// Send status request to a specific node (binary protocol)
 void sendStatusRequest(const String &deviceId)
 {
-  JsonDocument cmdDoc;
-  cmdDoc["cmd"] = "get_status";
+  // Resolve device name to numeric ID
+  uint16_t targetId;
+  if (deviceId == "broadcast")
+  {
+    targetId = DEVICE_ID_BROADCAST;
+  }
+  else
+  {
+    targetId = getDeviceIdByName(deviceId.c_str());
+    if (targetId == 0)
+    {
+      Serial.printf("[CMD] Unknown device: %s\n", deviceId.c_str());
+      return;
+    }
+  }
 
-  String cmdJson;
-  serializeJson(cmdDoc, cmdJson);
+  // Build binary status request packet
+  LoRaCommand cmd;
+  memset(&cmd, 0, sizeof(cmd));
+  cmd.targetDevice = deviceId;
+  cmd.targetDeviceId = targetId;
+  cmd.timestamp = millis();
+  cmd.messageId = nextMessageId++;
 
-  queueCommand(deviceId, cmdJson);
+  pkt_init(cmd.buf, targetId, cmd.messageId, 0, STATUS_OK, PKT_CMD_STATUS);
+  cmd.len = pkt_finalize(cmd.buf);
 
-  Serial.printf("[CMD] Status request queued for: %s\n", deviceId.c_str());
+  commandQueue.push_back(cmd);
+
+  Serial.printf("[CMD] Status request queued for: %s (%d bytes)\n",
+                deviceId.c_str(), cmd.len);
 }
 
 // HTTP handler: Get node states as JSON
@@ -797,135 +803,411 @@ void onReceive()
   Serial.println("Receiving LoRa packet.."); // Debug log
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// BINARY PROTOCOL HANDLER HELPERS
+// ═════════════════════════════════════════════════════════════════════
+
+// Convert bearing degrees to cardinal direction string
+static String cardinalFromDegrees(uint16_t deg)
+{
+  static const char *dirs[] = {
+      "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE",
+      "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"};
+  int idx = ((int)deg + 11) / 22 % 16;
+  return String(dirs[idx]);
+}
+
+// Handle binary telemetry packet (TX->RX position / BLEHome / invalidGPS)
+static void handleBinaryTelemetry(const uint8_t *buf, uint8_t pkt_len, int16_t rssi, float snr)
+{
+  uint16_t devId = pkt_device_id(buf);
+  const char *devName = getDeviceName(devId);
+  uint8_t status = pkt_status(buf);
+  uint16_t flags = pkt_flags(buf);
+  uint32_t msgSeq = pkt_msg_seq(buf);
+
+  // Build JSON doc for compatibility with existing WebSocket/logging
+  JsonDocument doc;
+  doc["id"] = devName;
+  doc["msg_id"] = msgSeq;
+  doc["received_at"] = millis();
+  doc["rssi"] = rssi;
+  doc["snr"] = snr;
+
+  // Map status enum to display string
+  doc["status"] = statusToDisplayString((bp_status_t)status);
+
+  if (flags & FLAG_HAS_GPS)
+  {
+    double lat = pkt_lat_e7(buf) / 1e7;
+    double lon = pkt_lon_e7(buf) / 1e7;
+    uint16_t dist = pkt_dist_home_m(buf);
+    uint16_t bearing = pkt_bearing_deg(buf);
+
+    doc["lat"] = lat;
+    doc["lon"] = lon;
+    doc["dist_home_m"] = dist;
+    doc["bearing"] = String(bearing) + "-" + cardinalFromDegrees(bearing);
+  }
+
+  if (flags & FLAG_BLE_HOME)
+  {
+    doc["ble_home"] = true;
+  }
+
+  // Store payload for /data endpoint
+  String payload;
+  serializeJson(doc, payload);
+  catPayloads[String(devName)] = payload;
+
+  Serial.printf("[RX] Binary telemetry from %s (msg_id=%u, status=0x%02X)\n",
+                devName, msgSeq, status);
+  serializeJsonPretty(doc, Serial);
+  Serial.println();
+
+  logMessage(doc, "lora");
+  updateNodeState(doc);
+  notifyPosition(doc);
+}
+
+// Handle binary mode ACK (TX->RX mode change acknowledgement)
+static void handleBinaryModeAck(const uint8_t *buf, uint8_t pkt_len, int16_t rssi, float snr)
+{
+  uint16_t devId = pkt_device_id(buf);
+  const char *devName = getDeviceName(devId);
+
+  JsonDocument doc;
+  doc["id"] = devName;
+  doc["device"] = devName;
+  doc["received_at"] = millis();
+
+  // Extract TLVs
+  uint8_t profileEnum;
+  if (pkt_tlv_get_u8(buf, TLV_PROFILE, &profileEnum))
+  {
+    doc["ack"] = "mode";
+    doc["profile"] = profileToName((bp_profile_t)profileEnum);
+  }
+
+  int8_t txPower;
+  if (pkt_tlv_get_i8(buf, TLV_TX_POWER, &txPower))
+  {
+    doc["power"] = txPower;
+  }
+
+  uint16_t sleepInterval;
+  if (pkt_tlv_get_u16(buf, TLV_SLEEP_INTERVAL, &sleepInterval))
+  {
+    doc["sleep"] = sleepInterval;
+  }
+
+  uint32_t cmdMsgId;
+  if (pkt_tlv_get_u32(buf, TLV_CMD_MSG_ID, &cmdMsgId))
+  {
+    doc["msg_id"] = cmdMsgId;
+  }
+
+  Serial.printf("[RX] Binary mode ACK from %s: profile=%s\n",
+                devName, doc["profile"].as<const char *>());
+
+  logMessage(doc, "lora");
+  updateNodeState(doc);
+}
+
+// Handle binary status response (TX->RX status query response)
+static void handleBinaryStatusResp(const uint8_t *buf, uint8_t pkt_len, int16_t rssi, float snr)
+{
+  uint16_t devId = pkt_device_id(buf);
+  const char *devName = getDeviceName(devId);
+
+  JsonDocument doc;
+  doc["id"] = devName;
+  doc["device"] = devName;
+  doc["status"] = "ok";
+  doc["received_at"] = millis();
+
+  uint8_t profileEnum;
+  if (pkt_tlv_get_u8(buf, TLV_PROFILE, &profileEnum))
+  {
+    doc["mode"] = profileToName((bp_profile_t)profileEnum);
+  }
+
+  int8_t txPower;
+  if (pkt_tlv_get_i8(buf, TLV_TX_POWER, &txPower))
+  {
+    doc["power"] = txPower;
+  }
+
+  uint16_t sleepInterval;
+  if (pkt_tlv_get_u16(buf, TLV_SLEEP_INTERVAL, &sleepInterval))
+  {
+    doc["sleep"] = sleepInterval;
+  }
+
+  uint8_t gpsWarm;
+  if (pkt_tlv_get_u8(buf, TLV_GPS_WARM, &gpsWarm))
+  {
+    doc["gps_warm"] = (bool)gpsWarm;
+  }
+
+  uint8_t homeCycles;
+  if (pkt_tlv_get_u8(buf, TLV_HOME_CYCLES, &homeCycles))
+  {
+    doc["home_cycles"] = homeCycles;
+  }
+
+  uint16_t logEntries, logSizeKB;
+  if (pkt_tlv_get_log_info(buf, &logEntries, &logSizeKB))
+  {
+    char logStr[32];
+    snprintf(logStr, sizeof(logStr), "%u entries, %u KB", logEntries, logSizeKB);
+    doc["log"] = logStr;
+  }
+
+  uint32_t lostModeS;
+  if (pkt_tlv_get_u32(buf, TLV_LOST_MODE_S, &lostModeS))
+  {
+    doc["lost_mode_s"] = lostModeS;
+  }
+
+  Serial.printf("[RX] Binary status response from %s: mode=%s\n",
+                devName, doc["mode"].as<const char *>());
+
+  logMessage(doc, "lora");
+  updateNodeState(doc);
+}
+
+// Handle binary alert (TX->RX alert notification, e.g. lost mode timeout)
+static void handleBinaryAlert(const uint8_t *buf, uint8_t pkt_len, int16_t rssi, float snr)
+{
+  uint16_t devId = pkt_device_id(buf);
+  const char *devName = getDeviceName(devId);
+
+  JsonDocument doc;
+  doc["id"] = devName;
+  doc["device"] = devName;
+  doc["received_at"] = millis();
+
+  uint8_t status = pkt_status(buf);
+
+  if (status == STATUS_LOST_TIMEOUT)
+  {
+    doc["alert"] = "lost_mode_timeout";
+
+    uint32_t durationS;
+    if (pkt_tlv_get_u32(buf, TLV_DURATION_S, &durationS))
+    {
+      doc["duration_s"] = durationS;
+    }
+
+    uint8_t newModeEnum;
+    if (pkt_tlv_get_u8(buf, TLV_NEW_MODE, &newModeEnum))
+    {
+      doc["new_mode"] = profileToName((bp_profile_t)newModeEnum);
+    }
+
+    Serial.printf("[RX] Binary alert from %s: lost_mode_timeout, reverted to %s\n",
+                  devName, doc["new_mode"].as<const char *>());
+  }
+  else
+  {
+    doc["alert"] = "unknown";
+    Serial.printf("[RX] Binary alert from %s: unknown status 0x%02X\n", devName, status);
+  }
+
+  logMessage(doc, "lora");
+  updateNodeState(doc);
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// LEGACY JSON HANDLER (backward compatibility)
+// ═════════════════════════════════════════════════════════════════════
+static void handleLoRaPacketJSON(const String &incoming)
+{
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, incoming);
+
+  if (error)
+  {
+    Serial.println("[LORA] JSON parse error: " + String(error.c_str()));
+    Serial.println("[LORA] Raw data: " + incoming);
+    return;
+  }
+
+  if (!error && (doc["id"].is<String>() || doc["sender_name"].is<String>()))
+  {
+    // Map new field names to expected format
+    if (doc["sender_name"].is<String>() && !doc["id"].is<String>())
+    {
+      doc["id"] = doc["sender_name"];
+    }
+    if (doc["latitude"].is<float>() && !doc["lat"].is<float>())
+    {
+      doc["lat"] = doc["latitude"];
+    }
+    if (doc["longitude"].is<float>() && !doc["lon"].is<float>())
+    {
+      doc["lon"] = doc["longitude"];
+    }
+
+    // Add receiver timestamp before storing and notifying
+    doc["received_at"] = millis();
+
+    // Normalize status to simplified 4-state system
+    if (doc["status"].is<String>())
+    {
+      String originalStatus = doc["status"].as<String>();
+      String lowerStatus = originalStatus;
+      lowerStatus.toLowerCase();
+
+      if (lowerStatus.indexOf("home") != -1)
+      {
+        doc["status"] = "Home";
+      }
+      else if (lowerStatus.indexOf("out") != -1 ||
+               lowerStatus.indexOf("ok") != -1 ||
+               lowerStatus.indexOf("normal") != -1 ||
+               lowerStatus.indexOf("outanabout") != -1)
+      {
+        doc["status"] = "Out";
+      }
+      else if (lowerStatus.indexOf("offline") != -1)
+      {
+        doc["status"] = "Offline";
+      }
+      else if (lowerStatus.indexOf("error") != -1 ||
+               lowerStatus.indexOf("invalid") != -1 ||
+               lowerStatus.indexOf("no gps fix") != -1 ||
+               lowerStatus.indexOf("no fix") != -1)
+      {
+        doc["status"] = "Error";
+      }
+      else
+      {
+        doc["status"] = "Out";
+      }
+    }
+    else
+    {
+      doc["status"] = "Error";
+    }
+
+    String payload;
+    serializeJson(doc, payload);
+    catPayloads[doc["id"].as<String>()] = payload;
+
+    serializeJsonPretty(doc, Serial);
+    Serial.println();
+
+    logMessage(doc, "lora");
+    updateNodeState(doc);
+    notifyPosition(doc);
+  }
+  else
+  {
+    Serial.println("[LORA] Invalid JSON or missing ID");
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════
+// DUAL-MODE LORA PACKET HANDLER
+// ═════════════════════════════════════════════════════════════════════
+
 void handleLoRaPacket()
 {
   if (!packetReceived)
     return;
 
-  packetReceived = false; // Reset the packetReceived flag to prepare for the next packet
-  String incoming;
-  int state = lora.readData(incoming);
+  packetReceived = false;
+
+  // Read raw bytes from LoRa
+  uint8_t rxBuf[256];
+  size_t rxLen = 0;
+  int state = lora.readData(rxBuf, sizeof(rxBuf));
 
   if (state == RADIOLIB_ERR_NONE)
   {
-    Serial.println("[LORA] Packet received: " + incoming);
+    rxLen = lora.getPacketLength();
+    int16_t rssi = lora.getRSSI();
+    float snr = lora.getSNR();
 
-    // Flash LoRa LED 5 times on message receipt
+    // Flash LoRa LED on message receipt
     LED_flicker();
 
-    if (incoming.length() > 0)
+    if (rxLen == 0)
     {
-      JsonDocument doc; // Increased buffer size for new format
-      DeserializationError error = deserializeJson(doc, incoming);
+      Serial.println("[LORA] Empty packet received");
+      lora.startReceive();
+      return;
+    }
 
-      if (error)
+    // Detect protocol: first byte '{' (0x7B) = JSON, 0x01 = binary v1
+    if (rxBuf[0] == '{')
+    {
+      // Legacy JSON packet
+      rxBuf[rxLen] = '\0'; // Null-terminate for string parsing
+      String incoming((char *)rxBuf);
+      Serial.println("[LORA] JSON packet received: " + incoming);
+      handleLoRaPacketJSON(incoming);
+    }
+    else if (rxBuf[0] == BP_PROTOCOL_VERSION)
+    {
+      // Binary protocol packet
+      Serial.printf("[LORA] Binary packet received (%d bytes, RSSI=%d, SNR=%.1f)\n",
+                    rxLen, rssi, snr);
+      pkt_print_hex(rxBuf, rxLen);
+
+      // Validate CRC
+      if (!pkt_validate_crc(rxBuf, rxLen))
       {
-        Serial.println("[LORA] ❌ JSON parse error: " + String(error.c_str()));
-        Serial.println("[LORA] Raw data: " + incoming);
+        Serial.println("[LORA] Binary CRC validation failed - dropping packet");
+        lora.startReceive();
         return;
       }
 
-      if (!error && (doc["id"].is<String>() || doc["sender_name"].is<String>()))
+      // Dispatch by packet type
+      uint16_t ptype = pkt_pkt_type(rxBuf);
+
+      switch (ptype)
       {
-        // Map new field names to expected format
-        if (doc["sender_name"].is<String>() && !doc["id"].is<String>())
-        {
-          doc["id"] = doc["sender_name"];
-        }
-        if (doc["latitude"].is<float>() && !doc["lat"].is<float>())
-        {
-          doc["lat"] = doc["latitude"];
-        }
-        if (doc["longitude"].is<float>() && !doc["lon"].is<float>())
-        {
-          doc["lon"] = doc["longitude"];
-        }
-
-        // Add receiver timestamp before storing and notifying
-        doc["received_at"] = millis(); // Add receiver's millis() timestamp
-
-        // Normalize status to simplified 4-state system
-        if (doc["status"].is<String>())
-        {
-          String originalStatus = doc["status"].as<String>();
-          String lowerStatus = originalStatus;
-          lowerStatus.toLowerCase();
-
-          if (lowerStatus.indexOf("home") != -1)
-          {
-            doc["status"] = "Home";
-          }
-          else if (lowerStatus.indexOf("out") != -1 ||
-                   lowerStatus.indexOf("ok") != -1 ||
-                   lowerStatus.indexOf("normal") != -1 ||
-                   lowerStatus.indexOf("outanabout") != -1)
-          {
-            doc["status"] = "Out";
-          }
-          else if (lowerStatus.indexOf("offline") != -1)
-          {
-            doc["status"] = "Offline";
-          }
-          else if (lowerStatus.indexOf("error") != -1 ||
-                   lowerStatus.indexOf("invalid") != -1 ||
-                   lowerStatus.indexOf("no gps fix") != -1 ||
-                   lowerStatus.indexOf("no fix") != -1)
-          {
-            doc["status"] = "Error";
-          }
-          else
-          {
-            // Default for any other status not matching above
-            doc["status"] = "Out";
-          }
-        }
-        else
-        {
-          // If status field is missing, default to "Error"
-          doc["status"] = "Error";
-        }
-
-        String payload;              // Declare a String to hold the serialized JSON
-        serializeJson(doc, payload); // Serialize the JSON into the String
-
-        catPayloads[doc["id"].as<String>()] = payload; // Store the payload in the map
-
-        serializeJsonPretty(doc, Serial);
-        Serial.println();
-
-        // Log LoRa message to file
-        logMessage(doc, "lora");
-
-        // Update node state tracking
-        updateNodeState(doc);
-
-        notifyPosition(doc); // Send the doc *with* the added timestamp
-      }
-      else
-      {
-        Serial.println("[LORA] ❌ Invalid JSON or missing ID");
+      case PKT_TELEMETRY:
+        handleBinaryTelemetry(rxBuf, rxLen, rssi, snr);
+        break;
+      case PKT_MODE_ACK:
+        handleBinaryModeAck(rxBuf, rxLen, rssi, snr);
+        break;
+      case PKT_STATUS_RESP:
+        handleBinaryStatusResp(rxBuf, rxLen, rssi, snr);
+        break;
+      case PKT_ALERT:
+        handleBinaryAlert(rxBuf, rxLen, rssi, snr);
+        break;
+      default:
+        Serial.printf("[LORA] Unknown binary packet type: 0x%04X\n", ptype);
+        break;
       }
     }
     else
     {
-      Serial.println("[LORA] ❌ Empty packet received");
+      Serial.printf("[LORA] Unknown protocol (first byte: 0x%02X, %d bytes)\n",
+                    rxBuf[0], rxLen);
     }
   }
   else if (state == RADIOLIB_ERR_PACKET_TOO_LONG)
   {
-    Serial.println("[LORA] ⚠️ Error: Packet too long");
+    Serial.println("[LORA] Error: Packet too long");
   }
   else if (state == RADIOLIB_ERR_CRC_MISMATCH)
   {
-    Serial.println("[LORA] ⚠️ Error: CRC mismatch");
+    Serial.println("[LORA] Error: CRC mismatch");
   }
   else if (state == RADIOLIB_ERR_INVALID_FREQUENCY)
   {
-    Serial.println("[LORA] ⚠️ Error: Invalid frequency");
+    Serial.println("[LORA] Error: Invalid frequency");
   }
   else
   {
-    Serial.printf("[LORA] ⚠️ Unknown error: %d\n", state);
+    Serial.printf("[LORA] Unknown error: %d\n", state);
   }
 
   // Ensure LoRa module is reinitialized to receive the next packet
@@ -1302,13 +1584,14 @@ void setup()
     } });
   LoRaSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
-  int state = lora.begin(915.0);
-  lora.setOutputPower(22);
-  lora.setSpreadingFactor(8);
-  lora.setBandwidth(250.0);
-  lora.setCodingRate(5);
-  lora.setPreambleLength(8);
-  lora.setCRC(true);
+  int state = lora.begin(LORA_FREQ_MHZ);
+  lora.setOutputPower(22); // RX base station: always max power (mains-powered)
+  lora.setSpreadingFactor(LORA_SF);
+  lora.setBandwidth(LORA_BW_KHZ);
+  lora.setCodingRate(LORA_CR);
+  lora.setPreambleLength(LORA_PREAMBLE);
+  lora.setCRC(LORA_USE_CRC);
+  lora.setSyncWord(LORA_SYNC_WORD);
   lora.setDio1Action(onReceive);
   lora.startReceive(); // Start receiving packets
   if (state == RADIOLIB_ERR_NONE)
