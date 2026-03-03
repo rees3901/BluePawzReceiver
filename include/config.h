@@ -1,19 +1,39 @@
 /*
   ┌─────────────────────────────────────────────────────────────┐
   │  CAT TRACKER - DEVICE CONFIGURATION                        │
-  │  Shared between TX nodes and RX base station               │
+  │  Shared between collar nodes and the Home Hub concentrator  │
   │  Keep this file IDENTICAL on both devices!                 │
   └─────────────────────────────────────────────────────────────┘
+
+  SYSTEM TOPOLOGY
+  ───────────────
+  Primary path  : Collar ─(SX1262 LoRa)─► Home Hub ─(Wi-Fi)─► Cloud
+  Fallback path : Collar ─(Cat-1/NB-IoT cellular)──────────► Cloud
+
+  Collars use LoRa → Home Hub → Cloud for the vast majority of
+  transmissions. The Cat-1/NB-IoT modem is activated by the collar's
+  power scheme only in exceptional cases (hub out of range, Lost mode
+  with no LoRa acknowledgement, etc.). Cellular transmissions bypass
+  the Home Hub entirely.
 */
 
 #ifndef CONFIG_H
 #define CONFIG_H
 
 // ─────────────────────────────────────────────
+// Communication Path Identifiers
+// ─────────────────────────────────────────────
+// Used by collar firmware to record / report which radio was used
+// for a given uplink. The Home Hub only ever sees COMM_PATH_LORA
+// packets (cellular goes direct to cloud, bypassing the Hub).
+#define COMM_PATH_LORA     0 // SX1262 LoRa → Home Hub → Wi-Fi → Cloud
+#define COMM_PATH_CELLULAR 1 // Cat-1/NB-IoT → Cloud direct (fallback)
+
+// ─────────────────────────────────────────────
 // FIXED LoRa Parameters (NEVER CHANGE VIA REMOTE)
 // ─────────────────────────────────────────────
-// These must match between ALL devices to maintain communication
-// Changing these requires physical reprogramming of all nodes
+// These must match between ALL collar nodes and the Home Hub.
+// Changing these requires physical reprogramming of all devices.
 
 #define LORA_FREQ_MHZ 915.0 // US 915MHz (EU: 868.0)
 #define LORA_SF 8           // Spreading Factor (7-12)
@@ -61,6 +81,8 @@ struct OperatingMode
 // ─────────────────────────────────────────────
 
 // NORMAL - Daily tracking, balanced performance
+// Comm path: LoRa → Home Hub → Wi-Fi → Cloud
+// Cellular fallback: disabled
 const OperatingMode MODE_NORMAL = {
     .name = "normal",
     .lora_power_dbm = 19,    // Good range, not max power
@@ -69,16 +91,20 @@ const OperatingMode MODE_NORMAL = {
     .led_beacon_mode = false,
     .led_beacon_interval_ms = 0};
 
-// POWERSAVE - Maximum battery life at home
+// POWERSAVE - Maximum battery life (collar typically near Hub)
+// Comm path: LoRa → Home Hub → Wi-Fi → Cloud (reduced TX power; Hub assumed nearby)
+// Cellular fallback: disabled
 const OperatingMode MODE_POWERSAVE = {
     .name = "powersave",
-    .lora_power_dbm = 10,     // Minimum viable power
+    .lora_power_dbm = 10,     // Minimum viable power (Hub assumed close)
     .sleep_interval_s = 1200, // 20 minutes
     .led_flash_count = 5,     // Keep standard flash (negligible power)
     .led_beacon_mode = false,
     .led_beacon_interval_ms = 0};
 
-// ACTIVE - Frequent updates for monitoring
+// ACTIVE - Frequent updates for close monitoring
+// Comm path: LoRa → Home Hub → Wi-Fi → Cloud
+// Cellular fallback: activates if Hub does not ACK after N retries
 const OperatingMode MODE_ACTIVE = {
     .name = "active",
     .lora_power_dbm = 19,   // Same as normal
@@ -88,6 +114,9 @@ const OperatingMode MODE_ACTIVE = {
     .led_beacon_interval_ms = 0};
 
 // LOST - Emergency mode with visual beacon
+// Comm path: LoRa max power → Home Hub → Wi-Fi → Cloud
+//            Cellular (Cat-1/NB-IoT) activates as backup if Hub unreachable
+// Note: high power + frequent TX drains battery quickly!
 const OperatingMode MODE_LOST = {
     .name = "lost",
     .lora_power_dbm = 22,          // Maximum power for range
@@ -107,7 +136,7 @@ const OperatingMode MODE_LOST = {
 // Remote Command Protocol
 // ─────────────────────────────────────────────
 
-// Command structure (base station → node):
+// Command structure (Home Hub → collar, LoRa downlink):
 // {"cmd":"mode","profile":"lost"}
 // {"cmd":"mode","profile":"normal"}
 // {"cmd":"mode","profile":"active"}

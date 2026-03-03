@@ -1,23 +1,35 @@
 # Simplified Command & ACK Protocol
 
+## System Context
+
+```
+Many collars -> one Home Hub -> Wi-Fi -> Cloud  (primary path)
+Collar -> Cat-1/NB-IoT -> Cloud                (cellular fallback, Hub bypassed)
+```
+
+Commands travel **Hub -> Collar** via LoRa downlink only.
+Telemetry travels **Collar -> Hub -> Cloud** via LoRa uplink + Wi-Fi.
+
+---
+
 ## Flow Overview
 
 ```
 User clicks "Send"
     |
-Base builds binary packet:
+Hub builds binary packet:
     pkt_init(buf, device_id=0x0004, msg_seq=42, ..., PKT_CMD_MODE)
     pkt_add_tlv_u8(buf, TLV_PROFILE, PROFILE_ACTIVE)
     pkt_finalize(buf)   ->  41 bytes including CRC-16
     |
-LoRa transmit (raw bytes)
+LoRa downlink transmit (raw bytes, Hub -> Collar)
     |
-Node receives -> CRC check -> device_id match -> Apply mode
+Collar receives -> CRC check -> device_id match -> Apply mode
     |
-Node sends PKT_MODE_ACK:
+Collar sends PKT_MODE_ACK:
     TLV_PROFILE + TLV_TX_POWER + TLV_SLEEP_INTERVAL + TLV_CMD_MSG_ID=42
     |
-Base confirms: Command acknowledged (msg_id=42 matched)
+Hub confirms: Command acknowledged (msg_id=42 matched)
     |
 Next telemetry (PKT_TELEMETRY) includes current mode in TLVs
 ```
@@ -50,7 +62,7 @@ Next telemetry (PKT_TELEMETRY) includes current mode in TLVs
 
 ---
 
-## TX Node Implementation
+## Collar Implementation
 
 ### Receiving a Binary Command
 
@@ -126,15 +138,15 @@ void sendTelemetry()
 
 ---
 
-## Sleeping Node Scenario
+## Sleeping Collar Scenario
 
 ### Problem
 
-Node is asleep when command arrives — can't receive it immediately.
+Collar is asleep when command arrives — can't receive it immediately.
 
 ### Solution
 
-Node listens for binary commands for 2 seconds after each GPS transmission.
+Collar listens for binary commands for 2 seconds after each GPS transmission.
 
 ```cpp
 void transmitCycle()
@@ -178,27 +190,27 @@ void transmitCycle()
 ### Timeline Example
 
 ```
-00:00 - Node asleep (Normal mode, 5min interval)
+00:00 - Collar asleep (Normal mode, 5min interval)
 02:30 - User sends "change to Active"
-02:30 - Base queues binary PKT_CMD_MODE (msg_seq=42, 41 bytes)
-02:30 - Base transmits; node is asleep -> missed
+02:30 - Hub queues binary PKT_CMD_MODE (msg_seq=42, 41 bytes)
+02:30 - Hub transmits via LoRa; collar is asleep -> missed
 
-05:00 - Node wakes
-05:05 - Node sends PKT_TELEMETRY (TLV_PROFILE=PROFILE_NORMAL)
-05:05 - Node enters 2-second listen window
-05:05 - Base retransmits PKT_CMD_MODE (msg_seq=42)
-05:05 - Node: CRC OK, device_id match -> PROFILE_ACTIVE applied
-05:05 - Node sends PKT_MODE_ACK (TLV_CMD_MSG_ID=42)
-05:05 - Node goes back to sleep
+05:00 - Collar wakes
+05:05 - Collar sends PKT_TELEMETRY (TLV_PROFILE=PROFILE_NORMAL) -> Hub -> Cloud
+05:05 - Collar enters 2-second listen window
+05:05 - Hub retransmits PKT_CMD_MODE (msg_seq=42) via LoRa downlink
+05:05 - Collar: CRC OK, device_id match -> PROFILE_ACTIVE applied
+05:05 - Collar sends PKT_MODE_ACK (TLV_CMD_MSG_ID=42)
+05:05 - Collar goes back to sleep
 
-06:05 - Node wakes (Active mode, 1min interval now)
-06:06 - Node sends PKT_TELEMETRY (TLV_PROFILE=PROFILE_ACTIVE)
-06:06 - Base sees mode confirmed in telemetry TLVs
+06:05 - Collar wakes (Active mode, 1min interval now)
+06:06 - Collar sends PKT_TELEMETRY (TLV_PROFILE=PROFILE_ACTIVE) -> Hub -> Cloud
+06:06 - Hub sees mode confirmed in telemetry TLVs
 ```
 
 ---
 
-## Base Station Behaviour
+## Home Hub Behaviour
 
 ### ACK Handling
 
@@ -266,7 +278,7 @@ Serial: [LORA] Binary packet received (PKT_TELEMETRY, Podge, TLV_PROFILE=active)
 
 ## Serial Monitor Examples
 
-### Base Station
+### Home Hub
 
 ```
 [CMD] Queued for Podge (msg_id=42, 41 bytes)
@@ -277,12 +289,12 @@ Serial: [LORA] Binary packet received (PKT_TELEMETRY, Podge, TLV_PROFILE=active)
 WebSocket: Broadcasting node states
 ```
 
-### TX Node (Podge)
+### Collar (Podge)
 
 ```
 Waking up...
 GPS locked (warm start)
-Sending binary telemetry (47 bytes)
+Sending binary telemetry (47 bytes)  [LoRa -> Home Hub -> Cloud]
 Listening for commands (2s window)...
 Binary packet received (41 bytes)
 CRC OK, device_id match (0x0004)
@@ -292,7 +304,7 @@ ACK sent (53 bytes, msg_seq=42)
 Going to sleep (Active mode, 60s)...
 ```
 
-### TX Node (Macy — ignoring)
+### Collar (Macy — ignoring)
 
 ```
 Binary packet received (41 bytes)
@@ -310,4 +322,5 @@ Not for me (target=0x0004, my_id=0x0001) - IGNORING
 - **TLV_CMD_MSG_ID echoes msg_seq** — reliable command-to-ACK matching
 - **TLVs are optional and order-independent** — parsers skip unknown type IDs safely
 - **Legacy JSON still accepted** on RX side — detected by first byte `{` (0x7B) vs `0x01`
-- **Mode always in telemetry TLVs** — base station confirms mode from regular updates too
+- **Mode always in telemetry TLVs** — Hub confirms mode from regular uplink updates too
+- **No command path over cellular** — if collar is on Cat-1/NB-IoT fallback, Hub cannot reach it via LoRa; mode changes apply on next LoRa-path cycle

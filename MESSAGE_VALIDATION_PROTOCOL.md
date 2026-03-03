@@ -1,8 +1,28 @@
 # Message Validation Protocol
 
+## System Topology
+
+```
+Many-to-one: Multiple collars -> one Home Hub -> Wi-Fi -> Cloud
+
+  [Collar: Podge]  --(LoRa uplink)-->+
+  [Collar: Macy]   --(LoRa uplink)-->|
+  [Collar: Gizmo]  --(LoRa uplink)-->+--> [Home Hub] --(Wi-Fi)--> Cloud
+  [Collar: Simba]  --(LoRa uplink)-->|
+  [Collar: Carrie] --(LoRa uplink)-->+
+
+  Commands (downlink -- LoRa only):
+  [Home Hub] --(LoRa downlink)--> [Target Collar only]
+
+  Cellular fallback (bypass Hub, no command path):
+  [Collar] --(Cat-1/NB-IoT)-----------------------------> Cloud
+```
+
+---
+
 ## Overview
 
-The binary protocol (defined in `protocol.h`) provides built-in **device targeting** and **message tracking** at the packet header level, replacing the JSON field-injection approach.
+The binary protocol (defined in `protocol.h`) provides built-in **device targeting** and **message tracking** at the packet header level for the LoRa link between collars and the Home Hub.
 
 ---
 
@@ -10,9 +30,9 @@ The binary protocol (defined in `protocol.h`) provides built-in **device targeti
 
 **Problems Solved:**
 
-1. **Multiple nodes** - With 5 trackers (Podge, Macy, Gizmo, Simba, Carrie), each command must reach only the right device
-2. **Command confirmation** - Base station needs to know which specific command was acknowledged
-3. **Message tracking** - Prevents confusion when multiple commands are in-flight
+1. **Multiple collars** - With 5 trackers (Podge, Macy, Gizmo, Simba, Carrie) sharing the LoRa channel, each command must reach only the right device
+2. **Command confirmation** - The Home Hub needs to know which specific command was acknowledged by which collar
+3. **Message tracking** - Prevents confusion when multiple commands are in-flight across the fleet
 4. **Integrity** - Corrupt packets (noise, partial RX) are detected and dropped
 
 ---
@@ -34,7 +54,7 @@ Device registry (defined in `protocol.h`):
 
 | ID | Name |
 |----|------|
-| 0x0000 | Base Station (RX) |
+| 0x0000 | Home Hub concentrator (DEVICE_ID_HUB) |
 | 0x0001 | Macy |
 | 0x0002 | Gizmo |
 | 0x0003 | Simba |
@@ -54,7 +74,7 @@ When a TX node ACKs a command, it echoes the original command's `msg_seq` back i
 TLV_CMD_MSG_ID (0x0B): u32 = <msg_seq from command packet>
 ```
 
-This lets the base station unambiguously match ACKs to the commands that triggered them.
+This lets the Home Hub unambiguously match ACKs to the commands that triggered them.
 
 ### Integrity: CRC-16/CCITT-FALSE (Bytes after TLV)
 
@@ -64,7 +84,7 @@ Every packet is protected by CRC-16 (polynomial 0x1021, init 0xFFFF) computed ov
 
 ## Protocol Structure
 
-### Base Station -> TX Node (Mode Change Command: PKT_CMD_MODE)
+### Home Hub -> Collar (Mode Change Command: PKT_CMD_MODE, LoRa downlink)
 
 ```
 Header (36 bytes):
@@ -97,7 +117,7 @@ Compare to the old JSON equivalent:
 
 That was 62 bytes with no integrity check.
 
-### TX Node -> Base Station (Mode ACK: PKT_MODE_ACK)
+### Collar -> Home Hub (Mode ACK: PKT_MODE_ACK, LoRa uplink)
 
 ```
 Header:
@@ -117,7 +137,7 @@ CRC-16
 Total: 53 bytes
 ```
 
-### TX Node -> Base Station (Status Response: PKT_STATUS_RESP)
+### Collar -> Home Hub (Status Response: PKT_STATUS_RESP, LoRa uplink)
 
 ```
 Header:
@@ -140,7 +160,7 @@ CRC-16
 
 ---
 
-## Base Station Implementation
+## Home Hub Implementation
 
 ### Message Sequence Counter
 
@@ -262,7 +282,7 @@ void handleBinaryModeAck(const uint8_t *buf, uint8_t pkt_len,
 
 ---
 
-## TX Node Implementation
+## Collar Implementation
 
 ### Device ID Constant
 
@@ -359,16 +379,16 @@ void sendStatusResponse(uint32_t cmdMsgSeq)
 
 ## Message Flow Example
 
-### Scenario: Base station sends mode change to Podge
+### Scenario: Home Hub sends mode change to Podge
 
-**1. Base Station Builds and Queues:**
+**1. Home Hub Builds and Queues (LoRa downlink):**
 
 ```
 [CMD] Queued for Podge (msg_id=42, 41 bytes)
 [PKT] 41 bytes: 01 04 00 2A 00 00 00 00 00 00 00 04 05 00 ... 01 01 04 XX XX
 ```
 
-**2. Base Station Transmits:**
+**2. Home Hub Transmits (LoRa downlink):**
 
 ```
 [LoRa] Transmitting binary command to Podge (msg_id=42, 41 bytes)
@@ -385,7 +405,7 @@ Podge: device_id=0x0004, my_id=0x0004 -> CRC OK -> PKT_CMD_MODE
   Sending PKT_MODE_ACK with TLV_CMD_MSG_ID=42
 ```
 
-**4. Base Station Receives ACK:**
+**4. Home Hub Receives ACK (LoRa uplink from Podge):**
 
 ```
 [LORA] Binary packet received (53 bytes, RSSI=-45, SNR=9.5)
@@ -412,11 +432,11 @@ WebSocket: Broadcasting node states
 
 ## Testing Checklist
 
-- [ ] Base station assigns unique msg_seq to each command
+- [ ] Home Hub assigns unique msg_seq to each command
 - [ ] Binary packets carry correct device_id in bytes 1-2
 - [ ] TX node checks device_id before processing (other devices ignore)
 - [ ] TX node echoes msg_seq via TLV_CMD_MSG_ID in ACKs and status responses
-- [ ] Base station logs ACK with matching msg_id
+- [ ] Home Hub logs ACK with matching msg_id
 - [ ] CRC validation passes for valid packets
 - [ ] CRC validation rejects corrupt/noise packets (test by injecting a bad byte)
 - [ ] Serial hex dump shows correct packet bytes
@@ -425,4 +445,6 @@ WebSocket: Broadcasting node states
 
 ---
 
-**Result:** Reliable, compact, CRC-protected multi-device command & control system.
+**Result:** Reliable, compact, CRC-protected many-to-one command & control system with cellular fallback awareness.
+
+**Cellular note:** When a collar is on the cellular fallback path it transmits directly to the cloud, bypassing the Hub. The Hub will not receive LoRa packets from that collar and cannot send it commands until it returns to LoRa range. "Last Seen" ages out in the UI during this period.

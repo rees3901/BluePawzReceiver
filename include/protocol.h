@@ -1,9 +1,14 @@
 /*
   ┌─────────────────────────────────────────────────────────────┐
   │  CAT TRACKER - BINARY TELEMETRY PROTOCOL v1                 │
-  │  Shared between TX nodes and RX base station                │
+  │  Shared between collar nodes and the Home Hub concentrator  │
   │  Keep this file IDENTICAL on both devices!                  │
   └─────────────────────────────────────────────────────────────┘
+
+  This protocol governs LoRa packets only.
+  Primary flow : Collar ─(LoRa)─► Home Hub ─(Wi-Fi)─► Cloud
+  Fallback flow: Collar ─(Cat-1/NB-IoT)─────────────► Cloud
+                 (cellular packets never seen by the Hub)
 
   Replaces JSON with a compact TLV-based binary format.
   Packet: 36-byte fixed header + 0-28 bytes TLV + 2-byte CRC-16.
@@ -55,9 +60,13 @@ enum bp_pkt_type_t : uint16_t
     PKT_CMD_STATUS = 0x0006,  // RX->TX status request
 };
 
-#define FLAG_HAS_GPS 0x0010  // Packet contains valid GPS coordinates
-#define FLAG_BLE_HOME 0x0020 // BLE home beacon was detected this cycle
-#define FLAG_GPS_WARM 0x0040 // GPS module is in warm-start state
+#define FLAG_HAS_GPS         0x0010 // Packet contains valid GPS coordinates
+#define FLAG_BLE_HOME        0x0020 // BLE home beacon was detected this cycle
+#define FLAG_GPS_WARM        0x0040 // GPS module is in warm-start state
+#define FLAG_CELLULAR_UPLINK 0x0080 // Collar switching to cellular-direct uplink
+                                    // (LoRa packet is last before cellular mode;
+                                    //  Hub will not see LoRa packets while collar
+                                    //  is on the cellular path)
 
 // ═══════════════════════════════════════════════
 // Profile Enum (u8) — operating mode
@@ -86,13 +95,17 @@ enum bp_tlv_type_t : uint8_t
     TLV_LOST_MODE_S = 0x08,    // u32 — seconds elapsed in lost mode
     TLV_NEW_MODE = 0x09,       // u8  — bp_profile_t (mode reverted to)
     TLV_DURATION_S = 0x0A,     // u32 — total duration in seconds
-    TLV_CMD_MSG_ID = 0x0B,     // u32 — msg_seq_id of command being ACK'd
+    TLV_CMD_MSG_ID  = 0x0B,    // u32 — msg_seq_id of command being ACK'd
+    TLV_COMM_PATH   = 0x0C,    // u8  — COMM_PATH_LORA(0) or COMM_PATH_CELLULAR(1)
+                                //        Collar reports which radio it used / intends
+                                //        to use for the next uplink cycle.
 };
 
 // ═══════════════════════════════════════════════
 // Device Registry
 // ═══════════════════════════════════════════════
-#define DEVICE_ID_BASE 0x0000      // Base station (RX)
+#define DEVICE_ID_HUB       0x0000 // Home Hub concentrator (this device)
+#define DEVICE_ID_BASE      0x0000 // Alias: kept for backward compatibility
 #define DEVICE_ID_BROADCAST 0xFFFF // Broadcast to all collars
 
 struct DeviceInfo

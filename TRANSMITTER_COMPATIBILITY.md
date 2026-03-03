@@ -1,8 +1,23 @@
-# Transmitter Node Compatibility Guide
+# Collar (Transmitter Node) Compatibility Guide
 
 ## Summary
 
-Your **BluePawzTransmitter** nodes need the following updates to be compatible with the Command & Control system. The key change from previous versions is that all LoRa communication now uses the **binary TLV protocol** defined in `protocol.h` instead of JSON.
+Your **BluePawzTransmitter** collar nodes need the following updates to be compatible with the Command & Control system. The key change from previous versions is that all LoRa communication now uses the **binary TLV protocol** defined in `protocol.h` instead of JSON.
+
+### Communication Architecture
+
+```
+PRIMARY PATH (normal operation — all modes except cellular fallback)
+
+  [Collar] ---(SX1262 LoRa uplink)---> [Home Hub] ---(Wi-Fi)---> Cloud
+  [Home Hub] ---(SX1262 LoRa downlink)---> [Collar]  (commands only)
+
+FALLBACK PATH (power-scheme driven, rare)
+
+  [Collar] ---(Cat-1/NB-IoT cellular)---> Cloud  (bypasses Home Hub entirely)
+```
+
+> **Important:** Commands from the Home Hub can only reach the collar via LoRa downlink. When the collar is on the cellular path, the Hub has no command channel to it. Mode changes will apply on the next LoRa-path transmit cycle.
 
 ---
 
@@ -32,13 +47,15 @@ This must match the `DEVICE_REGISTRY` in `protocol.h`.
 
 ### 3. Add Binary Packet Support
 
-Your transmitter needs to:
+Your collar firmware needs to:
 
 1. Build binary telemetry packets (replacing JSON GPS updates)
-2. Listen for incoming binary commands after each transmission
-3. Validate CRC and device ID before processing
-4. Apply mode changes and send binary ACKs
-5. Send binary PKT_ALERT on lost mode timeout
+2. Include `TLV_COMM_PATH` in every packet (LoRa or cellular)
+3. Set `FLAG_CELLULAR_UPLINK` when switching to the cellular path
+4. Listen for incoming binary commands after each LoRa transmission
+5. Validate CRC and device ID before processing
+6. Apply mode changes and send binary ACKs
+7. Send binary PKT_ALERT on lost mode timeout
 
 ---
 
@@ -60,14 +77,15 @@ bool gpsWarm = false;
 uint8_t bleHomeCycles = 0;
 ```
 
-### Sending Binary Telemetry
+### Sending Binary Telemetry (LoRa Path)
 
 Replace your existing JSON GPS update with:
 
 ```cpp
-void sendTelemetry(bool hasGps, float lat, float lon, uint16_t accM,
-                   uint16_t speedCms, uint16_t distHomeM, uint16_t bearingDeg,
-                   uint16_t battMv, uint16_t fixAgeS, bp_status_t status)
+void sendLoRaTelemetry(bool hasGps, float lat, float lon, uint16_t accM,
+                       uint16_t speedCms, uint16_t distHomeM, uint16_t bearingDeg,
+                       uint16_t battMv, uint16_t fixAgeS, bp_status_t status,
+                       bool switchingToCellular)
 {
   uint8_t buf[BP_MAX_PACKET_SIZE];
 
@@ -75,6 +93,7 @@ void sendTelemetry(bool hasGps, float lat, float lon, uint16_t accM,
   if (hasGps) flags |= FLAG_HAS_GPS;
   if (bleHomeCycles > 0) flags |= FLAG_BLE_HOME;
   if (gpsWarm) flags |= FLAG_GPS_WARM;
+  if (switchingToCellular) flags |= FLAG_CELLULAR_UPLINK; // Last LoRa before cellular
 
   pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(), status, flags);
 
@@ -93,12 +112,47 @@ void sendTelemetry(bool hasGps, float lat, float lon, uint16_t accM,
   pkt_add_tlv_u8(buf,  TLV_PROFILE,        currentProfile);
   pkt_add_tlv_i8(buf,  TLV_TX_POWER,       currentMode->lora_power_dbm);
   pkt_add_tlv_u16(buf, TLV_SLEEP_INTERVAL, currentMode->sleep_interval_s);
+  pkt_add_tlv_u8(buf,  TLV_COMM_PATH,      COMM_PATH_LORA); // Reporting via LoRa
   if (gpsWarm) pkt_add_tlv_u8(buf, TLV_GPS_WARM, 1);
   if (bleHomeCycles > 0) pkt_add_tlv_u8(buf, TLV_HOME_CYCLES, bleHomeCycles);
 
   uint8_t len = pkt_finalize(buf);
   radio.setOutputPower(currentMode->lora_power_dbm);
   radio.transmit(buf, len);
+  Serial.printf("LoRa telemetry sent (%d bytes) -> Home Hub -> Cloud\n", len);
+}
+```
+
+### Cellular Fallback Path
+
+When the power scheme decides to use the cellular modem directly (e.g., Lost mode with no Hub ACK, or configured profile):
+
+```cpp
+// Comm path selection — called each wake cycle
+uint8_t selectCommPath()
+{
+  // Lost mode: switch to cellular if Hub hasn't ACKed recent LoRa transmissions
+  if (currentProfile == PROFILE_LOST && consecutiveLoRaMisses >= LORA_MISS_THRESHOLD) {
+    return COMM_PATH_CELLULAR;
+  }
+  // All other modes: LoRa to Home Hub is primary
+  return COMM_PATH_LORA;
+}
+
+// Send last LoRa packet with FLAG_CELLULAR_UPLINK before switching over
+void notifyHubSwitchingToCellular()
+{
+  sendLoRaTelemetry(/* ... */, /* switchingToCellular= */ true);
+  // Hub will know it won't see LoRa packets for a while
+}
+
+// Cellular telemetry — implementation is modem/platform specific
+// The Cat-1/NB-IoT modem transmits directly to the cloud endpoint
+void sendCellularTelemetry(/* GPS params */)
+{
+  // TODO: implement via Cat-1/NB-IoT AT commands or modem library
+  // Packet goes directly to cloud — Home Hub is NOT involved
+  Serial.println("Cellular telemetry sent -> Cloud (bypassing Home Hub)");
 }
 ```
 
@@ -360,14 +414,24 @@ void loop()
     applyProfile(PROFILE_ACTIVE);
   }
 
-  // Wake -> GPS -> transmit
+  // Wake -> GPS -> select comm path -> transmit
   bool hasGps = getGpsFix();
-  sendTelemetry(hasGps, lat, lon, accM, speedCms, distHomeM, bearing,
-                readBatteryMv(), fixAgeS,
-                hasGps ? STATUS_OUT_AND_ABOUT : STATUS_INVALID_GPS);
+  uint8_t commPath = selectCommPath();
 
-  // Listen for commands
-  listenForCommands();
+  if (commPath == COMM_PATH_CELLULAR) {
+    notifyHubSwitchingToCellular();  // Last LoRa with FLAG_CELLULAR_UPLINK
+    sendCellularTelemetry(/* GPS params */);
+  } else {
+    sendLoRaTelemetry(hasGps, lat, lon, accM, speedCms, distHomeM, bearing,
+                      readBatteryMv(), fixAgeS,
+                      hasGps ? STATUS_OUT_AND_ABOUT : STATUS_INVALID_GPS,
+                      /* switchingToCellular= */ false);
+  }
+
+  // Listen for Hub commands (LoRa path only — no downlink on cellular)
+  if (commPath == COMM_PATH_LORA) {
+    listenForCommands();
+  }
 
   // LED flashes
   for (uint8_t i = 0; i < currentMode->led_flash_count; i++) {
@@ -385,10 +449,14 @@ void loop()
 
 ## Integration Checklist
 
-- [ ] Copy `protocol.h` to transmitter project (must be IDENTICAL to receiver's)
-- [ ] Copy `config.h` to transmitter project (must be IDENTICAL to receiver's)
+**Protocol files:**
+- [ ] Copy `protocol.h` to transmitter project (must be IDENTICAL to Hub's)
+- [ ] Copy `config.h` to transmitter project (must be IDENTICAL to Hub's)
 - [ ] Set `MY_DEVICE_ID` matching `DEVICE_REGISTRY` in `protocol.h`
-- [ ] Replace JSON telemetry with `sendTelemetry()` (binary PKT_TELEMETRY)
+
+**LoRa primary path:**
+- [ ] Replace JSON telemetry with `sendLoRaTelemetry()` (binary PKT_TELEMETRY)
+- [ ] Include `TLV_COMM_PATH = COMM_PATH_LORA` in every LoRa packet
 - [ ] Implement `applyProfile()` to update `currentMode` and `currentProfile`
 - [ ] Implement `sendModeAck()` with `TLV_CMD_MSG_ID` echo
 - [ ] Implement `sendStatusResponse()` with `TLV_CMD_MSG_ID` echo
@@ -400,30 +468,46 @@ void loop()
 - [ ] Use `currentMode->led_flash_count` for post-TX LED flashes
 - [ ] Handle `currentMode->led_beacon_mode` in Lost mode
 
+**Cellular fallback path:**
+- [ ] Implement `selectCommPath()` to decide LoRa vs cellular each cycle
+- [ ] Send last LoRa packet with `FLAG_CELLULAR_UPLINK` set before switching to cellular
+- [ ] Implement `sendCellularTelemetry()` via Cat-1/NB-IoT modem (cloud-direct)
+- [ ] Track `consecutiveLoRaMisses` to trigger cellular fallback in Lost mode
+- [ ] On returning to LoRa path, resume `listenForCommands()` to catch queued Hub commands
+
 ---
 
 ## Testing Sequence
 
-1. **Flash updated transmitter** with `protocol.h`, `config.h`, and binary packet code
-2. **Power on transmitter** — Serial should show binary telemetry being sent
-3. **Open Serial monitor on receiver** — look for `[LORA] Binary packet received`
-4. **Open Command & Control panel** in web UI — node should appear
-5. **Change mode to ACTIVE** — transmitter should ACK within 2 transmit cycles
+**LoRa primary path (normal operation):**
+1. **Flash updated collar** with `protocol.h`, `config.h`, and binary packet code
+2. **Power on collar** — Serial should show binary LoRa telemetry being sent
+3. **Open Serial monitor on Home Hub** — look for `[LORA] Binary packet received`
+4. **Open Command & Control panel** in web UI — collar should appear in node list
+5. **Change mode to ACTIVE** — collar should ACK within 2 transmit cycles
 6. **Check mode badge** — should update to green "ACTIVE"
 7. **Query status** — should receive PKT_STATUS_RESP with battery, GPS warm, etc.
 8. **Test LOST mode** — confirmation dialog, countdown timer, high TX power
 9. **Wait for timeout** (or reduce `LOST_MODE_MAX_DURATION_S` for testing) — should revert to ACTIVE
 
+**Cellular fallback path:**
+10. **Simulate Hub unavailable** (e.g., power off Hub) — collar should hit `LORA_MISS_THRESHOLD`
+11. **Verify `FLAG_CELLULAR_UPLINK` set** in final LoRa packet before switchover
+12. **Verify cellular transmission** begins via Cat-1/NB-IoT modem (check AT command logs)
+13. **Restore Hub** — collar should fall back to LoRa path on next cycle
+14. **Verify Hub picks up queued mode change** (if any) via first LoRa listen window
+
 ---
 
 ## Debugging
 
-### Transmitter Serial Should Show
+### Collar Serial Should Show (LoRa Path)
 
 ```
 Waking up...
 GPS locked (warm start)
-Sending binary telemetry (47 bytes)
+Comm path: LoRa -> Home Hub -> Cloud
+LoRa telemetry sent (47 bytes) -> Home Hub -> Cloud
 Listening for commands (2s window)...
 Binary packet received (41 bytes)
 CRC OK, device_id match (0x0004)
@@ -433,7 +517,19 @@ ACK sent (53 bytes, echoing msg_seq=42)
 Going to sleep (60s)...
 ```
 
-### Receiver Serial Should Show
+### Collar Serial Should Show (Cellular Fallback)
+
+```
+Waking up...
+GPS locked (warm start)
+Comm path: Cellular (LoRa miss count=3, threshold=3)
+Sending final LoRa packet with FLAG_CELLULAR_UPLINK...
+LoRa telemetry sent (47 bytes) [last LoRa, switching to cellular]
+Cellular telemetry sent -> Cloud (bypassing Home Hub)
+Going to sleep (30s)...
+```
+
+### Home Hub Serial Should Show
 
 ```
 [CMD] Queued for Podge (msg_id=42, 41 bytes)
@@ -444,22 +540,29 @@ Going to sleep (60s)...
 WebSocket: Broadcasting node states
 ```
 
+When collar switches to cellular, Hub logs:
+```
+[LORA] Binary packet received — FLAG_CELLULAR_UPLINK set (Podge switching to cellular path)
+[INFO] Podge will not be reachable via LoRa while on cellular path
+```
+
 ### Common Issues
 
-**Receiver logs "CRC validation failed":**
+**Hub logs "CRC validation failed":**
 
-- TX firmware is probably still sending JSON (first byte is `{` not `0x01`)
+- Collar firmware is probably still sending JSON (first byte is `{` not `0x01`)
 - Or byte order mismatch — ensure both sides include the same `protocol.h`
 
-**Receiver logs "Unknown binary packet type":**
+**Hub logs "Unknown binary packet type":**
 
 - `flags` field is wrong — check `PKT_CMD_MODE` constant value matches in both files
 
-**No commands received by TX:**
+**No commands received by collar:**
 
-- Verify listen window runs immediately after `sendTelemetry()`
+- Verify listen window runs immediately after `sendLoRaTelemetry()`
 - Check `BP_MIN_PACKET_SIZE` and `BP_PROTOCOL_VERSION` match between projects
-- Verify LoRa parameters (frequency, SF, BW, CR) are identical
+- Verify LoRa parameters (frequency, SF, BW, CR) are identical on both devices
+- If collar is on cellular path, it won't receive LoRa commands — wait for LoRa cycle
 
 **ACK received but msg_id doesn't match:**
 
@@ -472,6 +575,12 @@ WebSocket: Broadcasting node states
 - Verify timeout check runs every `loop()` iteration
 - Confirm `LOST_MODE_MAX_DURATION_S` is defined in `config.h`
 
+**Collar stuck on cellular path:**
+
+- Check `consecutiveLoRaMisses` counter — should reset to 0 when a LoRa packet is received
+- Verify Hub is powered on and within LoRa range
+- Confirm LoRa radio is reinitialised correctly after cellular modem use
+
 ---
 
 ## Verification
@@ -479,12 +588,15 @@ WebSocket: Broadcasting node states
 Once implemented, you should see:
 
 - Binary hex dumps in Serial (not JSON strings)
-- All tracked transmitter nodes visible in Command & Control panel
+- All tracked collar nodes visible in Command & Control panel
+- `TLV_COMM_PATH` present in every telemetry packet
 - Mode changes confirmed via PKT_MODE_ACK (TLV_CMD_MSG_ID matches sent msg_seq)
 - Status responses include battery mV, GPS warm flag, home cycle count
 - Countdown timer in UI during lost mode
 - Automatic revert to Active mode after 2 hours, with PKT_ALERT sent
+- `FLAG_CELLULAR_UPLINK` visible in final LoRa packet before cellular switchover
+- Cellular telemetry arriving at cloud endpoint directly (Hub not involved)
 
 ---
 
-**Check the receiver's `main.cpp` for the reference binary packet handling implementation.**
+**Check the Home Hub's `main.cpp` for the reference binary packet handling and ACK processing implementation.**

@@ -1,25 +1,50 @@
 # Command & Control System - Implementation Guide
 
+## System Topology
+
+```
+PRIMARY PATH (normal operation)
+
+  [Cat Collar] --(SX1262 LoRa)--> [Home Hub] --(Wi-Fi)--> Cloud
+
+DOWNLINK (commands -- LoRa only)
+
+  [Home Hub]   --(SX1262 LoRa)--> [Target Collar]
+
+FALLBACK PATH (collar-side, power-scheme driven, rare)
+
+  [Cat Collar] --(Cat-1/NB-IoT cellular)-----------------> Cloud
+  (Hub not involved -- no downlink commands on this path)
+```
+
+**Many-to-one:** Multiple collars (Podge, Macy, Gizmo, Simba, Carrie) all report to **one** Home Hub. The Hub tracks each collar independently.
+
+---
+
 ## Overview
 
-The Command & Control system enables remote management of cat tracker TX nodes via LoRa from the base station. You can change operating modes, query status, and monitor node health in real-time through the web interface.
+The Command & Control system enables remote management of cat tracker collar nodes via LoRa downlink from the Home Hub. You can change operating modes, query status, and monitor node health in real-time through the web interface.
 
-All LoRa communication uses a compact **binary TLV protocol** defined in `protocol.h` (replacing the previous JSON format). The receiver still accepts legacy JSON packets for backward compatibility but all new transmissions are binary.
+Commands travel: **Web UI -> Home Hub -> LoRa downlink -> Collar**
+Telemetry travels: **Collar -> LoRa uplink -> Home Hub -> Wi-Fi -> Cloud**
+
+All LoRa communication uses a compact **binary TLV protocol** defined in `protocol.h` (replacing the previous JSON format). The Hub still accepts legacy JSON packets for backward compatibility but all new transmissions are binary.
 
 ---
 
 ## Operating Modes
 
-All modes are defined identically in both RX and TX projects via **`config.h`** and mapped to `bp_profile_t` enums in **`protocol.h`**.
+All modes are defined identically in both collar and Home Hub firmware via **`config.h`** and mapped to `bp_profile_t` enums in **`protocol.h`**.
 
-| # | Mode | Profile Enum | TX Power | Sleep Interval | Use Case |
-|---|------|-------------|----------|----------------|----------|
-| 1 | Normal (Default) | `PROFILE_NORMAL (0x01)` | 19 dBm | 5 minutes | Standard daily tracking |
-| 2 | Powersave | `PROFILE_POWERSAVE (0x02)` | 10 dBm | 20 minutes | Extend battery when cat is home |
-| 3 | Active | `PROFILE_ACTIVE (0x03)` | 19 dBm | 1 minute | Frequent updates when searching |
-| 4 | Lost | `PROFILE_LOST (0x04)` | 22 dBm (max) | 30 seconds | Emergency search (drains battery!) |
+| # | Mode | Profile Enum | TX Power | Sleep | Comm Path | Use Case |
+|---|------|-------------|----------|-------|-----------|----------|
+| 1 | Normal (Default) | `PROFILE_NORMAL (0x01)` | 19 dBm | 5 min | LoRa -> Hub -> Cloud | Standard daily tracking |
+| 2 | Powersave | `PROFILE_POWERSAVE (0x02)` | 10 dBm | 20 min | LoRa -> Hub -> Cloud | Extend battery (Hub assumed nearby) |
+| 3 | Active | `PROFILE_ACTIVE (0x03)` | 19 dBm | 1 min | LoRa -> Hub -> Cloud | Frequent updates; cellular if Hub unreachable |
+| 4 | Lost | `PROFILE_LOST (0x04)` | 22 dBm (max) | 30 sec | LoRa -> Hub -> Cloud; cellular backup | Emergency search (drains battery!) |
 
 **Lost Mode** also enables continuous LED beacon every 2 seconds and auto-reverts to Active after 2 hours.
+**Note:** There is no command path over cellular. If a collar is on the cellular fallback path the Hub cannot send it commands until it returns to LoRa range.
 
 ---
 
@@ -102,7 +127,7 @@ Devices are identified by numeric IDs defined in `protocol.h`:
 
 | ID | Name |
 |----|------|
-| 0x0000 | Base Station (RX) |
+| 0x0000 | Home Hub concentrator (DEVICE_ID_HUB) |
 | 0x0001 | Macy |
 | 0x0002 | Gizmo |
 | 0x0003 | Simba |
@@ -114,7 +139,7 @@ Devices are identified by numeric IDs defined in `protocol.h`:
 
 ## Example Packets
 
-### Base Station -> TX Node: Mode Change Command (PKT_CMD_MODE)
+### Home Hub -> Collar: Mode Change Command (PKT_CMD_MODE, LoRa downlink)
 
 Change Podge to Lost mode (41 bytes total):
 
@@ -133,7 +158,7 @@ Compare to the old JSON equivalent (87 bytes, no integrity check):
 {"cmd":"mode","profile":"lost","device":"Podge","msg_id":42}
 ```
 
-### TX Node -> Base Station: Mode ACK (PKT_MODE_ACK)
+### Collar -> Home Hub: Mode ACK (PKT_MODE_ACK, LoRa uplink)
 
 Podge confirms mode change and echoes the command's msg_seq:
 
@@ -148,9 +173,9 @@ CRC-16: 2 bytes
 Total: 53 bytes
 ```
 
-### TX Node -> Base Station: Telemetry (PKT_TELEMETRY)
+### Collar -> Home Hub: Telemetry (PKT_TELEMETRY, LoRa uplink)
 
-Regular GPS position update from Podge:
+Regular GPS position update from Podge (Hub relays to Cloud via Wi-Fi):
 
 ```
 Header: device_id=0x0004, status=STATUS_OUT_AND_ABOUT,
@@ -256,10 +281,10 @@ UI shows alert dialog
 
 ## File Structure
 
-### Backend (ESP32 Receiver)
+### Home Hub (ESP32 firmware)
 
-- **`include/protocol.h`** - Binary TLV protocol (MUST match TX project!)
-- **`include/config.h`** - Operating mode definitions (MUST match TX project!)
+- **`include/protocol.h`** - Binary TLV protocol (MUST match collar project!)
+- **`include/config.h`** - Operating mode definitions + comm path defines (MUST match collar!)
 - **`src/main.cpp`** - Binary packet handlers, command queue, LoRa TX/RX, HTTP endpoints, WebSocket
 
 ### Frontend (Web UI)
@@ -295,10 +320,10 @@ Note: The HTTP/WebSocket API uses JSON for browser communication. Only the LoRa 
 
 ### POST /send-command
 
-**Description:** Queue a binary command to be sent to a TX node
+**Description:** Queue a binary LoRa downlink command to a collar
 **Parameters:**
 
-- `device` - TX node name (e.g., "Podge") — resolved to device_id internally
+- `device` - Collar name (e.g., "Podge") — resolved to device_id internally
 - `action` - "mode" or "status"
 - `profile` - (only for mode) "normal", "active", "powersave", or "lost"
 
@@ -357,9 +382,9 @@ POST /send-command?device=Simba&action=status
 
 ## Next Steps
 
-1. **Flash RX firmware:** Upload updated `main.cpp` to ESP32 base station
+1. **Flash Hub firmware:** Upload updated `main.cpp` to Home Hub ESP32
 2. **Upload web files:** Use PlatformIO "Upload Filesystem Image" to deploy updated `index.html`
-3. **Update TX firmware:** Copy `protocol.h` and `config.h` to TX project, implement binary packet building
+3. **Update collar firmware:** Copy `protocol.h` and `config.h` to collar project, implement binary packet building and cellular fallback
 4. **Test end-to-end:** Send mode change, verify PKT_MODE_ACK, check UI updates
 5. **Monitor logs:** Use Serial monitor — look for hex dumps and `[ACK]` / `[LORA]` lines
 
@@ -368,10 +393,12 @@ POST /send-command?device=Simba&action=status
 ## Notes
 
 - **LoRa Parameters NEVER Change Remotely:** Frequency, SF, BW, CR are fixed in `config.h` — changing them requires physical reflashing
-- **protocol.h Must Match:** TX and RX must use the identical header to ensure byte-for-byte compatibility
+- **protocol.h Must Match:** Collar and Hub must use the identical header to ensure byte-for-byte compatibility
 - **CRC Protects Every Packet:** 2-byte CRC-16/CCITT-FALSE; corrupt packets are silently dropped
-- **Binary First, JSON Fallback:** RX detects packet format by checking byte 0: `0x01` = binary, `0x7B` (`{`) = legacy JSON
-- **Lost Mode is Emergency Only:** 22 dBm + 30s sleep drains battery very quickly
+- **Binary First, JSON Fallback:** Hub detects packet format by checking byte 0: `0x01` = binary, `0x7B` (`{`) = legacy JSON
+- **No Downlink Over Cellular:** Commands can only be sent when the collar is within LoRa range of the Hub
+- **Lost Mode is Emergency Only:** 22 dBm + 30s sleep + possible cellular fallback drains battery very quickly
+- **Cellular-Aware:** Hub "Last Seen" ages out when collar is on cellular path; relay resumes automatically on LoRa return
 
 ---
 
@@ -391,9 +418,10 @@ POST /send-command?device=Simba&action=status
 
 **No ACK received:**
 
-- Ensure TX node has matching `protocol.h` (check version byte and struct sizes)
-- Look for `[LORA] Binary CRC validation failed` in Serial — means TX is sending wrong format
+- Ensure collar has matching `protocol.h` (check version byte and struct sizes)
+- Look for `[LORA] Binary CRC validation failed` in Serial — means collar is sending wrong format
 - Check LoRa signal strength (may be out of range)
+- If collar is on cellular fallback path it cannot receive LoRa downlinks
 
 **Unknown packet type in Serial:**
 

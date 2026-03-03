@@ -1,9 +1,15 @@
 /*
-  ┌─────────────────────────────────────────────────────────┐
-  ║ 🐾 CAT TRACKER Receiver — LoRa Base + Web Server              ║
-  ║ 🚁 Receives SX1262 LoRa + serves map via WiFi           ║
-  ║ 🕜 Leaflet.js for live GPS display                      ║
-  └─────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────┐
+  ║ CAT TRACKER — Home Hub Concentrator                         ║
+  ║ SX1262 LoRa RX (many collars -> one Hub)                   ║
+  ║ Wi-Fi relay: Hub -> Cloud (primary uplink path)            ║
+  ║ Leaflet.js live map + Command & Control web UI             ║
+  └─────────────────────────────────────────────────────────────┘
+
+  Topology:
+    Primary : Collar -(LoRa)-> THIS HUB -(Wi-Fi)-> Cloud
+    Fallback: Collar -(Cat-1/NB-IoT)-------------> Cloud
+              (cellular packets bypass the Hub entirely)
 */
 
 // ──────────────────────── LIBRARY INCLUDES ─────────────────────────
@@ -411,7 +417,7 @@ void updateNodeState(const JsonDocument &doc)
 
   if (deviceId.isEmpty() || deviceId == "MyDevice")
   {
-    return; // Don't track base station's own device
+    return; // Don't track the Home Hub's own device ID
   }
 
   // Get or create node state
@@ -1585,7 +1591,7 @@ void setup()
   LoRaSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
   int state = lora.begin(LORA_FREQ_MHZ);
-  lora.setOutputPower(22); // RX base station: always max power (mains-powered)
+  lora.setOutputPower(22); // Home Hub: always max downlink power (mains-powered)
   lora.setSpreadingFactor(LORA_SF);
   lora.setBandwidth(LORA_BW_KHZ);
   lora.setCodingRate(LORA_CR);
