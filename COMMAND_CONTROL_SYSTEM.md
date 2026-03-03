@@ -1,115 +1,174 @@
 # Command & Control System - Implementation Guide
 
-## 🎯 Overview
+## Overview
 
 The Command & Control system enables remote management of cat tracker TX nodes via LoRa from the base station. You can change operating modes, query status, and monitor node health in real-time through the web interface.
 
----
-
-## 🔧 Operating Modes
-
-All modes are defined identically in both RX and TX projects via **`config.h`**.
-
-### 1️⃣ Normal Mode (Default)
-
-- **TX Power:** 19 dBm
-- **Sleep Interval:** 5 minutes
-- **LED Flashes:** 5
-- **Use Case:** Standard daily tracking
-
-### 2️⃣ Powersave Mode
-
-- **TX Power:** 10 dBm (reduced)
-- **Sleep Interval:** 20 minutes
-- **LED Flashes:** 5
-- **Use Case:** Extend battery when cat is home
-
-### 3️⃣ Active Mode
-
-- **TX Power:** 19 dBm
-- **Sleep Interval:** 1 minute
-- **LED Flashes:** 5
-- **Use Case:** Frequent updates when searching for cat
-
-### 4️⃣ Lost Mode ⚠️
-
-- **TX Power:** 22 dBm (maximum)
-- **Sleep Interval:** 30 seconds
-- **LED Flashes:** 10 + continuous beacon every 2 seconds
-- **Auto-Timeout:** Reverts to Active mode after 2 hours
-- **Use Case:** Emergency search mode (drains battery quickly!)
+All LoRa communication uses a compact **binary TLV protocol** defined in `protocol.h` (replacing the previous JSON format). The receiver still accepts legacy JSON packets for backward compatibility but all new transmissions are binary.
 
 ---
 
-## 📡 Command Protocol
+## Operating Modes
 
-Commands are sent as JSON over LoRa at **915 MHz, SF8, BW 250kHz, CR 4/5**.
+All modes are defined identically in both RX and TX projects via **`config.h`** and mapped to `bp_profile_t` enums in **`protocol.h`**.
 
-### Base Station → TX Node
+| # | Mode | Profile Enum | TX Power | Sleep Interval | Use Case |
+|---|------|-------------|----------|----------------|----------|
+| 1 | Normal (Default) | `PROFILE_NORMAL (0x01)` | 19 dBm | 5 minutes | Standard daily tracking |
+| 2 | Powersave | `PROFILE_POWERSAVE (0x02)` | 10 dBm | 20 minutes | Extend battery when cat is home |
+| 3 | Active | `PROFILE_ACTIVE (0x03)` | 19 dBm | 1 minute | Frequent updates when searching |
+| 4 | Lost | `PROFILE_LOST (0x04)` | 22 dBm (max) | 30 seconds | Emergency search (drains battery!) |
 
-**Mode Change:**
+**Lost Mode** also enables continuous LED beacon every 2 seconds and auto-reverts to Active after 2 hours.
 
-```json
-{
-  "cmd": "mode",
-  "profile": "lost"
-}
+---
+
+## Binary Packet Protocol
+
+Commands are sent as binary packets over LoRa at **915 MHz, SF8, BW 250kHz, CR 4/5**.
+
+Every packet has a **36-byte fixed header**, an optional **TLV payload** (0-28 bytes), and a **2-byte CRC-16** (CCITT-FALSE). Min 38 bytes, max 66 bytes.
+
+### Header Layout
+
+```
+Byte(s)  Size  Field
+----------------------------------------------
+0        1     Protocol version (0x01)
+1-2      2     Device ID (u16, little-endian)
+3-6      4     Message sequence number (u32, LE)
+7-10     4     Unix timestamp (u32, LE)
+11       1     Status (bp_status_t)
+12-13    2     Flags (u16): bits 0-3 = packet type,
+                            bit4 = FLAG_HAS_GPS,
+                            bit5 = FLAG_BLE_HOME,
+                            bit6 = FLAG_GPS_WARM
+14-17    4     Latitude x 10^7 (i32, signed LE)
+18-21    4     Longitude x 10^7 (i32, signed LE)
+22-23    2     Battery (mV, u16 LE)
+24-25    2     GPS accuracy (metres, u16 LE)
+26-27    2     Fix age (seconds, u16 LE)
+28-29    2     Speed (cm/s, u16 LE)
+30-31    2     Distance from home (metres, u16 LE)
+32-33    2     Bearing (degrees, u16 LE)
+34       1     TLV payload length (bytes)
+35       1     Reserved
+36+      N     TLV payload (0-28 bytes)
+36+N     2     CRC-16/CCITT-FALSE
 ```
 
-**Status Query:**
+### TLV Payload (Type-Length-Value)
 
-```json
-{
-  "cmd": "get_status"
-}
+Each entry: `[type:u8][length:u8][value:N bytes]`, chained back-to-back.
+
+| ID | Name | Value | Purpose |
+|----|------|-------|---------|
+| 0x01 | TLV_PROFILE | u8 | Operating mode (bp_profile_t) |
+| 0x02 | TLV_TX_POWER | i8 | LoRa TX power in dBm |
+| 0x03 | TLV_SLEEP_INTERVAL | u16 LE | Sleep duration in seconds |
+| 0x04 | TLV_GPS_WARM | u8 | 0=cold start, 1=warm start |
+| 0x05 | TLV_HOME_CYCLES | u8 | Consecutive BLE home detections |
+| 0x06 | TLV_LOG_INFO | u16+u16 | Log entries + size in KB (4 bytes) |
+| 0x08 | TLV_LOST_MODE_S | u32 LE | Seconds elapsed in lost mode |
+| 0x09 | TLV_NEW_MODE | u8 | Mode reverted to after timeout |
+| 0x0A | TLV_DURATION_S | u32 LE | Total duration in seconds |
+| 0x0B | TLV_CMD_MSG_ID | u32 LE | msg_seq of the command being ACK'd |
+
+### Packet Types (lower 4 bits of flags field)
+
+| Value | Name | Direction | Purpose |
+|-------|------|-----------|---------|
+| 0x01 | PKT_TELEMETRY | TX -> RX | Position update / BLE home / GPS error |
+| 0x02 | PKT_MODE_ACK | TX -> RX | Confirms mode change was applied |
+| 0x03 | PKT_STATUS_RESP | TX -> RX | Reply to status query |
+| 0x04 | PKT_ALERT | TX -> RX | Lost mode timeout notification |
+| 0x05 | PKT_CMD_MODE | RX -> TX | Command: change operating profile |
+| 0x06 | PKT_CMD_STATUS | RX -> TX | Command: request status report |
+
+### Status Values (byte 11)
+
+| Value | Name | Meaning |
+|-------|------|---------|
+| 0x00 | STATUS_UNKNOWN | Not yet determined |
+| 0x01 | STATUS_OUT_AND_ABOUT | Outdoors with valid GPS fix |
+| 0x02 | STATUS_BLE_HOME | BLE home beacon detected |
+| 0x03 | STATUS_INVALID_GPS | GPS timeout / no fix |
+| 0x04 | STATUS_OK | General positive (responses) |
+| 0x05 | STATUS_LOST_TIMEOUT | Lost mode auto-timed-out |
+
+### Device Registry
+
+Devices are identified by numeric IDs defined in `protocol.h`:
+
+| ID | Name |
+|----|------|
+| 0x0000 | Base Station (RX) |
+| 0x0001 | Macy |
+| 0x0002 | Gizmo |
+| 0x0003 | Simba |
+| 0x0004 | Podge |
+| 0x0005 | Carrie |
+| 0xFFFF | Broadcast (all collars) |
+
+---
+
+## Example Packets
+
+### Base Station -> TX Node: Mode Change Command (PKT_CMD_MODE)
+
+Change Podge to Lost mode (41 bytes total):
+
+```cpp
+uint8_t buf[BP_MAX_PACKET_SIZE];
+pkt_init(buf, /*device_id=*/0x0004, /*msg_seq=*/42, /*time=*/0,
+         STATUS_OK, PKT_CMD_MODE);
+pkt_add_tlv_u8(buf, TLV_PROFILE, PROFILE_LOST);
+uint8_t len = pkt_finalize(buf);  // Appends CRC-16, returns 41
+lora.transmit(buf, len);
 ```
 
-### TX Node → Base Station
-
-**ACK Response:**
+Compare to the old JSON equivalent (87 bytes, no integrity check):
 
 ```json
-{
-  "ack": "mode",
-  "profile": "lost",
-  "power": 22,
-  "sleep": 30,
-  "device": "Podge"
-}
+{"cmd":"mode","profile":"lost","device":"Podge","msg_id":42}
 ```
 
-**Status Response:**
+### TX Node -> Base Station: Mode ACK (PKT_MODE_ACK)
 
-```json
-{
-  "status": "ok",
-  "mode": "normal",
-  "battery": 3.7,
-  "gps": "locked",
-  "uptime": 3600,
-  "device": "Podge"
-}
+Podge confirms mode change and echoes the command's msg_seq:
+
+```
+Header: device_id=0x0004, msg_seq=<node seq>, status=STATUS_OK,
+        flags=PKT_MODE_ACK (0x0002)
+TLVs:   [0x01][0x01][0x04]              TLV_PROFILE = PROFILE_LOST
+        [0x02][0x01][0x16]              TLV_TX_POWER = 22
+        [0x03][0x02][0x1E][0x00]        TLV_SLEEP_INTERVAL = 30
+        [0x0B][0x04][0x2A][0x00][0x00][0x00]  TLV_CMD_MSG_ID = 42
+CRC-16: 2 bytes
+Total: 53 bytes
 ```
 
-**Alert (Lost Mode Timeout):**
+### TX Node -> Base Station: Telemetry (PKT_TELEMETRY)
 
-```json
-{
-  "alert": "lost_mode_timeout",
-  "device": "Podge",
-  "old_mode": "lost",
-  "new_mode": "active",
-  "duration_s": 7200
-}
+Regular GPS position update from Podge:
+
+```
+Header: device_id=0x0004, status=STATUS_OUT_AND_ABOUT,
+        flags=PKT_TELEMETRY (0x0001) | FLAG_HAS_GPS (0x0010) = 0x0011,
+        lat_e7=518970104, lon_e7=-22457700,
+        batt_mV=3700, speed_cms=120, dist_home_m=450
+TLVs:   TLV_PROFILE=PROFILE_ACTIVE, TLV_TX_POWER=19,
+        TLV_SLEEP_INTERVAL=60
+CRC-16: 2 bytes
 ```
 
 ---
 
-## 🖥️ Web UI - Command & Control Panel
+## Web UI - Command & Control Panel
 
 ### Location
 
-**Side Panel → 📡 Command & Control**
+**Side Panel -> Command & Control**
 
 ### Features
 
@@ -118,8 +177,8 @@ Commands are sent as JSON over LoRa at **915 MHz, SF8, BW 250kHz, CR 4/5**.
 - **Last Seen:** Human-readable timestamp ("2m ago", "1h 23m ago")
 - **Lost Mode Countdown:** Shows remaining time before auto-revert
 - **Mode Selector:** Dropdown to change operating mode
-- **Apply Button (✓):** Send mode change command
-- **Status Button (🔄):** Query current node status
+- **Apply Button:** Send mode change command
+- **Status Button:** Query current node status
 
 ### Visual Indicators
 
@@ -137,65 +196,71 @@ Commands are sent as JSON over LoRa at **915 MHz, SF8, BW 250kHz, CR 4/5**.
 
 ---
 
-## 🔄 System Flow
+## System Flow
 
 ### 1. Sending a Mode Change
 
 ```
-User selects mode → Click Apply (✓)
-         ↓
+User selects mode -> Click Apply
+         |
 UI sends POST /send-command?device=Podge&action=mode&profile=lost
-         ↓
-Backend queues command → CommandQueue
-         ↓
-processCommandQueue() sends via LoRa (rate-limited: 3 sec intervals)
-         ↓
-TX node receives → Changes mode → Sends ACK
-         ↓
-Base receives ACK → updateNodeState() parses it
-         ↓
-broadcastNodeStates() → WebSocket sends update
-         ↓
-UI updates in real-time → Button re-enables
+         |
+Backend resolves "Podge" -> device_id 0x0004 (via getDeviceIdByName())
+         |
+Builds binary: pkt_init + TLV_PROFILE=PROFILE_LOST + pkt_finalize
+         |
+Queues to CommandQueue
+         |
+processCommandQueue() transmits raw bytes via LoRa (rate-limited: 3s)
+         |
+TX node receives -> CRC check -> device_id match -> Applies mode
+         |
+TX node sends PKT_MODE_ACK with TLV_CMD_MSG_ID echoing msg_seq
+         |
+Base receives -> CRC check -> handleBinaryModeAck()
+         |
+broadcastNodeStates() -> WebSocket sends update -> UI refreshes
 ```
 
 ### 2. Status Query
 
 ```
-User clicks Status (🔄)
-         ↓
+User clicks Status button
+         |
 POST /send-command?device=Podge&action=status
-         ↓
-Queue {"cmd":"get_status"} → LoRa TX
-         ↓
-TX node responds with battery, GPS, uptime, etc.
-         ↓
-Base parses response → Updates node state
-         ↓
-WebSocket broadcasts → UI shows updated info
+         |
+Builds binary PKT_CMD_STATUS packet
+         |
+TX node responds with PKT_STATUS_RESP:
+  TLV_PROFILE, TLV_TX_POWER, TLV_SLEEP_INTERVAL,
+  TLV_GPS_WARM, TLV_HOME_CYCLES, TLV_LOG_INFO
+         |
+Base parses TLVs -> Updates node state -> WebSocket broadcast
 ```
 
 ### 3. Lost Mode Auto-Revert
 
 ```
-Lost mode activated → lostModeStartTime set
-         ↓
-Every loop(), checkLostModeTimeout() runs
-         ↓
-If 2 hours elapsed:
-  → Send mode change to "active"
-  → Send alert via WebSocket
-  → Show alert dialog in UI
+Lost mode activated on TX node
+         |
+After 2 hours, TX node sends PKT_ALERT:
+  status=STATUS_LOST_TIMEOUT, TLV_DURATION_S=7200,
+  TLV_NEW_MODE=PROFILE_ACTIVE
+         |
+Base receives PKT_ALERT -> Updates state -> WebSocket broadcast
+         |
+UI shows alert dialog
 ```
 
 ---
 
-## 📂 File Structure
+## File Structure
 
 ### Backend (ESP32 Receiver)
 
-- **`include/config.h`** - Shared mode definitions (MUST match TX project!)
-- **`src/main.cpp`** - Command queue, LoRa TX, HTTP endpoints, WebSocket broadcasting
+- **`include/protocol.h`** - Binary TLV protocol (MUST match TX project!)
+- **`include/config.h`** - Operating mode definitions (MUST match TX project!)
+- **`src/main.cpp`** - Binary packet handlers, command queue, LoRa TX/RX, HTTP endpoints, WebSocket
 
 ### Frontend (Web UI)
 
@@ -204,11 +269,11 @@ If 2 hours elapsed:
 
 ---
 
-## 🛠️ API Endpoints
+## API Endpoints
 
 ### GET /node-states
 
-**Description:** Returns current state of all tracked TX nodes  
+**Description:** Returns current state of all tracked TX nodes
 **Response:**
 
 ```json
@@ -226,12 +291,14 @@ If 2 hours elapsed:
 ]
 ```
 
+Note: The HTTP/WebSocket API uses JSON for browser communication. Only the LoRa link uses binary packets.
+
 ### POST /send-command
 
-**Description:** Queue a command to be sent to a TX node  
+**Description:** Queue a binary command to be sent to a TX node
 **Parameters:**
 
-- `device` - TX node ID (e.g., "Podge")
+- `device` - TX node name (e.g., "Podge") — resolved to device_id internally
 - `action` - "mode" or "status"
 - `profile` - (only for mode) "normal", "active", "powersave", or "lost"
 
@@ -239,14 +306,14 @@ If 2 hours elapsed:
 
 ```
 POST /send-command?device=Podge&action=mode&profile=lost
-POST /send-command?device=Smudge&action=status
+POST /send-command?device=Simba&action=status
 ```
 
 **Response:** `200 OK` or `400 Bad Request`
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 ### Rate Limiting
 
@@ -266,70 +333,79 @@ POST /send-command?device=Smudge&action=status
 
 ---
 
-## 🧪 Testing Checklist
+## Testing Checklist
 
 - [ ] Backend compiles without errors
-- [ ] config.h is identical in RX and TX projects
+- [ ] `protocol.h` is identical in RX and TX projects
+- [ ] `config.h` is identical in RX and TX projects
 - [ ] Web UI loads Command & Control panel
 - [ ] Node list populates with tracked devices
 - [ ] Mode badges show correct colors
-- [ ] Mode selector updates current mode
-- [ ] Apply button sends command (check Serial monitor)
-- [ ] Status button queries node (check Serial monitor)
+- [ ] Mode change queues binary PKT_CMD_MODE (check Serial hex dump)
+- [ ] Status query sends binary PKT_CMD_STATUS
+- [ ] PKT_MODE_ACK received, TLV_CMD_MSG_ID matches sent msg_seq
+- [ ] PKT_STATUS_RESP received, TLVs extracted correctly
+- [ ] PKT_ALERT received on lost mode timeout
+- [ ] CRC validation rejects corrupt/noise packets (inject bad byte, verify drop)
+- [ ] Legacy JSON packets still handled (backward compatibility)
 - [ ] Lost mode shows confirmation dialog
 - [ ] Lost mode shows countdown timer
-- [ ] WebSocket updates UI in real-time
 - [ ] Lost mode auto-reverts after 2 hours
-- [ ] Alert dialog appears on timeout
+- [ ] WebSocket updates UI in real-time
 
 ---
 
-## 🚀 Next Steps
+## Next Steps
 
 1. **Flash RX firmware:** Upload updated `main.cpp` to ESP32 base station
-2. **Upload web files:** Use PlatformIO's "Upload Filesystem Image" to deploy updated `index.html`
-3. **Update TX firmware:** Ensure TX nodes have matching `config.h` and command parsing logic
-4. **Test end-to-end:** Send mode change, verify ACK, check real-time UI updates
-5. **Monitor logs:** Use Serial monitor to watch LoRa TX/RX and command queue processing
+2. **Upload web files:** Use PlatformIO "Upload Filesystem Image" to deploy updated `index.html`
+3. **Update TX firmware:** Copy `protocol.h` and `config.h` to TX project, implement binary packet building
+4. **Test end-to-end:** Send mode change, verify PKT_MODE_ACK, check UI updates
+5. **Monitor logs:** Use Serial monitor — look for hex dumps and `[ACK]` / `[LORA]` lines
 
 ---
 
-## 📝 Notes
+## Notes
 
-- **LoRa Parameters NEVER Change Remotely:** Frequency, spreading factor, bandwidth, and coding rate are fixed in `config.h` and cannot be changed via commands (prevents loss of communication)
-- **Mode Definitions Must Match:** Both RX and TX projects use the same `config.h` to ensure consistent behavior
-- **Command Queue Prevents Flooding:** 3-second rate limiting ensures LoRa transmission doesn't overload the radio
-- **WebSocket Real-Time Updates:** No need to refresh page - UI updates automatically when nodes respond
-- **Lost Mode is Emergency Only:** High power + frequent transmissions drain battery very quickly!
+- **LoRa Parameters NEVER Change Remotely:** Frequency, SF, BW, CR are fixed in `config.h` — changing them requires physical reflashing
+- **protocol.h Must Match:** TX and RX must use the identical header to ensure byte-for-byte compatibility
+- **CRC Protects Every Packet:** 2-byte CRC-16/CCITT-FALSE; corrupt packets are silently dropped
+- **Binary First, JSON Fallback:** RX detects packet format by checking byte 0: `0x01` = binary, `0x7B` (`{`) = legacy JSON
+- **Lost Mode is Emergency Only:** 22 dBm + 30s sleep drains battery very quickly
 
 ---
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 **UI doesn't show nodes:**
 
-- Check `/node-states` endpoint in browser (should return JSON)
-- Verify nodes have sent at least one position update (triggers state tracking)
+- Check `/node-states` endpoint in browser (should return JSON array)
+- Verify nodes have sent at least one telemetry packet (triggers state tracking)
 - Check browser console for JavaScript errors
 
 **Commands not sending:**
 
-- Check Serial monitor for "Command queued" messages
+- Check Serial monitor for `[LoRa] Transmitting binary command` messages and hex dump
 - Verify LoRa radio is initialized (`radio.begin()`)
 - Check command queue processing in `loop()`
 
 **No ACK received:**
 
-- Ensure TX node has matching `config.h`
-- Verify TX node is parsing commands correctly
+- Ensure TX node has matching `protocol.h` (check version byte and struct sizes)
+- Look for `[LORA] Binary CRC validation failed` in Serial — means TX is sending wrong format
 - Check LoRa signal strength (may be out of range)
 
-**Lost mode doesn't timeout:**
+**Unknown packet type in Serial:**
 
-- Check `checkLostModeTimeout()` is called in `loop()`
-- Verify `lostModeStartTime` is set when entering lost mode
-- Check Serial monitor for timeout messages
+- Check byte 0: if `0x7B` = `{`, TX is still sending JSON (legacy firmware)
+- If byte 0 is `0x01` but packet type unknown, check `flags` field bits 0-3
+
+**Lost mode doesn't auto-revert:**
+
+- PKT_ALERT is sent by the TX node, not the base station — check TX firmware
+- Verify `LOST_MODE_MAX_DURATION_S` matches in both `config.h` files
+- Check Serial monitor for `STATUS_LOST_TIMEOUT` in received packets
 
 ---
 
-**Built with ❤️ for BluePawz Cat Tracker**
+**Built for BluePawz Cat Tracker**

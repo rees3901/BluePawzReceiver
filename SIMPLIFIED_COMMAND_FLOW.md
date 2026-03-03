@@ -4,124 +4,123 @@
 
 ```
 User clicks "Send"
-    ↓
-Base sends: {"cmd":"mode","profile":"active","device":"Podge","msg_id":42}
-    ↓
-Node applies change
-    ↓
-Node sends: {"ack":"ok","device":"Podge","msg_id":42}
-    ↓
-Base confirms: ✅ Command acknowledged
-    ↓
-Next GPS update includes full status
+    |
+Base builds binary packet:
+    pkt_init(buf, device_id=0x0004, msg_seq=42, ..., PKT_CMD_MODE)
+    pkt_add_tlv_u8(buf, TLV_PROFILE, PROFILE_ACTIVE)
+    pkt_finalize(buf)   ->  41 bytes including CRC-16
+    |
+LoRa transmit (raw bytes)
+    |
+Node receives -> CRC check -> device_id match -> Apply mode
+    |
+Node sends PKT_MODE_ACK:
+    TLV_PROFILE + TLV_TX_POWER + TLV_SLEEP_INTERVAL + TLV_CMD_MSG_ID=42
+    |
+Base confirms: Command acknowledged (msg_id=42 matched)
+    |
+Next telemetry (PKT_TELEMETRY) includes current mode in TLVs
 ```
 
 ---
 
-## Why Simplified?
+## Why Binary TLV?
 
-**Old ACK (too much):**
+**Old approach (JSON):**
 
-```json
-{
-  "ack": "mode",
-  "profile": "active",
-  "power": 19,
-  "sleep": 60,
-  "device": "Podge",
-  "msg_id": 42
-}
+```
+{"cmd":"mode","profile":"active","device":"Podge","msg_id":42}
+= 62 bytes, no integrity check, ArduinoJson heap allocation
 ```
 
-**New ACK (just right):**
+**Binary TLV:**
 
-```json
-{ "ack": "ok", "device": "Podge", "msg_id": 42 }
+```
+01 04 00 2A 00 00 00 00 00 00 00 04 05 00 [GPS zeroes...] 03 00 01 01 03 [CRC]
+= 41 bytes, CRC-16 protected, direct memcpy parsing
 ```
 
 **Benefits:**
 
-- ✅ **Less bandwidth** - Smaller packets save battery
-- ✅ **Faster** - Quick acknowledgment, full status comes later
-- ✅ **Simpler** - Base already knows what it sent
-- ✅ **Works with sleeping nodes** - Node wakes, ACKs, goes back to sleep
+- ~35% smaller packets — less LoRa airtime, better battery life
+- CRC-16/CCITT-FALSE — corrupt packets detected and silently dropped
+- Faster parsing — no JSON allocation on constrained MCU
+- Extensible — new TLV types added without breaking existing parsers (unknown IDs skipped)
+- Device targeting in header — no string comparison needed
 
 ---
 
 ## TX Node Implementation
 
-### Simple ACK Function
+### Receiving a Binary Command
 
 ```cpp
-void sendAck(uint32_t msgId)
+void handleBinaryCommand(const uint8_t *buf, uint8_t pkt_len)
 {
-  JsonDocument doc;
-  doc["ack"] = "ok";
-  doc["device"] = DEVICE_ID;  // Who is acknowledging
-  doc["msg_id"] = msgId;      // Echo back the message ID
+  // device_id check already done by caller
+  uint16_t ptype = pkt_pkt_type(buf);
+  uint32_t cmdMsgSeq = pkt_msg_seq(buf);  // Save for ACK
 
-  String output;
-  serializeJson(doc, output);
-
-  radio.transmit(output);
-  Serial.printf("ACK sent (msg_id=%lu)\n", msgId);
-}
-```
-
-### Command Handler
-
-```cpp
-void handleRemoteCommand(String jsonCommand)
-{
-  JsonDocument doc;
-  deserializeJson(doc, jsonCommand);
-
-  // Check if message is for this device
-  const char* targetDevice = doc["device"];
-  if (!targetDevice || strcmp(targetDevice, DEVICE_ID) != 0) {
-    return; // Not for me, ignore
+  if (ptype == PKT_CMD_MODE) {
+    uint8_t profileEnum;
+    if (pkt_tlv_get_u8(buf, TLV_PROFILE, &profileEnum)) {
+      applyProfile((bp_profile_t)profileEnum);
+      Serial.printf("Mode changed to: %s\n",
+                    profileToName((bp_profile_t)profileEnum));
+      sendModeAck(cmdMsgSeq);
+    }
   }
-
-  // Extract message ID
-  uint32_t msgId = doc["msg_id"].as<uint32_t>();
-
-  // Process command
-  const char* cmd = doc["cmd"];
-
-  if (strcmp(cmd, "mode") == 0) {
-    // Apply new mode
-    const char* profile = doc["profile"];
-    currentMode = getModeByName(profile);
-
-    // Send simple ACK
-    sendAck(msgId);
-
-    // Full status will be sent in next GPS update
-  }
-  else if (strcmp(cmd, "get_status") == 0) {
-    // Only send full status when explicitly requested
-    sendStatusResponse(msgId);
+  else if (ptype == PKT_CMD_STATUS) {
+    sendStatusResponse(cmdMsgSeq);
   }
 }
 ```
 
-### Include Mode in GPS Updates
+### Simple Mode ACK
 
 ```cpp
-void sendGPSUpdate()
+void sendModeAck(uint32_t cmdMsgSeq)
 {
-  JsonDocument doc;
-  doc["id"] = DEVICE_ID;
-  doc["lat"] = gps.location.lat();
-  doc["lon"] = gps.location.lng();
-  doc["mode"] = currentMode->name;        // ← Add current mode
-  doc["power"] = currentMode->lora_power_dbm;  // ← Add TX power
-  doc["sleep"] = currentMode->sleep_interval_s; // ← Add sleep interval
-  // ... other GPS data ...
+  uint8_t buf[BP_MAX_PACKET_SIZE];
+  pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(),
+           STATUS_OK, PKT_MODE_ACK);
 
-  String output;
-  serializeJson(doc, output);
-  radio.transmit(output);
+  pkt_add_tlv_u8(buf,  TLV_PROFILE,        currentProfile);
+  pkt_add_tlv_i8(buf,  TLV_TX_POWER,       currentMode->lora_power_dbm);
+  pkt_add_tlv_u16(buf, TLV_SLEEP_INTERVAL, currentMode->sleep_interval_s);
+  pkt_add_tlv_u32(buf, TLV_CMD_MSG_ID,     cmdMsgSeq);  // Echo back!
+
+  uint8_t len = pkt_finalize(buf);
+  radio.transmit(buf, len);
+  Serial.printf("ACK sent (%d bytes, msg_seq=%lu)\n", len, cmdMsgSeq);
+}
+```
+
+### Include Mode in Telemetry Updates
+
+```cpp
+void sendTelemetry()
+{
+  uint8_t buf[BP_MAX_PACKET_SIZE];
+  uint16_t flags = PKT_TELEMETRY;
+  if (gpsValid) flags |= FLAG_HAS_GPS;
+  if (bleHome)  flags |= FLAG_BLE_HOME;
+
+  pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(),
+           currentStatus, flags);
+
+  if (gpsValid) {
+    pkt_set_gps(buf, lat_e7, lon_e7, distHomeM, bearingDeg);
+    // Also set batt_mV, acc_m, speed_cms in header bytes 22-29
+  }
+
+  // Current mode info — always included
+  pkt_add_tlv_u8(buf,  TLV_PROFILE,        currentProfile);
+  pkt_add_tlv_i8(buf,  TLV_TX_POWER,       currentMode->lora_power_dbm);
+  pkt_add_tlv_u16(buf, TLV_SLEEP_INTERVAL, currentMode->sleep_interval_s);
+
+  uint8_t len = pkt_finalize(buf);
+  radio.transmit(buf, len);
 }
 ```
 
@@ -129,102 +128,104 @@ void sendGPSUpdate()
 
 ## Sleeping Node Scenario
 
-### Problem:
+### Problem
 
-Node is asleep when command arrives → Can't receive it immediately
+Node is asleep when command arrives — can't receive it immediately.
 
-### Solution:
+### Solution
 
-Node listens for commands after each GPS transmission
+Node listens for binary commands for 2 seconds after each GPS transmission.
 
 ```cpp
 void transmitCycle()
 {
   // 1. Wake up
   // 2. Get GPS fix
-  // 3. Send position update (includes current mode)
-  sendGPSUpdate();
+  // 3. Send binary telemetry (includes current mode in TLVs)
+  sendTelemetry();
 
-  // 4. Listen for commands for 2 seconds
+  // 4. Listen for binary commands for 2 seconds
   uint32_t listenStart = millis();
   while (millis() - listenStart < 2000) {
-    if (radio.available()) {
-      String received = radio.readString();
-      handleRemoteCommand(received);
-      break; // Command received and ACKed
+    uint8_t rxBuf[BP_MAX_PACKET_SIZE];
+    uint8_t rxLen = 0;
+    int state = radio.receive(rxBuf, BP_MAX_PACKET_SIZE);
+
+    if (state == RADIOLIB_ERR_NONE) {
+      rxLen = radio.getPacketLength();
+
+      // Validate: version, CRC, device_id
+      if (rxLen >= BP_MIN_PACKET_SIZE &&
+          rxBuf[0] == BP_PROTOCOL_VERSION &&
+          pkt_validate_crc(rxBuf, rxLen)) {
+
+        uint16_t target = pkt_device_id(rxBuf);
+        if (target == MY_DEVICE_ID || target == DEVICE_ID_BROADCAST) {
+          handleBinaryCommand(rxBuf, rxLen);
+          break;  // Processed, exit listen window
+        }
+      }
     }
     delay(10);
   }
 
-  // 5. Go back to sleep
+  // 5. Sleep using current mode interval
+  esp_sleep_enable_timer_wakeup(currentMode->sleep_interval_s * 1000000ULL);
   esp_deep_sleep_start();
 }
 ```
 
-### Timeline Example:
+### Timeline Example
 
 ```
-00:00 - Node is asleep (Normal mode, 5min interval)
+00:00 - Node asleep (Normal mode, 5min interval)
 02:30 - User sends "change to Active"
-02:30 - Base queues command (msg_id=42)
-02:30 - Base transmits command
-02:30 - Node is asleep, doesn't receive ❌
+02:30 - Base queues binary PKT_CMD_MODE (msg_seq=42, 41 bytes)
+02:30 - Base transmits; node is asleep -> missed
 
-05:00 - Node wakes up
-05:05 - Node gets GPS, sends position (still shows "Normal")
+05:00 - Node wakes
+05:05 - Node sends PKT_TELEMETRY (TLV_PROFILE=PROFILE_NORMAL)
 05:05 - Node enters 2-second listen window
-05:05 - Base retransmits command (msg_id=42) ✅
-05:05 - Node receives, applies "Active" mode
-05:05 - Node sends ACK (msg_id=42) ✅
+05:05 - Base retransmits PKT_CMD_MODE (msg_seq=42)
+05:05 - Node: CRC OK, device_id match -> PROFILE_ACTIVE applied
+05:05 - Node sends PKT_MODE_ACK (TLV_CMD_MSG_ID=42)
 05:05 - Node goes back to sleep
 
-06:05 - Node wakes again (Active mode, 1min interval)
-06:06 - Node sends GPS update (now shows "Active") ✅
-06:06 - Base confirms full mode change
+06:05 - Node wakes (Active mode, 1min interval now)
+06:06 - Node sends PKT_TELEMETRY (TLV_PROFILE=PROFILE_ACTIVE)
+06:06 - Base sees mode confirmed in telemetry TLVs
 ```
 
 ---
 
-## Base Station Behavior
-
-### Command Queueing
-
-```cpp
-// User clicks send in UI
-// → HTTP POST /send-command?device=Podge&action=mode&profile=active
-// → Backend calls:
-
-sendModeCommand("Podge", "active");
-
-// Which creates:
-{
-  "cmd": "mode",
-  "profile": "active",
-  "device": "Podge",
-  "msg_id": 42  // Auto-assigned
-}
-```
+## Base Station Behaviour
 
 ### ACK Handling
 
 ```cpp
-// Receives: {"ack":"ok","device":"Podge","msg_id":42}
-
-void updateNodeState(const JsonDocument &doc)
+void handleBinaryModeAck(const uint8_t *buf, uint8_t pkt_len,
+                         int16_t rssi, float snr)
 {
-  if (doc["ack"].is<String>()) {
-    uint32_t msgId = doc["msg_id"].as<uint32_t>();
-    String deviceId = doc["device"].as<String>();
+  uint16_t deviceId = pkt_device_id(buf);
+  const char *name  = getDeviceName(deviceId);
 
-    Serial.printf("[ACK] %s acknowledged (msg_id=%lu) ✅\n",
-                  deviceId.c_str(), msgId);
+  uint8_t profileEnum = PROFILE_UNKNOWN;
+  pkt_tlv_get_u8(buf, TLV_PROFILE, &profileEnum);
 
-    // Clear pending indicator in UI
-    broadcastNodeStates();
+  int8_t txPower = 0;
+  pkt_tlv_get_i8(buf, TLV_TX_POWER, &txPower);
 
-    // Trust that node applied the change
-    // Full confirmation comes in next GPS update
-  }
+  uint16_t sleepInterval = 0;
+  pkt_tlv_get_u16(buf, TLV_SLEEP_INTERVAL, &sleepInterval);
+
+  uint32_t cmdMsgId = 0;
+  pkt_tlv_get_u32(buf, TLV_CMD_MSG_ID, &cmdMsgId);
+
+  Serial.printf("[ACK] %s confirmed mode: %s (msg_id=%lu)\n",
+                name, profileToName((bp_profile_t)profileEnum), cmdMsgId);
+
+  updateNodeFromAck(name, profileEnum, txPower, sleepInterval);
+  broadcastNodeStates();  // Push to WebSocket clients
 }
 ```
 
@@ -235,80 +236,78 @@ void updateNodeState(const JsonDocument &doc)
 ### 1. User Clicks Send
 
 ```javascript
-// Button shows: ⏳ (pending)
-cardModeText.innerHTML =
-  '<span style="color: #ffc107;">⏳ Sending command...</span>';
+// Button disabled, shows pending state
+cardModeText.innerHTML = '<span style="color: #ffc107;">Sending command...</span>';
 ```
 
-### 2. Command Transmitted
+### 2. Binary Command Transmitted
 
 ```
-Serial: [LoRa] TX to Podge (msg_id=42): {"cmd":"mode",...}
+Serial: [LoRa] Transmitting binary command to Podge (msg_id=42, 41 bytes)
+Serial: [PKT] 41 bytes: 01 04 00 2A 00 00 00 00 00 00 00 04 05 00 ...
 ```
 
-### 3. ACK Received
+### 3. Binary ACK Received
 
-```javascript
-// WebSocket receives: {"ack":"ok","device":"Podge","msg_id":42}
-// Button shows: ✓ (acknowledged)
-cardModeText.innerHTML = '<span style="color: #28a745;">✅ Acknowledged</span>';
+```
+Serial: [LORA] Binary packet received (53 bytes, RSSI=-42, SNR=10.0)
+Serial: [ACK] Podge confirmed mode: active (msg_id=42)
+// WebSocket broadcasts updated node state -> UI re-enables button
 ```
 
-### 4. Next GPS Update
+### 4. Next Telemetry Update
 
-```javascript
-// WebSocket receives: {"id":"Podge","mode":"active","power":19,"sleep":60,...}
-// UI updates mode badge to "ACTIVE" (green)
-cardModeText.innerHTML = '<span style="color: #28a745;">● ACTIVE</span>';
+```
+Serial: [LORA] Binary packet received (PKT_TELEMETRY, Podge, TLV_PROFILE=active)
+// UI mode badge updates to "ACTIVE" (green)
 ```
 
 ---
 
-## Testing
+## Serial Monitor Examples
 
-### Serial Monitor - Base Station:
+### Base Station
 
 ```
-[CMD] Queued for Podge (msg_id=42)
-[LoRa] TX to Podge (msg_id=42): {"cmd":"mode","profile":"active","device":"Podge","msg_id":42}
-[LoRa] ✅ Command transmitted successfully (msg_id=42)
-[LoRa] RX: {"ack":"ok","device":"Podge","msg_id":42}
-[ACK] Podge acknowledged command (msg_id=42) ✅
-
-... waiting for next GPS update ...
-
-[LoRa] RX: {"id":"Podge","lat":51.873,"lon":-2.239,"mode":"active","power":19,"sleep":60}
-[GPS] Podge position update - mode confirmed: active
+[CMD] Queued for Podge (msg_id=42, 41 bytes)
+[PKT] 41 bytes: 01 04 00 2A 00 00 00 00 00 00 00 04 05 00 00 00 00 00 ...
+[LoRa] Command transmitted (msg_id=42)
+[LORA] Binary packet received (53 bytes, RSSI=-45, SNR=9.2)
+[ACK] Podge confirmed mode: active (msg_id=42, 19dBm, 60s)
+WebSocket: Broadcasting node states
 ```
 
-### Serial Monitor - TX Node:
+### TX Node (Podge)
 
 ```
 Waking up...
-GPS locked
-Sending position: {"id":"Podge","lat":51.873,"lon":-2.239,"mode":"normal",...}
-Listening for commands (2sec)...
-RX: {"cmd":"mode","profile":"active","device":"Podge","msg_id":42}
-Command for me (msg_id=42)
+GPS locked (warm start)
+Sending binary telemetry (47 bytes)
+Listening for commands (2s window)...
+Binary packet received (41 bytes)
+CRC OK, device_id match (0x0004)
+PKT_CMD_MODE -> PROFILE_ACTIVE
 Mode changed to: active
-ACK sent (msg_id=42)
+ACK sent (53 bytes, msg_seq=42)
 Going to sleep (Active mode, 60s)...
+```
 
-... 60 seconds later ...
+### TX Node (Macy — ignoring)
 
-Waking up...
-GPS locked
-Sending position: {"id":"Podge","lat":51.873,"lon":-2.239,"mode":"active","power":19,"sleep":60}
+```
+Binary packet received (41 bytes)
+CRC OK
+Not for me (target=0x0004, my_id=0x0001) - IGNORING
 ```
 
 ---
 
 ## Key Points
 
-✅ **ACK is minimal** - Just `ok`, `device`, and `msg_id`  
-✅ **Full status in GPS** - Mode, power, sleep included in regular updates  
-✅ **Works when sleeping** - Node processes on wake  
-✅ **Tracks commands** - msg_id prevents confusion  
-✅ **Battery friendly** - Short ACK packets
-
-Perfect for low-power, long-sleep cat trackers! 🐱
+- **Binary packets are ~35% smaller** than equivalent JSON — less airtime, better battery
+- **CRC-16 protects every packet** — corrupt packets silently dropped, no bad data processed
+- **Device ID in header bytes 1-2** — filtering before any TLV parsing
+- **TLV_CMD_MSG_ID echoes msg_seq** — reliable command-to-ACK matching
+- **TLVs are optional and order-independent** — parsers skip unknown type IDs safely
+- **Legacy JSON still accepted** on RX side — detected by first byte `{` (0x7B) vs `0x01`
+- **Mode always in telemetry TLVs** — base station confirms mode from regular updates too
