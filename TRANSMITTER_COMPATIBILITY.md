@@ -1,239 +1,290 @@
 # Transmitter Node Compatibility Guide
 
-## ✅ Summary
+## Summary
 
-Your **BluePawzTransmitter** nodes need the following updates to be compatible with the Command & Control system:
+Your **BluePawzTransmitter** nodes need the following updates to be compatible with the Command & Control system. The key change from previous versions is that all LoRa communication now uses the **binary TLV protocol** defined in `protocol.h` instead of JSON.
 
 ---
 
-## 📋 Required Changes
+## Required Changes
 
-### 1. **Copy config.h to Transmitter Project**
+### 1. Copy protocol.h and config.h to Transmitter Project
 
-**Location:** `BluePawzTransmitter/include/config.h`
-
-**Action:** Copy the **IDENTICAL** `config.h` file from this receiver project to your transmitter project.
-
-**Why:** Both devices must use the same mode definitions, LoRa parameters, and command protocol structure.
-
-**Path:**
+**Locations:**
 
 ```
-BluePawzReceiver/include/config.h  →  BluePawzTransmitter/include/config.h
+BluePawzReceiver/include/protocol.h  ->  BluePawzTransmitter/include/protocol.h
+BluePawzReceiver/include/config.h    ->  BluePawzTransmitter/include/config.h
 ```
 
-### 2. **Add Command Parsing to Transmitter**
+Both files must be **identical** on TX and RX. `protocol.h` defines the binary packet format; `config.h` defines the operating mode parameters.
+
+### 2. Set Your Device ID
+
+In your transmitter's `main.cpp` (or a device-specific header):
+
+```cpp
+#define MY_DEVICE_ID 0x0004  // Podge
+// Other IDs: Macy=0x0001, Gizmo=0x0002, Simba=0x0003, Carrie=0x0005
+```
+
+This must match the `DEVICE_REGISTRY` in `protocol.h`.
+
+### 3. Add Binary Packet Support
 
 Your transmitter needs to:
 
-1. Listen for incoming LoRa messages
-2. Parse JSON commands
-3. Execute mode changes
-4. Send ACK/status responses
+1. Build binary telemetry packets (replacing JSON GPS updates)
+2. Listen for incoming binary commands after each transmission
+3. Validate CRC and device ID before processing
+4. Apply mode changes and send binary ACKs
+5. Send binary PKT_ALERT on lost mode timeout
 
 ---
 
-## 🔧 Transmitter Code Requirements
+## Transmitter Code Requirements
 
-### Include config.h
+### Includes and Global Variables
 
 ```cpp
+#include <protocol.h>
 #include <config.h>
+
+#define MY_DEVICE_ID 0x0004  // Change for each device
+
+const OperatingMode *currentMode = &MODE_NORMAL;
+bp_profile_t currentProfile = PROFILE_NORMAL;
+uint32_t lostModeStartTime = 0;
+uint32_t mySeqCounter = 1;    // Increments with every packet sent
+bool gpsWarm = false;
+uint8_t bleHomeCycles = 0;
 ```
 
-### Add Global Variables
+### Sending Binary Telemetry
+
+Replace your existing JSON GPS update with:
 
 ```cpp
-// Current operating mode
-const OperatingMode* currentMode = &MODE_NORMAL;
-uint32_t lostModeStartTime = 0; // millis() when lost mode started
+void sendTelemetry(bool hasGps, float lat, float lon, uint16_t accM,
+                   uint16_t speedCms, uint16_t distHomeM, uint16_t bearingDeg,
+                   uint16_t battMv, uint16_t fixAgeS, bp_status_t status)
+{
+  uint8_t buf[BP_MAX_PACKET_SIZE];
+
+  uint16_t flags = PKT_TELEMETRY;
+  if (hasGps) flags |= FLAG_HAS_GPS;
+  if (bleHomeCycles > 0) flags |= FLAG_BLE_HOME;
+  if (gpsWarm) flags |= FLAG_GPS_WARM;
+
+  pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(), status, flags);
+
+  // Fill header GPS/battery fields
+  if (hasGps) {
+    int32_t lat_e7 = (int32_t)(lat * 1e7f);
+    int32_t lon_e7 = (int32_t)(lon * 1e7f);
+    pkt_set_gps(buf, lat_e7, lon_e7, distHomeM, bearingDeg);
+    memcpy(&buf[28], &speedCms, 2);
+  }
+  memcpy(&buf[22], &battMv, 2);
+  memcpy(&buf[24], &accM, 2);
+  memcpy(&buf[26], &fixAgeS, 2);
+
+  // TLV: current operating mode info
+  pkt_add_tlv_u8(buf,  TLV_PROFILE,        currentProfile);
+  pkt_add_tlv_i8(buf,  TLV_TX_POWER,       currentMode->lora_power_dbm);
+  pkt_add_tlv_u16(buf, TLV_SLEEP_INTERVAL, currentMode->sleep_interval_s);
+  if (gpsWarm) pkt_add_tlv_u8(buf, TLV_GPS_WARM, 1);
+  if (bleHomeCycles > 0) pkt_add_tlv_u8(buf, TLV_HOME_CYCLES, bleHomeCycles);
+
+  uint8_t len = pkt_finalize(buf);
+  radio.setOutputPower(currentMode->lora_power_dbm);
+  radio.transmit(buf, len);
+}
 ```
 
-### Add Command Parsing Function
+### Apply an Operating Profile
 
 ```cpp
-void handleRemoteCommand(String jsonCommand) {
-  JsonDocument doc;
-  DeserializationError error = deserializeJson(doc, jsonCommand);
+void applyProfile(bp_profile_t profile)
+{
+  currentProfile = profile;
 
-  if (error) {
-    Serial.println("Failed to parse command JSON");
-    return;
+  switch (profile) {
+    case PROFILE_NORMAL:    currentMode = &MODE_NORMAL;    break;
+    case PROFILE_POWERSAVE: currentMode = &MODE_POWERSAVE; break;
+    case PROFILE_ACTIVE:    currentMode = &MODE_ACTIVE;    break;
+    case PROFILE_LOST:
+      currentMode = &MODE_LOST;
+      lostModeStartTime = millis();
+      break;
+    default:
+      currentMode = &MODE_NORMAL;
+      currentProfile = PROFILE_NORMAL;
+      break;
   }
 
-  const char* cmd = doc["cmd"];
-  if (!cmd) return;
+  if (profile != PROFILE_LOST) {
+    lostModeStartTime = 0;
+  }
 
-  // MODE CHANGE COMMAND
-  if (strcmp(cmd, "mode") == 0) {
-    const char* profile = doc["profile"];
-    if (profile) {
-      const OperatingMode* newMode = getModeByName(profile);
-      currentMode = newMode;
+  Serial.printf("Profile applied: %s (%ddBm, %ds sleep)\n",
+                profileToName(profile),
+                currentMode->lora_power_dbm,
+                currentMode->sleep_interval_s);
+}
+```
 
-      // Track lost mode start time
-      if (strcmp(profile, "lost") == 0) {
-        lostModeStartTime = millis();
-      } else {
-        lostModeStartTime = 0;
+### Sending a Binary Mode ACK
+
+```cpp
+void sendModeAck(uint32_t cmdMsgSeq)
+{
+  uint8_t buf[BP_MAX_PACKET_SIZE];
+
+  pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(),
+           STATUS_OK, PKT_MODE_ACK);
+
+  pkt_add_tlv_u8(buf,  TLV_PROFILE,        currentProfile);
+  pkt_add_tlv_i8(buf,  TLV_TX_POWER,       currentMode->lora_power_dbm);
+  pkt_add_tlv_u16(buf, TLV_SLEEP_INTERVAL, currentMode->sleep_interval_s);
+  pkt_add_tlv_u32(buf, TLV_CMD_MSG_ID,     cmdMsgSeq);  // Echo back!
+
+  uint8_t len = pkt_finalize(buf);
+  int state = radio.transmit(buf, len);
+
+  if (state == RADIOLIB_ERR_NONE) {
+    Serial.printf("ACK sent (%d bytes, echoing msg_seq=%lu)\n", len, cmdMsgSeq);
+  } else {
+    Serial.printf("ACK TX failed: %d\n", state);
+  }
+}
+```
+
+### Sending a Binary Status Response
+
+```cpp
+void sendStatusResponse(uint32_t cmdMsgSeq)
+{
+  uint8_t buf[BP_MAX_PACKET_SIZE];
+
+  pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(),
+           STATUS_OK, PKT_STATUS_RESP);
+
+  uint16_t battMv = readBatteryMv();
+  memcpy(&buf[22], &battMv, 2);
+
+  pkt_add_tlv_u8(buf,  TLV_PROFILE,        currentProfile);
+  pkt_add_tlv_i8(buf,  TLV_TX_POWER,       currentMode->lora_power_dbm);
+  pkt_add_tlv_u16(buf, TLV_SLEEP_INTERVAL, currentMode->sleep_interval_s);
+  pkt_add_tlv_u8(buf,  TLV_GPS_WARM,       gpsWarm ? 1 : 0);
+  pkt_add_tlv_u8(buf,  TLV_HOME_CYCLES,    bleHomeCycles);
+  pkt_add_tlv_u32(buf, TLV_CMD_MSG_ID,     cmdMsgSeq);  // Echo back!
+
+  uint8_t len = pkt_finalize(buf);
+  radio.transmit(buf, len);
+}
+```
+
+### Sending a Lost Mode Timeout Alert
+
+```cpp
+void sendLostModeTimeoutAlert()
+{
+  uint8_t buf[BP_MAX_PACKET_SIZE];
+
+  pkt_init(buf, MY_DEVICE_ID, mySeqCounter++, getUnixTime(),
+           STATUS_LOST_TIMEOUT, PKT_ALERT);
+
+  pkt_add_tlv_u8(buf,  TLV_NEW_MODE,   PROFILE_ACTIVE);
+  pkt_add_tlv_u32(buf, TLV_DURATION_S, LOST_MODE_MAX_DURATION_S);
+
+  uint8_t len = pkt_finalize(buf);
+  radio.transmit(buf, len);
+
+  Serial.println("Lost mode timeout alert sent");
+}
+```
+
+### Listening for Commands
+
+After each telemetry transmission, open a 2-second receive window:
+
+```cpp
+void listenForCommands()
+{
+  Serial.println("Listening for commands (2s window)...");
+  uint32_t listenStart = millis();
+
+  while (millis() - listenStart < 2000) {
+    uint8_t rxBuf[BP_MAX_PACKET_SIZE];
+    int state = radio.receive(rxBuf, BP_MAX_PACKET_SIZE);
+
+    if (state == RADIOLIB_ERR_NONE) {
+      uint8_t rxLen = radio.getPacketLength();
+
+      // Validate: minimum size, version byte, CRC
+      if (rxLen < BP_MIN_PACKET_SIZE) break;
+      if (rxBuf[0] != BP_PROTOCOL_VERSION) break;
+      if (!pkt_validate_crc(rxBuf, rxLen)) {
+        Serial.println("CRC failed - ignoring");
+        break;
       }
 
-      Serial.printf("Mode changed to: %s\n", profile);
+      // Device filter
+      uint16_t target = pkt_device_id(rxBuf);
+      if (target != MY_DEVICE_ID && target != DEVICE_ID_BROADCAST) {
+        Serial.printf("Not for me (0x%04X) - ignoring\n", target);
+        break;
+      }
 
-      // Send ACK back to base station
-      sendModeAck(profile);
+      // Dispatch
+      uint32_t cmdMsgSeq = pkt_msg_seq(rxBuf);
+      uint16_t ptype = pkt_pkt_type(rxBuf);
+
+      if (ptype == PKT_CMD_MODE) {
+        uint8_t profileEnum;
+        if (pkt_tlv_get_u8(rxBuf, TLV_PROFILE, &profileEnum)) {
+          applyProfile((bp_profile_t)profileEnum);
+          sendModeAck(cmdMsgSeq);
+        }
+      } else if (ptype == PKT_CMD_STATUS) {
+        sendStatusResponse(cmdMsgSeq);
+      }
+
+      break;  // One command per listen window
     }
-  }
 
-  // STATUS REQUEST COMMAND
-  else if (strcmp(cmd, "get_status") == 0) {
-    sendStatusResponse();
+    delay(10);
   }
 }
 ```
 
-### Send ACK Response
+### Lost Mode Timeout Check in loop()
 
 ```cpp
-void sendModeAck(const char* profile) {
-  JsonDocument doc;
-  doc["ack"] = "mode";
-  doc["profile"] = profile;
-  doc["power"] = currentMode->lora_power_dbm;
-  doc["sleep"] = currentMode->sleep_interval_s;
-  doc["device"] = DEVICE_ID; // Your device ID (e.g., "Podge")
-
-  String output;
-  serializeJson(doc, output);
-
-  // Send via LoRa
-  int state = radio.transmit(output);
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println("ACK sent successfully");
-  }
-}
-```
-
-### Send Status Response
-
-```cpp
-void sendStatusResponse() {
-  JsonDocument doc;
-  doc["status"] = "ok";
-  doc["mode"] = currentMode->name;
-  doc["battery"] = readBatteryVoltage(); // Your battery reading function
-  doc["gps"] = gpsLocked ? "locked" : "searching";
-  doc["uptime"] = millis() / 1000;
-  doc["device"] = DEVICE_ID;
-
-  String output;
-  serializeJson(doc, output);
-
-  int state = radio.transmit(output);
-  if (state == RADIOLIB_ERR_NONE) {
-    Serial.println("Status sent successfully");
-  }
-}
-```
-
-### Check for Lost Mode Timeout
-
-Add this to your main `loop()`:
-
-```cpp
-void loop() {
-  // ... existing code ...
-
-  // Check for lost mode timeout
+void loop()
+{
+  // Check lost mode timeout
   if (lostModeStartTime > 0) {
     uint32_t elapsedMs = millis() - lostModeStartTime;
     uint32_t elapsedSecs = elapsedMs / 1000;
 
     if (elapsedSecs >= LOST_MODE_MAX_DURATION_S) {
       Serial.println("Lost mode timeout - reverting to Active");
-
-      // Send alert to base station
       sendLostModeTimeoutAlert();
-
-      // Revert to active mode
-      currentMode = getModeByName(LOST_MODE_FALLBACK_MODE);
-      lostModeStartTime = 0;
+      applyProfile(PROFILE_ACTIVE);  // Resets lostModeStartTime to 0
     }
   }
 
-  // ... rest of loop ...
-}
-```
-
-### Send Lost Mode Timeout Alert
-
-```cpp
-void sendLostModeTimeoutAlert() {
-  JsonDocument doc;
-  doc["alert"] = "lost_mode_timeout";
-  doc["device"] = DEVICE_ID;
-  doc["old_mode"] = "lost";
-  doc["new_mode"] = LOST_MODE_FALLBACK_MODE;
-  doc["duration_s"] = LOST_MODE_MAX_DURATION_S;
-
-  String output;
-  serializeJson(doc, output);
-  radio.transmit(output);
-}
-```
-
-### Listen for Commands During Wake Cycle
-
-In your transmit cycle (after sending position data):
-
-```cpp
-void transmitCycle() {
-  // ... send GPS position ...
-
-  // Listen for incoming commands for 2 seconds
-  Serial.println("Listening for commands...");
-  uint32_t listenStart = millis();
-
-  while (millis() - listenStart < 2000) { // 2 second listen window
-    int state = radio.receive(rxBuffer, MAX_PACKET_SIZE);
-
-    if (state == RADIOLIB_ERR_NONE) {
-      String received = String((char*)rxBuffer);
-      Serial.printf("Command received: %s\n", received.c_str());
-      handleRemoteCommand(received);
-      break; // Command received, exit listen mode
-    }
-
-    delay(10);
-  }
-
-  // ... continue with sleep cycle ...
+  // ... rest of loop (transmit cycle, sleep, etc.) ...
 }
 ```
 
 ---
 
-## 🔄 Integration Checklist
+## Using Current Mode Parameters
 
-- [ ] Copy `config.h` to transmitter project (must be IDENTICAL)
-- [ ] Add `#include <config.h>` to transmitter main.cpp
-- [ ] Add global variables: `currentMode`, `lostModeStartTime`
-- [ ] Implement `handleRemoteCommand()` function
-- [ ] Implement `sendModeAck()` function
-- [ ] Implement `sendStatusResponse()` function
-- [ ] Implement `sendLostModeTimeoutAlert()` function
-- [ ] Add lost mode timeout check to `loop()`
-- [ ] Add command listening window after each transmission
-- [ ] Update sleep intervals to use `currentMode->sleep_interval_s`
-- [ ] Update TX power to use `currentMode->lora_power_dbm`
-- [ ] Update LED flashes to use `currentMode->led_flash_count`
-- [ ] Implement LED beacon mode (if `currentMode->led_beacon_mode == true`)
-
----
-
-## ⚙️ Using Current Mode in Transmitter
-
-### Set TX Power
+### TX Power
 
 ```cpp
 radio.setOutputPower(currentMode->lora_power_dbm);
@@ -243,6 +294,7 @@ radio.setOutputPower(currentMode->lora_power_dbm);
 
 ```cpp
 esp_sleep_enable_timer_wakeup(currentMode->sleep_interval_s * 1000000ULL);
+esp_deep_sleep_start();
 ```
 
 ### LED Flashes
@@ -260,7 +312,6 @@ for (uint8_t i = 0; i < currentMode->led_flash_count; i++) {
 
 ```cpp
 if (currentMode->led_beacon_mode) {
-  // Flash LED continuously while awake
   uint32_t lastBeacon = 0;
   while (!readyToSleep) {
     if (millis() - lastBeacon >= currentMode->led_beacon_interval_ms) {
@@ -275,99 +326,56 @@ if (currentMode->led_beacon_mode) {
 
 ---
 
-## 🧪 Testing Sequence
-
-1. **Flash updated transmitter code** with config.h and command handling
-2. **Power on transmitter** - should start in NORMAL mode
-3. **Send position data** - receiver should track the device
-4. **Open Command & Control panel** in web UI
-5. **Change mode to ACTIVE** - transmitter should ACK within 2 transmit cycles
-6. **Check mode badge** - should update to green "ACTIVE"
-7. **Query status** - should receive battery, GPS, uptime
-8. **Test LOST mode** - should see confirmation dialog, countdown timer
-9. **Wait 2 hours** (or reduce timeout for testing) - should auto-revert to ACTIVE
-
----
-
-## 🐛 Debugging
-
-### Transmitter Serial Monitor Should Show:
-
-```
-Mode changed to: active
-ACK sent successfully
-Listening for commands...
-Command received: {"cmd":"get_status"}
-Status sent successfully
-```
-
-### Receiver Serial Monitor Should Show:
-
-```
-[CMD] Mode change queued: Podge -> active
-Command queued: Podge
-LoRa TX successful
-LoRa RX: {"ack":"mode","profile":"active","power":19,"sleep":60,"device":"Podge"}
-[State] Podge mode updated: active (19dBm, 60s sleep)
-WebSocket broadcast: node_states
-```
-
-### Common Issues:
-
-**No ACK received:**
-
-- Check transmitter is listening for commands after TX
-- Verify LoRa parameters match (915MHz, SF8, BW250kHz)
-- Check signal strength (may be out of range)
-
-**Mode doesn't change:**
-
-- Verify `handleRemoteCommand()` is being called
-- Check JSON parsing (print received string)
-- Ensure `currentMode` pointer is updated
-
-**Lost mode doesn't timeout:**
-
-- Check `lostModeStartTime` is set when entering lost mode
-- Verify timeout check runs in `loop()`
-- Ensure `LOST_MODE_MAX_DURATION_S` is defined in config.h
-
----
-
-## 📝 Example Minimal Transmitter Integration
+## Minimal Complete Example
 
 ```cpp
+#include <protocol.h>
 #include <config.h>
-#include <ArduinoJson.h>
+#include <RadioLib.h>
 
-#define DEVICE_ID "Podge"
+#define MY_DEVICE_ID 0x0004  // Podge
 
-const OperatingMode* currentMode = &MODE_NORMAL;
+const OperatingMode *currentMode = &MODE_NORMAL;
+bp_profile_t currentProfile = PROFILE_NORMAL;
 uint32_t lostModeStartTime = 0;
+uint32_t mySeqCounter = 1;
+bool gpsWarm = false;
+uint8_t bleHomeCycles = 0;
 
-void setup() {
-  // ... existing setup ...
+SX1276 radio = /* your radio init */;
 
-  // Initialize with normal mode
-  radio.setOutputPower(currentMode->lora_power_dbm);
+void setup()
+{
+  Serial.begin(115200);
+  radio.begin(LORA_FREQ_MHZ, LORA_BW_KHZ, LORA_SF, LORA_CR,
+              LORA_SYNC_WORD, currentMode->lora_power_dbm, LORA_PREAMBLE);
 }
 
-void loop() {
-  // Check lost mode timeout
+void loop()
+{
+  // Lost mode timeout check
   if (lostModeStartTime > 0 &&
       (millis() - lostModeStartTime) / 1000 >= LOST_MODE_MAX_DURATION_S) {
-    currentMode = &MODE_ACTIVE;
-    lostModeStartTime = 0;
     sendLostModeTimeoutAlert();
+    applyProfile(PROFILE_ACTIVE);
   }
 
-  // Wake, get GPS, transmit position
-  transmitPositionData();
+  // Wake -> GPS -> transmit
+  bool hasGps = getGpsFix();
+  sendTelemetry(hasGps, lat, lon, accM, speedCms, distHomeM, bearing,
+                readBatteryMv(), fixAgeS,
+                hasGps ? STATUS_OUT_AND_ABOUT : STATUS_INVALID_GPS);
 
   // Listen for commands
   listenForCommands();
 
-  // Sleep using current mode interval
+  // LED flashes
+  for (uint8_t i = 0; i < currentMode->led_flash_count; i++) {
+    digitalWrite(LED_PIN, HIGH); delay(100);
+    digitalWrite(LED_PIN, LOW);  delay(100);
+  }
+
+  // Sleep
   esp_sleep_enable_timer_wakeup(currentMode->sleep_interval_s * 1000000ULL);
   esp_deep_sleep_start();
 }
@@ -375,18 +383,108 @@ void loop() {
 
 ---
 
-## ✅ Verification
+## Integration Checklist
 
-Once implemented, you should be able to:
-
-- ✅ See all transmitter nodes in Command & Control panel
-- ✅ Change operating modes remotely
-- ✅ See real-time mode changes reflected in UI
-- ✅ Query battery status and GPS lock state
-- ✅ See countdown timer when in lost mode
-- ✅ Automatic revert to active mode after 2 hours in lost mode
-- ✅ Control modes from both side panel and marker cards
+- [ ] Copy `protocol.h` to transmitter project (must be IDENTICAL to receiver's)
+- [ ] Copy `config.h` to transmitter project (must be IDENTICAL to receiver's)
+- [ ] Set `MY_DEVICE_ID` matching `DEVICE_REGISTRY` in `protocol.h`
+- [ ] Replace JSON telemetry with `sendTelemetry()` (binary PKT_TELEMETRY)
+- [ ] Implement `applyProfile()` to update `currentMode` and `currentProfile`
+- [ ] Implement `sendModeAck()` with `TLV_CMD_MSG_ID` echo
+- [ ] Implement `sendStatusResponse()` with `TLV_CMD_MSG_ID` echo
+- [ ] Implement `sendLostModeTimeoutAlert()` (PKT_ALERT)
+- [ ] Add `listenForCommands()` after each telemetry transmission
+- [ ] Add lost mode timeout check in `loop()`
+- [ ] Use `currentMode->sleep_interval_s` for deep sleep timer
+- [ ] Use `currentMode->lora_power_dbm` for TX power
+- [ ] Use `currentMode->led_flash_count` for post-TX LED flashes
+- [ ] Handle `currentMode->led_beacon_mode` in Lost mode
 
 ---
 
-**Questions or issues? Check the receiver's `main.cpp` for reference implementation of command handling and state tracking.**
+## Testing Sequence
+
+1. **Flash updated transmitter** with `protocol.h`, `config.h`, and binary packet code
+2. **Power on transmitter** — Serial should show binary telemetry being sent
+3. **Open Serial monitor on receiver** — look for `[LORA] Binary packet received`
+4. **Open Command & Control panel** in web UI — node should appear
+5. **Change mode to ACTIVE** — transmitter should ACK within 2 transmit cycles
+6. **Check mode badge** — should update to green "ACTIVE"
+7. **Query status** — should receive PKT_STATUS_RESP with battery, GPS warm, etc.
+8. **Test LOST mode** — confirmation dialog, countdown timer, high TX power
+9. **Wait for timeout** (or reduce `LOST_MODE_MAX_DURATION_S` for testing) — should revert to ACTIVE
+
+---
+
+## Debugging
+
+### Transmitter Serial Should Show
+
+```
+Waking up...
+GPS locked (warm start)
+Sending binary telemetry (47 bytes)
+Listening for commands (2s window)...
+Binary packet received (41 bytes)
+CRC OK, device_id match (0x0004)
+PKT_CMD_MODE -> PROFILE_ACTIVE
+Profile applied: active (19dBm, 60s sleep)
+ACK sent (53 bytes, echoing msg_seq=42)
+Going to sleep (60s)...
+```
+
+### Receiver Serial Should Show
+
+```
+[CMD] Queued for Podge (msg_id=42, 41 bytes)
+[PKT] 41 bytes: 01 04 00 2A 00 00 00 ...
+[LoRa] Command transmitted (msg_id=42)
+[LORA] Binary packet received (53 bytes, RSSI=-45, SNR=9.5)
+[ACK] Podge confirmed mode: active (msg_id=42, 19dBm, 60s)
+WebSocket: Broadcasting node states
+```
+
+### Common Issues
+
+**Receiver logs "CRC validation failed":**
+
+- TX firmware is probably still sending JSON (first byte is `{` not `0x01`)
+- Or byte order mismatch — ensure both sides include the same `protocol.h`
+
+**Receiver logs "Unknown binary packet type":**
+
+- `flags` field is wrong — check `PKT_CMD_MODE` constant value matches in both files
+
+**No commands received by TX:**
+
+- Verify listen window runs immediately after `sendTelemetry()`
+- Check `BP_MIN_PACKET_SIZE` and `BP_PROTOCOL_VERSION` match between projects
+- Verify LoRa parameters (frequency, SF, BW, CR) are identical
+
+**ACK received but msg_id doesn't match:**
+
+- Check `TLV_CMD_MSG_ID` is being added via `pkt_add_tlv_u32()` and extracted via `pkt_tlv_get_u32()`
+- Ensure both sides use `uint32_t` for the sequence counter
+
+**Lost mode doesn't auto-revert:**
+
+- Check `lostModeStartTime` is set in `applyProfile()` when `PROFILE_LOST`
+- Verify timeout check runs every `loop()` iteration
+- Confirm `LOST_MODE_MAX_DURATION_S` is defined in `config.h`
+
+---
+
+## Verification
+
+Once implemented, you should see:
+
+- Binary hex dumps in Serial (not JSON strings)
+- All tracked transmitter nodes visible in Command & Control panel
+- Mode changes confirmed via PKT_MODE_ACK (TLV_CMD_MSG_ID matches sent msg_seq)
+- Status responses include battery mV, GPS warm flag, home cycle count
+- Countdown timer in UI during lost mode
+- Automatic revert to Active mode after 2 hours, with PKT_ALERT sent
+
+---
+
+**Check the receiver's `main.cpp` for the reference binary packet handling implementation.**
