@@ -13,6 +13,7 @@
 #include <secrets.h> // Include your secrets.h file for WiFi credentials
 #include <config.h>  // Shared configuration with TX nodes
 #include "protocol.h"
+#include "bp_crypto.h"
 #include <WiFi.h>
 #include <WebServer.h>        // Include the WebServer library for HTTP server
 #include <WebSocketsServer.h> // Include the WebSockets library for WebSocket server
@@ -46,6 +47,9 @@ SPIClass LoRaSPI(HSPI);
 SX1262 lora = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY, LoRaSPI);
 
 volatile bool packetReceived = false;
+
+// AES-128 encryption key
+static const uint8_t aesKey[16] = LORA_AES_KEY;
 
 // ───────────── LED Blink Timer Config ─────────────
 bool ledState = false;
@@ -554,6 +558,12 @@ void processCommandQueue()
   Serial.printf("[LoRa] Transmitting binary command to %s (msg_id=%lu, %d bytes)\n",
                 cmd.targetDevice.c_str(), cmd.messageId, cmd.len);
   pkt_print_hex(cmd.buf, cmd.len);
+
+  // Encrypt if AES key is configured
+  if (!bp_aes_key_is_zero(aesKey))
+  {
+    bp_aes_ctr_apply(cmd.buf, cmd.len, aesKey);
+  }
 
   // Switch LoRa to standby before transmit
   lora.standby();
@@ -1141,6 +1151,13 @@ void handleLoRaPacket()
       return;
     }
 
+    // Decrypt if AES key is configured (must happen before protocol detection
+    // since encryption changes all bytes except byte 0)
+    if (rxBuf[0] == BP_PROTOCOL_VERSION && !bp_aes_key_is_zero(aesKey))
+    {
+      bp_aes_ctr_apply(rxBuf, rxLen, aesKey);
+    }
+
     // Detect protocol: first byte '{' (0x7B) = JSON, 0x01 = binary v1
     if (rxBuf[0] == '{')
     {
@@ -1597,6 +1614,8 @@ void setup()
   if (state == RADIOLIB_ERR_NONE)
   {
     Serial.println("[INFO] LoRa initialized successfully.");
+    Serial.printf("[INFO] AES-128: %s\n",
+                  bp_aes_key_is_zero(aesKey) ? "OFF (key all zeros)" : "ENABLED");
   }
   else
   {
