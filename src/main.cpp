@@ -162,7 +162,8 @@ bool logFileInitialized = false;
 // ───────────── Node State Tracking (Operating Modes) ─────────────
 struct NodeState
 {
-  String deviceId;
+  String deviceId;                // friendly name ("Podge"), can be renamed
+  uint16_t deviceIdNum = 0;       // immutable numeric id from collar's DEVICE_ID_INT (0 = unknown)
   String currentMode = "unknown";
   int8_t txPower = 0;
   uint16_t sleepInterval = 0;
@@ -223,6 +224,7 @@ void updateNodeState(const JsonDocument &doc);
 void processCommandQueue();
 void sendModeCommand(const String &deviceId, const String &profile);
 void sendStatusRequest(const String &deviceId);
+void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
 void handleNodeResponse(const JsonDocument &doc);
 void handleNodeStates();    // HTTP handler for /node-states
 void handleSendCommand();   // HTTP handler for /send-command
@@ -481,10 +483,38 @@ void updateNodeState(const JsonDocument &doc)
     return; // Don't track base station's own device
   }
 
+  // Capture numeric device_id up-front so we can detect renames.
+  uint16_t incomingDevIdNum = 0;
+  if (doc["device_id"].is<int>())
+  {
+    incomingDevIdNum = (uint16_t)doc["device_id"].as<int>();
+  }
+
+  // Rename housekeeping: if a different node entry already holds this
+  // numeric device_id under a stale name (e.g. "Device-4" before rename),
+  // drop it so the C&C UI doesn't show a ghost card.
+  if (incomingDevIdNum != 0)
+  {
+    for (auto it = nodeStates.begin(); it != nodeStates.end(); )
+    {
+      if (it->second.deviceIdNum == incomingDevIdNum && it->first != deviceId)
+      {
+        Serial.printf("[RENAME] device_id=%u changed name '%s' -> '%s' — dropping stale entry\n",
+                      incomingDevIdNum, it->first.c_str(), deviceId.c_str());
+        it = nodeStates.erase(it);
+      }
+      else
+      {
+        ++it;
+      }
+    }
+  }
+
   // Get or create node state
   NodeState &state = nodeStates[deviceId];
   state.deviceId = deviceId;
   state.lastSeen = millis();
+  if (incomingDevIdNum != 0) state.deviceIdNum = incomingDevIdNum;
 
   // Check if this is an ACK response
   if (doc["ack"].is<String>())
@@ -782,6 +812,60 @@ void sendStatusRequest(const String &deviceId)
                 deviceId.c_str(), (unsigned)written);
 }
 
+// V3: rename a collar (set_name). Targets by numeric device_id because the
+// current name may be unknown (e.g. a freshly-flashed collar reporting in as
+// "Device-4"). The collar saves the new name to NVS and ACKs with the new id,
+// so the UI sees the change on the very next inbound packet.
+//
+// Wire format:
+//   {"cmd":"set_name","device_id":4,"name":"Podge","msg_id":N}
+void sendRenameCommand(uint16_t deviceIdNum, const String &newName)
+{
+  // Validate name locally too — saves a round-trip if it's obviously bad.
+  if (newName.length() == 0 || newName.length() > 15)
+  {
+    Serial.printf("[CMD] Rename rejected: name length %u not in 1..15\n", newName.length());
+    return;
+  }
+  for (size_t i = 0; i < newName.length(); i++)
+  {
+    char c = newName[i];
+    if ((unsigned char)c < 0x20 || c == ',' || c == '"' || c == '\\')
+    {
+      Serial.printf("[CMD] Rename rejected: name contains forbidden char 0x%02X\n",
+                    (unsigned char)c);
+      return;
+    }
+  }
+
+  // Resolve a friendly current-name for the queue's targetDevice field, so
+  // transmitCommandForDevice can route it on the next telemetry arrival.
+  // (Falls back to the numeric form if we have no name yet.)
+  String targetName = String("Device-") + String(deviceIdNum);
+  const char *registryName = getDeviceName(deviceIdNum);
+  if (registryName && strlen(registryName) > 0) targetName = registryName;
+
+  LoRaCommand cmd;
+  memset(&cmd, 0, sizeof(cmd));
+  cmd.targetDevice = targetName;
+  cmd.targetDeviceId = deviceIdNum;
+  cmd.timestamp = millis();
+  cmd.messageId = nextMessageId++;
+
+  JsonDocument doc;
+  doc["cmd"] = "set_name";
+  doc["device_id"] = deviceIdNum;
+  doc["name"] = newName;
+  doc["msg_id"] = cmd.messageId;
+  size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
+  cmd.len = (uint8_t)written;
+
+  commandQueue.push_back(cmd);
+
+  Serial.printf("[CMD] Rename queued: device_id=%u -> '%s' (%u bytes JSON)\n",
+                deviceIdNum, newName.c_str(), (unsigned)written);
+}
+
 // HTTP handler: Get node states as JSON
 void handleNodeStates()
 {
@@ -794,6 +878,7 @@ void handleNodeStates()
 
     JsonObject node = nodes.add<JsonObject>();
     node["device"] = state.deviceId;
+    node["device_id"] = state.deviceIdNum;
     node["mode"] = state.currentMode;
     node["power"] = state.txPower;
     node["sleep"] = state.sleepInterval;
@@ -825,14 +910,41 @@ void handleNodeStates()
 // HTTP handler: Send command to node
 void handleSendCommand()
 {
-  if (!server.hasArg("device") || !server.hasArg("action"))
+  if (!server.hasArg("action"))
   {
-    server.send(400, "text/plain", "Missing parameters: device, action");
+    server.send(400, "text/plain", "Missing parameter: action");
+    return;
+  }
+  String action = server.arg("action");
+
+  // Most actions target by name. `rename` targets by numeric device_id because
+  // the current name may be unknown (e.g. default "Device-4").
+  if (action == "rename")
+  {
+    if (!server.hasArg("device_id") || !server.hasArg("name"))
+    {
+      server.send(400, "text/plain", "Rename requires device_id and name parameters");
+      return;
+    }
+    long idNum = server.arg("device_id").toInt();
+    if (idNum <= 0 || idNum > 0xFFFE)
+    {
+      server.send(400, "text/plain", "device_id out of range");
+      return;
+    }
+    String newName = server.arg("name");
+    sendRenameCommand((uint16_t)idNum, newName);
+    server.send(200, "text/plain", "Rename command queued");
     return;
   }
 
+  // All other actions take a device name
+  if (!server.hasArg("device"))
+  {
+    server.send(400, "text/plain", "Missing parameter: device");
+    return;
+  }
   String deviceId = server.arg("device");
-  String action = server.arg("action");
 
   if (action == "status")
   {
@@ -987,6 +1099,7 @@ void broadcastNodeStates()
 
     JsonObject node = nodes.add<JsonObject>();
     node["device"] = state.deviceId;
+    node["device_id"] = state.deviceIdNum;
     node["mode"] = state.currentMode;
     node["power"] = state.txPower;
     node["sleep"] = state.sleepInterval;

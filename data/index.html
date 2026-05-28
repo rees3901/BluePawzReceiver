@@ -2443,13 +2443,22 @@ Sends command to tracker via LoRa
 Wait for acknowledgment (⏳ shows pending)">
                     ${commandPending[node.device] ? '⏳' : '✓'}
                   </button>
-                  <button class="node-btn node-btn-status" 
+                  <button class="node-btn node-btn-status"
                           onclick="requestNodeStatus('${node.device}'"
                           ${commandPending[node.device] ? 'disabled' : ''}
                           title="Query Status
 Requests battery level, GPS lock, and uptime
 Response updates the info display above">
                     🔄
+                  </button>
+                  <button class="node-btn node-btn-rename"
+                          onclick="renameCollar(${node.device_id || 0}, '${(node.device || '').replace(/'/g, "\\'")}')"
+                          ${(node.device_id ? '' : 'disabled')}
+                          title="Rename Collar
+Sets a new friendly name for this collar.
+Targets the immutable numeric device_id, so it works even
+if the current name is just the default Device-N.">
+                    ✏️
                   </button>
                 </div>
               </div>
@@ -2528,6 +2537,39 @@ Response updates the info display above">
         });
     }
     
+    // Rename a collar. Targets by immutable numeric device_id so the rename
+    // works even when the current name is just the default "Device-N".
+    function renameCollar(deviceIdNum, currentName) {
+      if (!deviceIdNum) {
+        alert('Cannot rename: no device_id known for this collar yet.\n\nWait for the collar to report in at least once after this receiver firmware was flashed.');
+        return;
+      }
+      const proposed = prompt(`Rename collar (device_id=${deviceIdNum}, currently "${currentName}")\n\n1–15 characters. Letters, numbers and spaces are fine. No commas or quotes.`, currentName);
+      if (proposed === null) return;
+      const trimmed = proposed.trim();
+      if (trimmed.length === 0 || trimmed.length > 15) {
+        alert('Name must be 1–15 characters.');
+        return;
+      }
+      if (/[,"\\]/.test(trimmed) || /[\x00-\x1F]/.test(trimmed)) {
+        alert('Name contains a forbidden character (comma, quote, backslash, or control char).');
+        return;
+      }
+      const url = `/send-command?action=rename&device_id=${encodeURIComponent(deviceIdNum)}&name=${encodeURIComponent(trimmed)}`;
+      fetch(url, { method: 'POST' })
+        .then(r => {
+          if (!r.ok) throw new Error(r.statusText);
+          console.log(`[CMD] Rename queued: device_id=${deviceIdNum} -> "${trimmed}"`);
+          // The change will land when the collar next reports in and ACKs.
+          // The next telemetry packet carries the new name via doc["id"], so the
+          // UI updates naturally without any further action here.
+        })
+        .catch(err => {
+          console.error('Rename failed:', err);
+          alert('Rename command failed: ' + err.message);
+        });
+    }
+
     // Request node status
     function requestNodeStatus(deviceId) {
       commandPending[deviceId] = true;
