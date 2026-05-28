@@ -845,10 +845,18 @@ void handleGetHome()
 
 // HTTP handler: POST /home — set new home lat/lon
 // Accepts either form-encoded ?lat=&lon= or a JSON body {"lat":..,"lon":..}.
+//
+// Sanity check: the new home must be within HOME_MAX_DIST_FROM_RECEIVER_KM
+// of the receiver's own GPS fix (if one is available). LoRa range to the
+// collars caps around 20km in practice, so anything further is almost
+// certainly a typo or a swapped lat/lon. Pass `force=1` to override.
 void handleSetHome()
 {
+  static constexpr float HOME_MAX_DIST_FROM_RECEIVER_KM = 20.0f;
+
   float lat = 0.0f, lon = 0.0f;
   bool gotLat = false, gotLon = false;
+  bool force = false;
 
   if (server.hasArg("lat") && server.hasArg("lon"))
   {
@@ -872,13 +880,47 @@ void handleSetHome()
         lon = doc["lon"].as<float>();
         gotLon = true;
       }
+      if (doc["force"].is<bool>())
+      {
+        force = doc["force"].as<bool>();
+      }
     }
+  }
+
+  if (server.hasArg("force") && server.arg("force") == "1")
+  {
+    force = true;
   }
 
   if (!gotLat || !gotLon)
   {
     server.send(400, "text/plain", "Missing lat/lon (use ?lat=&lon= or JSON body)");
     return;
+  }
+
+  // Range sanity check against the receiver's own GPS fix.
+  // If GPS has no valid fix yet, we accept the value (with a server log) —
+  // we don't want to lock users out before the GPS has settled.
+  if (!force && gps.location.isValid())
+  {
+    double recLat = gps.location.lat();
+    double recLon = gps.location.lng();
+    double dKm = TinyGPSPlus::distanceBetween(lat, lon, recLat, recLon) / 1000.0;
+    if (dKm > HOME_MAX_DIST_FROM_RECEIVER_KM)
+    {
+      char msg[160];
+      snprintf(msg, sizeof(msg),
+               "Refused: new home is %.1f km from this base station — "
+               "beyond LoRa range. Pass force=1 to override.",
+               dKm);
+      Serial.printf("[HOME] %s\n", msg);
+      server.send(400, "text/plain", msg);
+      return;
+    }
+  }
+  else if (!force)
+  {
+    Serial.println("[HOME] No valid receiver GPS fix yet — skipping range check");
   }
 
   if (!saveHomeLocation(lat, lon))
