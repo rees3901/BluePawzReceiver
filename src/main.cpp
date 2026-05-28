@@ -2132,24 +2132,43 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
 void setup()
 {
   Serial.begin(115200);
+  // V3 diag: a 3-second pause + explicit flush so the user has time to attach
+  // the serial monitor and see our first prints even if something crashes
+  // later in setup. Safe to remove once boot is reliable.
+  delay(3000);
+  Serial.println();
+  Serial.println("[BOOT] ==================================================");
   Serial.println("[BOOT] Starting setup...");
   Serial.printf("[BOOT] BluePaws Receiver firmware v%s\n", BLUEPAWZ_VERSION);
+  Serial.println("[BOOT] ==================================================");
+  Serial.flush();
 
   // V3: power up Heltec V2's external rail (GPS + TFT) BEFORE touching any
   // peripheral on it. Vext is active-LOW. Without this the UC6580 stays dark
   // and the ST7735 won't respond to init.
+  Serial.println("[BOOT] Step 1/13: Vext rail on");
+  Serial.flush();
   heltecV2_enableVext();
 
   // V3: bring up the onboard TFT next so any boot errors below are visible
   // on-screen without needing the serial monitor.
+  Serial.println("[BOOT] Step 2/13: TFT init");
+  Serial.flush();
   tftBegin();
 
+  Serial.println("[BOOT] Step 3/13: LEDs");
+  Serial.flush();
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW); // Turn off the LED
   pinMode(LORA_LED, OUTPUT);      // Initialize LoRa LED pin
   digitalWrite(LORA_LED, LOW);    // Turn off LoRa LED
+  Serial.println("[BOOT] Step 4/13: BLE beacon");
+  Serial.flush();
   setupBLE();
 
+  Serial.println("[BOOT] Step 5/13: WiFi connect");
+  Serial.printf("[BOOT]   SSID='%s'\n", WIFI_SSID);
+  Serial.flush();
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("[WIFI] Connecting to WiFi");
   int attempts = 0;
@@ -2168,16 +2187,36 @@ void setup()
   }
   else
   {
-    Serial.println("\n[WIFI] ❌ Failed to connect!");
-    ESP.restart(); // Restart if WiFi fails
+    // V3 diag: DO NOT restart on WiFi failure. The previous behaviour was
+    // ESP.restart() which produced an opaque boot loop with no diagnostic
+    // signal. Just log and carry on — the periodic checkWiFiConnection()
+    // in loop() will keep trying. Means the TFT and LoRa still work even
+    // without WiFi, and the user can see what went wrong via serial.
+    Serial.println("\n[WIFI] ❌ Failed to connect — continuing in offline mode.");
+    Serial.println("[WIFI]    Check WIFI_SSID / WIFI_PASSWORD in include/secrets.h");
+    Serial.println("[WIFI]    Reconnect attempts will continue in loop().");
+    isWiFiConnected = false;
   }
 
-  // Initialize mDNS
-  if (MDNS.begin("cattracker"))
+  // mDNS, ArduinoOTA, web server: all WiFi-dependent. Skip if WiFi is
+  // down so a bad SSID doesn't take down the rest of the receiver
+  // (TFT + LoRa + BLE still come up so we can at least see telemetry
+  // and debug). The periodic checkWiFiConnection() in loop() will
+  // eventually call MDNS.begin + the others if WiFi comes up later.
+  if (!isWiFiConnected)
+  {
+    Serial.println("[BOOT] Skipping mDNS/OTA/HTTP — WiFi not up.");
+    Serial.println("[BOOT] LoRa + TFT + BLE will still run.");
+  }
+
+  Serial.println("[BOOT] Step 6/13: mDNS");
+  Serial.flush();
+  // Initialize mDNS (only useful when WiFi is up)
+  if (isWiFiConnected && MDNS.begin("cattracker"))
   {
     Serial.println("[mDNS] mDNS responder started. Access via http://cattracker.local");
   }
-  else
+  else if (isWiFiConnected)
   {
     Serial.println("[mDNS] ❌ Failed to start mDNS responder");
   }
@@ -2187,6 +2226,8 @@ void setup()
   //   pio run -t upload --upload-port cattracker.local
   // (platformio.ini sets upload_protocol = espota.) No password by default;
   // if you want one, call ArduinoOTA.setPassword("...") before begin().
+  Serial.println("[BOOT] Step 7/13: ArduinoOTA");
+  Serial.flush();
   ArduinoOTA.setHostname("cattracker");
   ArduinoOTA.onStart([]() {
     const char *type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
@@ -2213,8 +2254,10 @@ void setup()
       default:                Serial.println("Unknown"); break;
     }
   });
-  ArduinoOTA.begin();
-  Serial.println("[OTA] ArduinoOTA ready — upload to cattracker.local");
+  if (isWiFiConnected) {
+    ArduinoOTA.begin();
+    Serial.println("[OTA] ArduinoOTA ready — upload to cattracker.local");
+  }
 
   // Mount filesystem with better error reporting
   if (!LittleFS.begin(true))
