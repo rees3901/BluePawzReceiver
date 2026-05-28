@@ -222,72 +222,80 @@ static void tftBegin()
 }
 
 // Periodically redraw the small status panel. Called from loop() — guards
-// against too-frequent redraws to avoid flicker and CPU cost.
+// against too-frequent redraws to avoid CPU cost.
+//
+// FLICKER NOTE: an earlier version did `tft.fillScreen(ST77XX_BLACK)` and
+// redrew everything from scratch. With ~16 ms between clear and the first
+// glyph landing, you got a visible black flash every 1 s — annoying on a
+// status panel that lives on your desk. This version writes each glyph
+// with an explicit black BACKGROUND, so the new text overwrites the old
+// in place. No clear, no flicker. Every value is padded to a fixed width
+// (snprintf with "%-Ns") so a shorter new value (e.g. RSSI=-90 → -8) wipes
+// out the trailing characters of the previous longer value.
 static void tftRefresh()
 {
   if (millis() - tftLastRefresh < 1000) return; // 1 Hz max
   tftLastRefresh = millis();
 
-  tft.fillScreen(ST77XX_BLACK);
+  char buf[32];
+  tft.setTextSize(1);
 
   // Title bar — version is the most useful at-a-glance datum (so you can
   // confirm a fresh flash landed) so it sits permanently in the title.
-  tft.setTextColor(ST77XX_CYAN);
+  tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
   tft.setCursor(2, 2);
-  tft.setTextSize(1);
-  tft.print(F("BluePaws v"));
-  tft.print(BLUEPAWZ_VERSION);
+  snprintf(buf, sizeof(buf), "BluePaws v%-12s", BLUEPAWZ_VERSION);
+  tft.print(buf);
 
   // WiFi status / IP
-  tft.setTextColor(ST77XX_WHITE);
   tft.setCursor(2, 14);
   if (WiFi.status() == WL_CONNECTED)
   {
-    tft.print(WiFi.localIP());
+    tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+    snprintf(buf, sizeof(buf), "%-20s", WiFi.localIP().toString().c_str());
   }
   else
   {
-    tft.setTextColor(ST77XX_RED);
-    tft.print(F("WiFi: down"));
+    tft.setTextColor(ST77XX_RED, ST77XX_BLACK);
+    snprintf(buf, sizeof(buf), "%-20s", "WiFi: down");
   }
+  tft.print(buf);
 
   // Packets seen since boot
-  tft.setTextColor(ST77XX_YELLOW);
+  tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
   tft.setCursor(2, 28);
-  tft.print(F("Pkts: "));
-  tft.print(tftMsgCount);
+  snprintf(buf, sizeof(buf), "Pkts: %-14u", tftMsgCount);
+  tft.print(buf);
 
   // Last cat that reported in + its RSSI
-  tft.setTextColor(ST77XX_GREEN);
   tft.setCursor(2, 42);
   if (tftLastCatName.length() > 0)
   {
-    tft.print(tftLastCatName);
-    tft.print(F(" "));
-    tft.print(tftLastCatRssi);
-    tft.print(F("dBm"));
+    tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+    snprintf(buf, sizeof(buf), "%s %ddBm        ", tftLastCatName.c_str(), tftLastCatRssi);
   }
   else
   {
-    tft.setTextColor(ST77XX_WHITE);
-    tft.print(F("(no cats yet)"));
+    tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+    snprintf(buf, sizeof(buf), "%-20s", "(no cats yet)");
   }
+  tft.print(buf);
 
   // Home location: shown small in the corner so users can sanity-check.
   // Uses the cached g_homeLocationSaved flag instead of LittleFS.exists()
   // because exists() internally open()s the file, and vfs_api logs an
   // error on every failed open — would flood the console at 1 Hz on a
   // fresh install where the user hasn't set a home yet.
-  tft.setTextColor(ST77XX_MAGENTA);
+  tft.setTextColor(ST77XX_MAGENTA, ST77XX_BLACK);
   tft.setCursor(2, 56);
-  tft.print(F("Home set: "));
-  tft.print(g_homeLocationSaved ? F("yes") : F("no"));
+  snprintf(buf, sizeof(buf), "Home set: %-10s", g_homeLocationSaved ? "yes" : "no");
+  tft.print(buf);
 
   // BLE beacon state line
-  tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED);
+  tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
   tft.setCursor(2, 68);
-  tft.print(F("BLE: "));
-  tft.print(bleEnabled ? F("on") : F("off"));
+  snprintf(buf, sizeof(buf), "BLE: %-15s", bleEnabled ? "on" : "off");
+  tft.print(buf);
 }
 
 static bool loadHomeLocation()
