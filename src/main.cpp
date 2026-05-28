@@ -159,6 +159,11 @@ static int16_t  tftLastCatRssi = 0;
 // other BLE-related globals.
 extern bool bleEnabled;
 
+// GPS diagnostic counters used by the TFT status indicator. Real definitions
+// live just above setupGPS() further down the file.
+extern uint32_t gpsBytesRx;
+extern uint32_t gpsValidFixes;
+
 // Add initial location JSON
 JsonDocument deviceLocation;
 
@@ -258,8 +263,24 @@ static void tftRefresh()
   // confirm a fresh flash landed) so it sits permanently in the title.
   tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
   tft.setCursor(2, 2);
-  snprintf(buf, sizeof(buf), "BluePaws v%-12s", BLUEPAWZ_VERSION);
+  snprintf(buf, sizeof(buf), "BluePaws v%-10s", BLUEPAWZ_VERSION);
   tft.print(buf);
+
+  // GPS status indicator — a 7x7 px filled rectangle in the top-right
+  // corner of the title bar. Colour coding:
+  //   RED    no NMEA bytes have ever been received → GPS hardware/wiring fault
+  //   AMBER  bytes arriving but no valid fix yet → acquiring satellites
+  //   GREEN  fresh valid fix (age < 5 s) → all good
+  // The position (150,2) puts it flush right inside a 160 px panel.
+  // RGB565 amber — defined locally because ST77XX_ORANGE only exists in
+  // newer Adafruit_ST7735 versions; this is portable across releases.
+  static const uint16_t TFT_AMBER = 0xFC00;
+  uint16_t gpsColour;
+  if (gpsBytesRx == 0)                gpsColour = ST77XX_RED;
+  else if (gpsValidFixes == 0)        gpsColour = TFT_AMBER;
+  else if (gps.location.age() < 5000) gpsColour = ST77XX_GREEN;
+  else                                gpsColour = TFT_AMBER; // fix went stale
+  tft.fillRect(150, 2, 7, 7, gpsColour);
 
   // WiFi status / IP
   tft.setCursor(2, 14);
@@ -1898,25 +1919,62 @@ void handleLoRaPacket()
 // stays 0) from "all good" (both climb). Without them, a silent GPS UART
 // looks identical to a GPS that's just busy acquiring satellites — both
 // produce status="Starting up" with the placeholder coordinates.
-static uint32_t gpsBytesRx     = 0;  // total raw NMEA bytes received
-static uint32_t gpsValidFixes  = 0;  // # of complete sentences with a valid fix
-static uint32_t gpsLastReportMs = 0;
+uint32_t gpsBytesRx     = 0;  // total raw NMEA bytes received (extern in tftRefresh)
+uint32_t gpsValidFixes  = 0;  // # of complete sentences with a valid fix
+uint32_t gpsLastReportMs = 0;
 
 void setupGPS()
 {
-  // Bring the UC6580 out of reset cleanly. R26 (10K) on the schematic
-  // pulls GNSS_RST to Vext_3V3, so the module is normally not in reset,
-  // but a brief explicit pulse forces a known-good cold start in case
-  // a previous boot left it in a weird state (e.g. Vext came up dirty).
+  // Sanity check: confirm Vext is actually HIGH right now. If it isn't,
+  // the GPS has no power and the rest of this is futile. Read the pin
+  // back and log — gives us a one-line answer to "is the module powered?"
+  pinMode(VEXT_CTRL, INPUT);   // briefly switch to input to read the actual line state
+  delay(2);
+  int vextActual = digitalRead(VEXT_CTRL);
+  pinMode(VEXT_CTRL, OUTPUT);  // restore output
+  digitalWrite(VEXT_CTRL, HIGH);
+  Serial.printf("[GPS] Vext line read-back: %s\n",
+                vextActual == HIGH ? "HIGH (ok)" : "LOW (no power to GPS!)");
+
+  // Reset the UC6580. R26 (10K) on the schematic pulls GNSS_RST to Vext_3V3
+  // so the chip is normally out of reset, but an explicit pulse forces a
+  // known-good cold start. Longer than the strict minimum (10 ms) on purpose
+  // — first boot after a power-on sometimes needs more settle time.
   pinMode(GPS_RST, OUTPUT);
   digitalWrite(GPS_RST, LOW);    // assert reset
-  delay(50);
-  digitalWrite(GPS_RST, HIGH);   // release reset → module starts NMEA stream
-  delay(200);                    // give it time to settle before opening UART
+  delay(100);                     // hold reset 100 ms
+  digitalWrite(GPS_RST, HIGH);   // release reset
+  delay(500);                     // 500 ms for chip to boot + start NMEA output
 
+  // Bigger RX buffer so a burst of NMEA at boot doesn't overflow before
+  // loop() gets a chance to drain it.
+  gpsSerial1.setRxBufferSize(1024);
   gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
   Serial.printf("[GPS] UART1 up: rx=GPIO%d tx=GPIO%d baud=%d (UC6580)\n",
                 GPS_RX, GPS_TX, GPS_BAUD);
+
+  // Quick local sniff: wait up to 2 s for anything to arrive. Confirms the
+  // wiring before we proceed with the rest of setup. If nothing shows up
+  // here, the UART or wiring is bad and no later code will fix it.
+  uint32_t sniffStart = millis();
+  uint32_t sniffBytes = 0;
+  while (millis() - sniffStart < 2000)
+  {
+    while (gpsSerial1.available() > 0)
+    {
+      gpsSerial1.read();
+      sniffBytes++;
+    }
+    delay(10);
+  }
+  Serial.printf("[GPS] 2 s post-reset sniff: %u bytes received\n", sniffBytes);
+  if (sniffBytes == 0)
+  {
+    Serial.println("[GPS] WARNING: no bytes from UC6580 in 2 s post-reset.");
+    Serial.println("[GPS]   Likely causes: Vext not actually delivering power,");
+    Serial.println("[GPS]   GNSS_RST stuck low, RX/TX swap, or baud mismatch.");
+    Serial.println("[GPS]   Try uncommenting the GPS_BAUD swap test in setupGPS().");
+  }
 
   // Initialize device location with default home until the GPS produces
   // a real fix. Status field is what the UI keys on — "Starting up" means
