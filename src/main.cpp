@@ -182,7 +182,18 @@ static void tftBegin()
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH);
 
-  tft.initR(INITR_MINI160x80_PLUGIN); // 160x80 panel used on Heltec V2
+  // V3 TFT init: the Heltec V2 ships a 160x80 ST7735 panel. Adafruit's lib
+  // has THREE possible inits for similar panels — if the display looks
+  // wrong, swap between them:
+  //   INITR_MINI160x80        — original 160x80 panel (TRY THIS FIRST)
+  //   INITR_MINI160x80_PLUGIN — newer panel batches with different init
+  //   INITR_GREENTAB          — fallback if both above show offset/colour issues
+  // Common visible symptoms:
+  //   - blank display       → wrong init variant OR backlight pin wrong
+  //   - inverted colours    → wrong tab variant, try another
+  //   - shifted image (offset) → wrong tab variant or wrong dimensions
+  //   - garbled / random pixels → MOSI/SCK pin map wrong, or SPI mode mismatch
+  tft.initR(INITR_MINI160x80);
   tft.setRotation(1);                  // landscape: 160 wide x 80 tall
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
@@ -2169,7 +2180,19 @@ void setup()
   Serial.println("[BOOT] Step 5/13: WiFi connect");
   Serial.printf("[BOOT]   SSID='%s'\n", WIFI_SSID);
   Serial.flush();
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  // V3: handle open networks robustly. arduino-esp32's WiFi.begin(ssid, "")
+  // behaviour is inconsistent across versions — the single-argument form is
+  // the canonical "no password, open AP" path. Strlen check covers the
+  // "user pasted an empty string into secrets.h" case.
+  if (strlen(WIFI_PASSWORD) == 0)
+  {
+    Serial.println("[BOOT]   (no password — assuming open network)");
+    WiFi.begin(WIFI_SSID);
+  }
+  else
+  {
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  }
   Serial.print("[WIFI] Connecting to WiFi");
   int attempts = 0;
   while (WiFi.status() != WL_CONNECTED && attempts < 30)
