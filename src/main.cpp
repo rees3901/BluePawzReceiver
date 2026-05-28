@@ -22,6 +22,8 @@
 #include <TinyGPS++.h>
 #include <ESPmDNS.h> // Add mDNS library
 #include <ArduinoOTA.h> // V3: wireless firmware push from PlatformIO (espota)
+#include <Adafruit_GFX.h>     // V3: graphics primitives for the V2 TFT
+#include <Adafruit_ST7735.h>  // V3: ST7735S driver for the Heltec V2 onboard display
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
@@ -33,15 +35,23 @@ WebServer server(80);
 WebSocketsServer webSocket(81);
 std::map<String, String> catPayloads;
 
-// ───────────── LoRa Configuration — SX1262 via HSPI bus ───────────────
-#define LORA_NSS 41
-#define LORA_SCK 7
-#define LORA_MOSI 9
-#define LORA_MISO 8
-#define LORA_RST 42
-#define LORA_BUSY 40
-#define LORA_DIO1 39
-#define LORA_LED 48 // LoRa chip LED on GPIO 48
+// ─────────────────────────────────────────────────────────────────────
+// Heltec Wireless Tracker V2 (HTIT-Tracker_V2.3) pin map
+// Source: espressif/arduino-esp32 variants/heltec_wireless_tracker/pins_arduino.h
+//         + Heltec_ESP32 HT_st7735 driver
+//         + Wireless_Tracker_V2.3 schematic (user-verified)
+// V2 differs from V1 in: ESP32-S3FN8 + SX1262 (default SPI, GPIO 8-14),
+//   UC6580 GNSS @115200 (was NEO-6M @9600), built-in ST7735 colour TFT.
+// ─────────────────────────────────────────────────────────────────────
+
+// ───────────── LoRa SX1262 (default SPI bus) ─────────────
+#define LORA_NSS 8
+#define LORA_SCK 9
+#define LORA_MOSI 10
+#define LORA_MISO 11
+#define LORA_RST 12
+#define LORA_BUSY 13
+#define LORA_DIO1 14
 
 SPIClass LoRaSPI(HSPI);
 SX1262 lora = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY, LoRaSPI);
@@ -49,17 +59,39 @@ SX1262 lora = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY, LoRaSPI);
 volatile bool packetReceived = false;
 
 // ───────────── LED Blink Timer Config ─────────────
+#define LORA_LED 18 // V2: onboard white LED on GPIO 18
 bool ledState = false;
 unsigned long lastToggle = 0;
 const unsigned long toggleInterval = 4000;
 
-// ───────────── GPS Configuration ─────────────
-#define GPS_RX D7
-#define GPS_TX D6
-#define GPS_BAUD 9600
+// ───────────── GPS UC6580 ─────────────
+// V2 uses a UC6580 GNSS at 115200 baud (V1 was NEO-6M @9600).
+#define GPS_RX 33  // ESP32 receives FROM the GPS (GPS TX)
+#define GPS_TX 34  // ESP32 sends TO the GPS (GPS RX)
+#define GPS_BAUD 115200
+
+// ───────────── Vext rail (powers GPS + TFT, ACTIVE LOW) ─────────────
+#define VEXT_CTRL 3   // drive LOW = Vext ON
+
+// ───────────── TFT ST7735S (built-in 160×80) ─────────────
+#define TFT_MOSI 42
+#define TFT_SCK  41
+#define TFT_CS   38
+#define TFT_DC   40
+#define TFT_RST  39
+#define TFT_BL   21   // backlight (HIGH = on)
 
 TinyGPSPlus gps;
 HardwareSerial gpsSerial1(1);
+
+// V3: ST7735 TFT on Heltec V2. Using software-SPI constructor so we can put
+// any GPIO on each role without colliding with the SX1262's HSPI bus. The TFT
+// refresh rate (~1 Hz status panel) doesn't justify hardware SPI complexity.
+Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCK, TFT_RST);
+static uint32_t tftLastRefresh = 0;
+static uint32_t tftMsgCount = 0;             // total inbound LoRa packets seen since boot
+static String   tftLastCatName = "";          // last cat that reported in
+static int16_t  tftLastCatRssi = 0;
 
 // Add initial location JSON
 JsonDocument deviceLocation;
@@ -73,6 +105,100 @@ JsonDocument deviceLocation;
 #define HOME_LOCATION_FILE "/home_location.json"
 float g_homeLat = 51.87378215701798f; // Default; overwritten by loadHomeLocation()
 float g_homeLon = -2.239428653198173f;
+
+// ───────────── Heltec V2 hardware bring-up ─────────────
+// Vext is the external power rail on the Heltec V2. It feeds the UC6580 GNSS
+// and the TFT backlight/logic. It is ACTIVE LOW — driving the pin LOW turns
+// the rail ON. Always enable Vext before initialising the GPS UART or the
+// TFT, otherwise both will be silent on a cold boot.
+static void heltecV2_enableVext()
+{
+  pinMode(VEXT_CTRL, OUTPUT);
+  digitalWrite(VEXT_CTRL, LOW); // Vext ON
+  delay(50);                     // give rails time to settle
+}
+
+// Initialise the ST7735 TFT and draw the boot splash.
+static void tftBegin()
+{
+  // Backlight on (separate from Vext)
+  pinMode(TFT_BL, OUTPUT);
+  digitalWrite(TFT_BL, HIGH);
+
+  tft.initR(INITR_MINI160x80_PLUGIN); // 160x80 panel used on Heltec V2
+  tft.setRotation(1);                  // landscape: 160 wide x 80 tall
+  tft.fillScreen(ST77XX_BLACK);
+  tft.setTextWrap(false);
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setCursor(2, 2);
+  tft.setTextSize(1);
+  tft.print(F("BluePaws V3"));
+  tft.setCursor(2, 14);
+  tft.print(F("Booting..."));
+}
+
+// Periodically redraw the small status panel. Called from loop() — guards
+// against too-frequent redraws to avoid flicker and CPU cost.
+static void tftRefresh()
+{
+  if (millis() - tftLastRefresh < 1000) return; // 1 Hz max
+  tftLastRefresh = millis();
+
+  tft.fillScreen(ST77XX_BLACK);
+
+  // Title bar
+  tft.setTextColor(ST77XX_CYAN);
+  tft.setCursor(2, 2);
+  tft.setTextSize(1);
+  tft.print(F("BluePaws V3"));
+
+  // WiFi status / IP
+  tft.setTextColor(ST77XX_WHITE);
+  tft.setCursor(2, 14);
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    tft.print(WiFi.localIP());
+  }
+  else
+  {
+    tft.setTextColor(ST77XX_RED);
+    tft.print(F("WiFi: down"));
+  }
+
+  // Packets seen since boot
+  tft.setTextColor(ST77XX_YELLOW);
+  tft.setCursor(2, 28);
+  tft.print(F("Pkts: "));
+  tft.print(tftMsgCount);
+
+  // Last cat that reported in + its RSSI
+  tft.setTextColor(ST77XX_GREEN);
+  tft.setCursor(2, 42);
+  if (tftLastCatName.length() > 0)
+  {
+    tft.print(tftLastCatName);
+    tft.print(F(" "));
+    tft.print(tftLastCatRssi);
+    tft.print(F("dBm"));
+  }
+  else
+  {
+    tft.setTextColor(ST77XX_WHITE);
+    tft.print(F("(no cats yet)"));
+  }
+
+  // Home location: shown small in the corner so users can sanity-check
+  tft.setTextColor(ST77XX_MAGENTA);
+  tft.setCursor(2, 56);
+  tft.print(F("Home set: "));
+  tft.print(LittleFS.exists(HOME_LOCATION_FILE) ? F("yes") : F("no"));
+
+  // BLE beacon state line
+  tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED);
+  tft.setCursor(2, 68);
+  tft.print(F("BLE: "));
+  tft.print(bleEnabled ? F("on") : F("off"));
+}
 
 static bool loadHomeLocation()
 {
@@ -1460,6 +1586,7 @@ static void handleLoRaPacketJSON(const String &incoming)
     String reporting = doc["id"].as<String>();
     if (reporting.length() > 0)
     {
+      tftLastCatName = reporting;     // V3: surface on the V2 onboard TFT
       transmitCommandForDevice(reporting);
     }
   }
@@ -1508,6 +1635,12 @@ void handleLoRaPacket()
       rxBuf[rxLen] = '\0'; // Null-terminate for string parsing
       String incoming((char *)rxBuf);
       Serial.println("[LORA] JSON packet received: " + incoming);
+
+      // V3: stash RSSI + bump counter for the TFT status panel before parsing.
+      // The cat name is set below inside handleLoRaPacketJSON.
+      tftMsgCount++;
+      tftLastCatRssi = rssi;
+
       handleLoRaPacketJSON(incoming);
     }
 #if 0 // V3 ROLLOUT: binary TLV inbound path disabled. Parked on wip/binary-migration branch.
@@ -1716,15 +1849,29 @@ void checkWiFiConnection()
   }
 }
 
+// V3 BLE policy:
+//  - The collar matches BEACON_NAME ("Home") case-sensitively against
+//    dev.getName(). We MUST advertise the exact same string, hence "Home".
+//  - We deliberately advertise at the lowest sensible TX power so the beacon
+//    has a short physical reach — collars detecting it should genuinely be
+//    inside the house, not on the pavement out front. The collar enforces
+//    a stricter RSSI threshold on top, but cutting TX power keeps things
+//    sane even if a collar's RSSI drift moves the threshold around.
+//  - ESP_PWR_LVL_N12 == -12 dBm. Range typically ~3-8 m through walls.
+//    If you need more reach, bump to N9 (-9), N6 (-6), N3 (-3), or N0 (0 dBm).
+//    Each step roughly doubles the line-of-sight range.
 void setupBLE()
 {
   BLEDevice::init(BLE_DEVICE_NAME);
+  // Low TX power on the advertising channel only (default applies to all roles).
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12);
+
   pAdvertising = BLEDevice::getAdvertising();
 
   // Configure minimal, non-connectable advertising payload
   BLEAdvertisementData advData;
   advData.setFlags(ESP_BLE_ADV_FLAG_GEN_DISC | ESP_BLE_ADV_FLAG_BREDR_NOT_SPT);
-  advData.setName("HOME"); // keep payload small (<31B)
+  advData.setName("Home"); // case MUST match BEACON_NAME on the collar
   pAdvertising->setAdvertisementData(advData);
 
   // Non-scannable, non-connectable advertisement to reduce controller load
@@ -1738,7 +1885,7 @@ void setupBLE()
 
   BLEDevice::startAdvertising();
   lastBLEAdvertTime = millis();
-  Serial.println("[BLE] Advertising started (non-connectable) with name: HOME");
+  Serial.println("[BLE] Advertising started: name='Home' tx_pwr=-12dBm (short-range)");
 }
 
 void enableBLE()
@@ -1844,6 +1991,16 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("[BOOT] Starting setup...");
+
+  // V3: power up Heltec V2's external rail (GPS + TFT) BEFORE touching any
+  // peripheral on it. Vext is active-LOW. Without this the UC6580 stays dark
+  // and the ST7735 won't respond to init.
+  heltecV2_enableVext();
+
+  // V3: bring up the onboard TFT next so any boot errors below are visible
+  // on-screen without needing the serial monitor.
+  tftBegin();
+
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW); // Turn off the LED
   pinMode(LORA_LED, OUTPUT);      // Initialize LoRa LED pin
@@ -2037,6 +2194,7 @@ void loop()
   server.handleClient();
   webSocket.loop();
   ArduinoOTA.handle(); // V3: service incoming OTA firmware uploads
+  tftRefresh();        // V3: ~1Hz status panel on Heltec V2 onboard TFT
 
   // Check if the serial port is open
   if (Serial && !serialPreviouslyOpened)
