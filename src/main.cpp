@@ -21,6 +21,7 @@
 #include <vector> // Include for message log buffer
 #include <TinyGPS++.h>
 #include <ESPmDNS.h> // Add mDNS library
+#include <ArduinoOTA.h> // V3: wireless firmware push from PlatformIO (espota)
 #include <BLEDevice.h>
 #include <BLEUtils.h>
 #include <BLEServer.h>
@@ -600,7 +601,80 @@ void updateNodeState(const JsonDocument &doc)
   }
 }
 
-// Process command queue and transmit via LoRa (binary protocol)
+// Transmit a single LoRaCommand right now and log success/failure.
+// Bypasses queue lookup — caller is responsible for picking the cmd.
+static void transmitCommand(const LoRaCommand &cmd)
+{
+  Serial.printf("[LoRa] Transmitting JSON command to %s (msg_id=%lu, %d bytes): %.*s\n",
+                cmd.targetDevice.c_str(), cmd.messageId, cmd.len,
+                cmd.len, (const char *)cmd.buf);
+
+  lora.standby();
+  int state = lora.transmit(cmd.buf, cmd.len);
+
+  if (state == RADIOLIB_ERR_NONE)
+  {
+    Serial.printf("[LoRa] Command transmitted successfully (msg_id=%lu)\n", cmd.messageId);
+    LED_flicker();
+
+    JsonDocument logDoc;
+    logDoc["event"] = "command_sent";
+    logDoc["target"] = cmd.targetDevice;
+    logDoc["msg_id"] = cmd.messageId;
+    logDoc["bytes"] = cmd.len;
+    logMessage(logDoc, "event");
+  }
+  else
+  {
+    Serial.printf("[LoRa] Command transmission failed: %d (msg_id=%lu)\n",
+                  state, cmd.messageId);
+
+    JsonDocument logDoc;
+    logDoc["event"] = "command_failed";
+    logDoc["target"] = cmd.targetDevice;
+    logDoc["msg_id"] = cmd.messageId;
+    logDoc["error_code"] = state;
+    logMessage(logDoc, "event");
+  }
+
+  lora.startReceive();
+  lastCommandTxTime = millis();
+  loraTransmitting = false;
+}
+
+// V3: opportunistic command send. Called the moment a telemetry packet arrives
+// from a collar — we KNOW the collar is in its post-TX RX window, so anything
+// queued for it goes out immediately. Sends at most ONE command per call to
+// keep airtime fair; a burst is delivered across the next 3s extension window
+// on the collar side via subsequent calls (or via processCommandQueue's normal
+// path). Returns true if a command was transmitted.
+//
+// Bypasses the COMMAND_TX_INTERVAL gate because the timing case is the one
+// we genuinely want — the collar is awake right now.
+static bool transmitCommandForDevice(const String &reportingDevice)
+{
+  if (loraTransmitting) return false;
+  if (commandQueue.empty()) return false;
+
+  // Find first queued command targeted to this device (or "broadcast")
+  for (auto it = commandQueue.begin(); it != commandQueue.end(); ++it)
+  {
+    if (it->targetDevice == reportingDevice || it->targetDevice == "broadcast")
+    {
+      LoRaCommand cmd = *it;
+      commandQueue.erase(it);
+      Serial.printf("[LoRa] Opportunistic send: %s reported in, dispatching queued cmd msg_id=%lu\n",
+                    reportingDevice.c_str(), cmd.messageId);
+      transmitCommand(cmd);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Process command queue and transmit via LoRa (JSON protocol).
+// Safety-net path: handles broadcasts and acts as retry for any command
+// that wasn't dispatched opportunistically (e.g. collar hasn't reported yet).
 void processCommandQueue()
 {
   // Rate limit command transmission
@@ -614,55 +688,9 @@ void processCommandQueue()
     return;
   }
 
-  // Get next command
   LoRaCommand cmd = commandQueue.front();
   commandQueue.erase(commandQueue.begin());
-
-  // V3: JSON command transmission (binary path on wip/binary-migration branch)
-  Serial.printf("[LoRa] Transmitting JSON command to %s (msg_id=%lu, %d bytes): %.*s\n",
-                cmd.targetDevice.c_str(), cmd.messageId, cmd.len,
-                cmd.len, (const char *)cmd.buf);
-
-  // Switch LoRa to standby before transmit
-  lora.standby();
-
-  // Transmit binary packet
-  int state = lora.transmit(cmd.buf, cmd.len);
-
-  if (state == RADIOLIB_ERR_NONE)
-  {
-    Serial.printf("[LoRa] Command transmitted successfully (msg_id=%lu)\n", cmd.messageId);
-
-    // Flash LoRa LED to indicate TX
-    LED_flicker();
-
-    // Log command transmission
-    JsonDocument logDoc;
-    logDoc["event"] = "command_sent";
-    logDoc["target"] = cmd.targetDevice;
-    logDoc["msg_id"] = cmd.messageId;
-    logDoc["bytes"] = cmd.len;
-    logMessage(logDoc, "event");
-  }
-  else
-  {
-    Serial.printf("[LoRa] Command transmission failed: %d (msg_id=%lu)\n",
-                  state, cmd.messageId);
-
-    // Log failure
-    JsonDocument logDoc;
-    logDoc["event"] = "command_failed";
-    logDoc["target"] = cmd.targetDevice;
-    logDoc["msg_id"] = cmd.messageId;
-    logDoc["error_code"] = state;
-    logMessage(logDoc, "event");
-  }
-
-  // Return to receive mode
-  lora.startReceive();
-
-  lastCommandTxTime = millis();
-  loraTransmitting = false;
+  transmitCommand(cmd);
 }
 
 // Send mode change command to a specific node (JSON protocol for V3 rollout)
@@ -1315,6 +1343,15 @@ static void handleLoRaPacketJSON(const String &incoming)
     logMessage(doc, "lora");
     updateNodeState(doc);
     notifyPosition(doc);
+
+    // V3: collar just transmitted — we have ~5s of post-TX RX window on the
+    // collar side. If there's a queued command for it, push it now so it
+    // lands inside that window instead of waiting on the 3s safety-net poll.
+    String reporting = doc["id"].as<String>();
+    if (reporting.length() > 0)
+    {
+      transmitCommandForDevice(reporting);
+    }
   }
   else
   {
@@ -1735,6 +1772,40 @@ void setup()
     Serial.println("[mDNS] ❌ Failed to start mDNS responder");
   }
 
+  // ───────────── ArduinoOTA (V3) ─────────────
+  // Push firmware over WiFi from PlatformIO with:
+  //   pio run -t upload --upload-port cattracker.local
+  // (platformio.ini sets upload_protocol = espota.) No password by default;
+  // if you want one, call ArduinoOTA.setPassword("...") before begin().
+  ArduinoOTA.setHostname("cattracker");
+  ArduinoOTA.onStart([]() {
+    const char *type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
+    Serial.printf("[OTA] Start updating %s\n", type);
+    // If updating SPIFFS/LittleFS, unmount it first
+    if (ArduinoOTA.getCommand() == U_SPIFFS) {
+      LittleFS.end();
+    }
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\n[OTA] End — rebooting");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("[OTA] Progress: %u%%\r", (progress * 100) / total);
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("[OTA] Error[%u]: ", error);
+    switch (error) {
+      case OTA_AUTH_ERROR:    Serial.println("Auth failed"); break;
+      case OTA_BEGIN_ERROR:   Serial.println("Begin failed"); break;
+      case OTA_CONNECT_ERROR: Serial.println("Connect failed"); break;
+      case OTA_RECEIVE_ERROR: Serial.println("Receive failed"); break;
+      case OTA_END_ERROR:     Serial.println("End failed"); break;
+      default:                Serial.println("Unknown"); break;
+    }
+  });
+  ArduinoOTA.begin();
+  Serial.println("[OTA] ArduinoOTA ready — upload to cattracker.local");
+
   // Mount filesystem with better error reporting
   if (!LittleFS.begin(true))
   { // Add format on fail
@@ -1855,6 +1926,7 @@ void loop()
   // Handle HTTP server and WebSocket events
   server.handleClient();
   webSocket.loop();
+  ArduinoOTA.handle(); // V3: service incoming OTA firmware uploads
 
   // Check if the serial port is open
   if (Serial && !serialPreviouslyOpened)
