@@ -163,6 +163,12 @@ JsonDocument deviceLocation;
 float g_homeLat = 51.87378215701798f; // Default; overwritten by loadHomeLocation()
 float g_homeLon = -2.239428653198173f;
 
+// V3: cached so tftRefresh() (1 Hz) doesn't have to poke LittleFS every cycle.
+// Set true once a successful load or save has happened; set false if a load
+// finds no file. Without this cache, vfs_api.cpp logs an error every refresh
+// when the file genuinely doesn't exist (very common on first boot).
+bool g_homeLocationSaved = false;
+
 // ───────────── Heltec V2 hardware bring-up ─────────────
 // Vext is the external power rail on the Heltec V2. It feeds the UC6580 GNSS
 // and the TFT backlight/logic. It is ACTIVE LOW — driving the pin LOW turns
@@ -260,11 +266,15 @@ static void tftRefresh()
     tft.print(F("(no cats yet)"));
   }
 
-  // Home location: shown small in the corner so users can sanity-check
+  // Home location: shown small in the corner so users can sanity-check.
+  // Uses the cached g_homeLocationSaved flag instead of LittleFS.exists()
+  // because exists() internally open()s the file, and vfs_api logs an
+  // error on every failed open — would flood the console at 1 Hz on a
+  // fresh install where the user hasn't set a home yet.
   tft.setTextColor(ST77XX_MAGENTA);
   tft.setCursor(2, 56);
   tft.print(F("Home set: "));
-  tft.print(LittleFS.exists(HOME_LOCATION_FILE) ? F("yes") : F("no"));
+  tft.print(g_homeLocationSaved ? F("yes") : F("no"));
 
   // BLE beacon state line
   tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED);
@@ -278,12 +288,14 @@ static bool loadHomeLocation()
   if (!LittleFS.exists(HOME_LOCATION_FILE))
   {
     Serial.println("[HOME] No saved home location, using defaults");
+    g_homeLocationSaved = false;
     return false;
   }
   File f = LittleFS.open(HOME_LOCATION_FILE, "r");
   if (!f)
   {
     Serial.println("[HOME] Failed to open home_location.json for read");
+    g_homeLocationSaved = false;
     return false;
   }
   JsonDocument doc;
@@ -292,6 +304,7 @@ static bool loadHomeLocation()
   if (err)
   {
     Serial.printf("[HOME] Parse error: %s — falling back to defaults\n", err.c_str());
+    g_homeLocationSaved = false;
     return false;
   }
   if (doc["lat"].is<float>() && doc["lon"].is<float>())
@@ -299,9 +312,11 @@ static bool loadHomeLocation()
     g_homeLat = doc["lat"].as<float>();
     g_homeLon = doc["lon"].as<float>();
     Serial.printf("[HOME] Loaded: lat=%.6f lon=%.6f\n", g_homeLat, g_homeLon);
+    g_homeLocationSaved = true;
     return true;
   }
   Serial.println("[HOME] Missing lat/lon in file — using defaults");
+  g_homeLocationSaved = false;
   return false;
 }
 
@@ -326,6 +341,7 @@ static bool saveHomeLocation(float lat, float lon)
   f.close();
   g_homeLat = lat;
   g_homeLon = lon;
+  g_homeLocationSaved = true;
   Serial.printf("[HOME] Saved: lat=%.6f lon=%.6f\n", lat, lon);
   return true;
 }
