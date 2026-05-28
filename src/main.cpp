@@ -203,10 +203,15 @@ static void tftBegin()
   //   - shifted image       → panel uses non-standard X/Y offsets (1, 26)
   //   - garbled / random pixels → MOSI/SCK pin map wrong, or SPI mode mismatch
   tft.initR(INITR_MINI160x80);
-  // Heltec V2's specific ST7735 panel needs colour inversion to display
-  // correctly. Without this, blacks read as whites and the image is unusable.
-  // Documented behaviour in the V2 reference sketch.
-  tft.invertDisplay(true);
+  // Colour inversion: leave OFF on our specific Heltec V2 panel batch.
+  // I initially set this to true based on a reference doc, which made the
+  // panel "work" but with a WHITE background — the controller was flipping
+  // every pixel, so BLACK fills rendered as WHITE and our named colours
+  // (cyan, yellow, etc.) showed as their complements. With invertDisplay(false)
+  // we get a proper BLACK background and the colour names match reality.
+  // If a future hardware revision needs inversion, flip back to true and
+  // expect to also re-pick all the colour constants to their complements.
+  tft.invertDisplay(false);
   tft.setRotation(1);                  // landscape: 160 wide x 80 tall
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
