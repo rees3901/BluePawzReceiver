@@ -266,21 +266,23 @@ static void tftRefresh()
   snprintf(buf, sizeof(buf), "BluePaws v%-10s", BLUEPAWZ_VERSION);
   tft.print(buf);
 
-  // GPS status indicator — a 7x7 px filled rectangle in the top-right
-  // corner of the title bar. Colour coding:
-  //   RED    no NMEA bytes have ever been received → GPS hardware/wiring fault
-  //   AMBER  bytes arriving but no valid fix yet → acquiring satellites
-  //   GREEN  fresh valid fix (age < 5 s) → all good
-  // The position (150,2) puts it flush right inside a 160 px panel.
-  // RGB565 amber — defined locally because ST77XX_ORANGE only exists in
-  // newer Adafruit_ST7735 versions; this is portable across releases.
+  // GPS status indicator — a labelled coloured box in the top-right of the
+  // title bar. Sized big enough to spot from across a desk.
+  // RGB565 amber: defined locally for portability (ST77XX_ORANGE only
+  // exists in newer Adafruit_ST7735 versions).
   static const uint16_t TFT_AMBER = 0xFC00;
   uint16_t gpsColour;
   if (gpsBytesRx == 0)                gpsColour = ST77XX_RED;
   else if (gpsValidFixes == 0)        gpsColour = TFT_AMBER;
   else if (gps.location.age() < 5000) gpsColour = ST77XX_GREEN;
   else                                gpsColour = TFT_AMBER; // fix went stale
-  tft.fillRect(150, 2, 7, 7, gpsColour);
+  // 28x10 px filled rect on the right edge, with "GPS" text overlay in
+  // contrasting colour. At rotation 1 the panel is 160 wide x 80 tall, so
+  // x=130 leaves 30 px to the edge.
+  tft.fillRect(130, 0, 30, 11, gpsColour);
+  tft.setTextColor(ST77XX_BLACK, gpsColour);
+  tft.setCursor(135, 2);
+  tft.print(F("GPS"));
 
   // WiFi status / IP
   tft.setCursor(2, 14);
@@ -1949,32 +1951,70 @@ void setupGPS()
   // Bigger RX buffer so a burst of NMEA at boot doesn't overflow before
   // loop() gets a chance to drain it.
   gpsSerial1.setRxBufferSize(1024);
-  gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  Serial.printf("[GPS] UART1 up: rx=GPIO%d tx=GPIO%d baud=%d (UC6580)\n",
-                GPS_RX, GPS_TX, GPS_BAUD);
 
-  // Quick local sniff: wait up to 2 s for anything to arrive. Confirms the
-  // wiring before we proceed with the rest of setup. If nothing shows up
-  // here, the UART or wiring is bad and no later code will fix it.
-  uint32_t sniffStart = millis();
-  uint32_t sniffBytes = 0;
-  while (millis() - sniffStart < 2000)
+  // Baud auto-detect. UC6580's datasheet says 115200 default, but board
+  // batches have been known to ship at 9600 (legacy mode) or 38400. Rather
+  // than picking one and hoping, we try each in turn — for each candidate
+  // open UART1, sniff for 1.5 s, count bytes that look like printable ASCII
+  // (NMEA is all printable). Lock onto the first baud that produces a
+  // signal. Falls back to 115200 if none of them respond (so loop() will
+  // still try forever via the existing handler).
+  static const uint32_t bauds[] = {115200, 9600, 38400, 57600};
+  const int nBauds = sizeof(bauds) / sizeof(bauds[0]);
+  uint32_t winnerBaud = 0;
+  uint32_t winnerBytes = 0;
+  for (int i = 0; i < nBauds; i++)
   {
-    while (gpsSerial1.available() > 0)
+    gpsSerial1.end();
+    delay(20);
+    gpsSerial1.begin(bauds[i], SERIAL_8N1, GPS_RX, GPS_TX);
+    Serial.printf("[GPS] Trying %u baud", bauds[i]);
+    uint32_t sniffStart = millis();
+    uint32_t sniffBytes = 0;
+    uint32_t printableBytes = 0;
+    while (millis() - sniffStart < 1500)
     {
-      gpsSerial1.read();
-      sniffBytes++;
+      while (gpsSerial1.available() > 0)
+      {
+        int c = gpsSerial1.read();
+        sniffBytes++;
+        if ((c >= 0x20 && c <= 0x7E) || c == '\r' || c == '\n') printableBytes++;
+      }
+      delay(10);
     }
-    delay(10);
+    // Heuristic: real NMEA at the right baud will be >90% printable. Wrong
+    // baud at a real GPS produces random binary noise (UART framing errors
+    // look like garbage bytes in the read buffer).
+    bool looksLikeNmea = sniffBytes > 20 && (printableBytes * 100 / sniffBytes) > 80;
+    Serial.printf(" → %u bytes, %u printable%s\n", sniffBytes, printableBytes,
+                  looksLikeNmea ? " ✓ NMEA-like" : "");
+    if (looksLikeNmea && sniffBytes > winnerBytes)
+    {
+      winnerBaud = bauds[i];
+      winnerBytes = sniffBytes;
+      break; // accept first hit — no point trying more once we've found it
+    }
   }
-  Serial.printf("[GPS] 2 s post-reset sniff: %u bytes received\n", sniffBytes);
-  if (sniffBytes == 0)
+
+  if (winnerBaud > 0)
   {
-    Serial.println("[GPS] WARNING: no bytes from UC6580 in 2 s post-reset.");
-    Serial.println("[GPS]   Likely causes: Vext not actually delivering power,");
-    Serial.println("[GPS]   GNSS_RST stuck low, RX/TX swap, or baud mismatch.");
-    Serial.println("[GPS]   Try uncommenting the GPS_BAUD swap test in setupGPS().");
+    Serial.printf("[GPS] Auto-detected baud: %u (UC6580 talking)\n", winnerBaud);
+    gpsSerial1.end();
+    delay(20);
+    gpsSerial1.begin(winnerBaud, SERIAL_8N1, GPS_RX, GPS_TX);
   }
+  else
+  {
+    Serial.println("[GPS] WARNING: no baud produced NMEA-like traffic.");
+    Serial.println("[GPS]   Falling back to 115200 — loop() will keep trying.");
+    Serial.println("[GPS]   Likely causes: Vext not powering GPS, GNSS_RST stuck,");
+    Serial.println("[GPS]   RX/TX swap, or UC6580 needs a config command we're missing.");
+    gpsSerial1.end();
+    delay(20);
+    gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+  }
+  Serial.printf("[GPS] UART1 final: rx=GPIO%d tx=GPIO%d baud=%u\n",
+                GPS_RX, GPS_TX, winnerBaud ? winnerBaud : (uint32_t)GPS_BAUD);
 
   // Initialize device location with default home until the GPS produces
   // a real fix. Status field is what the UI keys on — "Starting up" means
