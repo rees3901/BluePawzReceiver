@@ -171,13 +171,16 @@ bool g_homeLocationSaved = false;
 
 // ───────────── Heltec V2 hardware bring-up ─────────────
 // Vext is the external power rail on the Heltec V2. It feeds the UC6580 GNSS
-// and the TFT backlight/logic. It is ACTIVE LOW — driving the pin LOW turns
-// the rail ON. Always enable Vext before initialising the GPS UART or the
-// TFT, otherwise both will be silent on a cold boot.
+// and the TFT backlight/logic. **On the Wireless Tracker V2 specifically it
+// is ACTIVE HIGH** — drive the pin HIGH to enable the rail. This is the
+// opposite of older Heltec boards (WiFi LoRa 32, etc.) which used active-LOW.
+// Driving the wrong polarity = no GPS, no TFT, silent failure on cold boot
+// with no diagnostic to lead you to the right answer. Verified against the
+// vendor's reference sketch in the V2 docs.
 static void heltecV2_enableVext()
 {
   pinMode(VEXT_CTRL, OUTPUT);
-  digitalWrite(VEXT_CTRL, LOW); // Vext ON
+  digitalWrite(VEXT_CTRL, HIGH); // Vext ON (active HIGH on V2!)
   delay(50);                     // give rails time to settle
 }
 
@@ -191,15 +194,19 @@ static void tftBegin()
   // V3 TFT init: the Heltec V2 ships a 160x80 ST7735 panel. Adafruit's lib
   // has THREE possible inits for similar panels — if the display looks
   // wrong, swap between them:
-  //   INITR_MINI160x80        — original 160x80 panel (TRY THIS FIRST)
+  //   INITR_MINI160x80        — original 160x80 panel (DEFAULT)
   //   INITR_MINI160x80_PLUGIN — newer panel batches with different init
   //   INITR_GREENTAB          — fallback if both above show offset/colour issues
   // Common visible symptoms:
-  //   - blank display       → wrong init variant OR backlight pin wrong
-  //   - inverted colours    → wrong tab variant, try another
-  //   - shifted image (offset) → wrong tab variant or wrong dimensions
+  //   - blank display       → wrong init variant OR Vext polarity wrong
+  //   - inverted colours    → invertDisplay(true) needed (this panel needs it)
+  //   - shifted image       → panel uses non-standard X/Y offsets (1, 26)
   //   - garbled / random pixels → MOSI/SCK pin map wrong, or SPI mode mismatch
   tft.initR(INITR_MINI160x80);
+  // Heltec V2's specific ST7735 panel needs colour inversion to display
+  // correctly. Without this, blacks read as whites and the image is unusable.
+  // Documented behaviour in the V2 reference sketch.
+  tft.invertDisplay(true);
   tft.setRotation(1);                  // landscape: 160 wide x 80 tall
   tft.fillScreen(ST77XX_BLACK);
   tft.setTextWrap(false);
