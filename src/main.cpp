@@ -117,9 +117,18 @@ unsigned long lastToggle = 0;
 const unsigned long toggleInterval = 4000;
 
 // ───────────── GPS UC6580 ─────────────
-// V2 uses a UC6580 GNSS at 115200 baud (V1 was NEO-6M @9600).
-#define GPS_RX 33  // ESP32 receives FROM the GPS (GPS TX)
-#define GPS_TX 34  // ESP32 sends TO the GPS (GPS RX)
+// Verified against the Heltec HTIT-Tracker_V2.3 schematic (PDF in repo docs):
+//   GNSS_TX (chip pin 19) → ESP32 GPIO 33 (the ESP32 RECEIVES on this pin)
+//   GNSS_RX (chip pin 18) ← ESP32 GPIO 34 (the ESP32 TRANSMITS on this pin)
+//   GNSS_RST (chip pin 17) ↔ ESP32 GPIO 35 (pulled high by R26 to Vext_3V3,
+//      so the GPS comes out of reset when Vext goes HIGH; we toggle it
+//      explicitly in setupGPS to force a clean cold start every boot)
+//   PPS (chip pin 35) → ESP32 GPIO 36 (unused — would give 1pps sync if needed)
+// UC6580 default baud is 115200 (V1's NEO-6M was 9600).
+#define GPS_RX 33
+#define GPS_TX 34
+#define GPS_RST 35
+#define GPS_PPS 36
 #define GPS_BAUD 115200
 
 // ───────────── Vext rail (powers GPS + TFT, ACTIVE LOW) ─────────────
@@ -1883,45 +1892,82 @@ void handleLoRaPacket()
   lora.startReceive();
 }
 
+// ───── GPS diagnostic counters (visible via serial + status panel) ─────
+// These help distinguish "GPS isn't talking to me" (gpsBytesRx stays 0)
+// from "GPS is talking but has no fix yet" (gpsBytesRx climbs, gpsValidFixes
+// stays 0) from "all good" (both climb). Without them, a silent GPS UART
+// looks identical to a GPS that's just busy acquiring satellites — both
+// produce status="Starting up" with the placeholder coordinates.
+static uint32_t gpsBytesRx     = 0;  // total raw NMEA bytes received
+static uint32_t gpsValidFixes  = 0;  // # of complete sentences with a valid fix
+static uint32_t gpsLastReportMs = 0;
+
 void setupGPS()
 {
-  gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+  // Bring the UC6580 out of reset cleanly. R26 (10K) on the schematic
+  // pulls GNSS_RST to Vext_3V3, so the module is normally not in reset,
+  // but a brief explicit pulse forces a known-good cold start in case
+  // a previous boot left it in a weird state (e.g. Vext came up dirty).
+  pinMode(GPS_RST, OUTPUT);
+  digitalWrite(GPS_RST, LOW);    // assert reset
+  delay(50);
+  digitalWrite(GPS_RST, HIGH);   // release reset → module starts NMEA stream
+  delay(200);                    // give it time to settle before opening UART
 
-  // Initialize device location with HOME coordinates
-  deviceLocation["id"] = "MyDevice";
-  deviceLocation["lat"] = g_homeLat;
-  deviceLocation["lon"] = g_homeLon;
+  gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.printf("[GPS] UART1 up: rx=GPIO%d tx=GPIO%d baud=%d (UC6580)\n",
+                GPS_RX, GPS_TX, GPS_BAUD);
+
+  // Initialize device location with default home until the GPS produces
+  // a real fix. Status field is what the UI keys on — "Starting up" means
+  // we have no real data; flips to "Home" / "Error" once GPS parser runs.
+  deviceLocation["id"]     = "MyDevice";
+  deviceLocation["lat"]    = g_homeLat;
+  deviceLocation["lon"]    = g_homeLon;
   deviceLocation["status"] = "Starting up";
 }
 
+// Pump bytes out of the GPS UART, feed them into TinyGPSPlus, update
+// deviceLocation when a valid fix is parsed. Called from loop() once per
+// pass — cheap (a handful of bytes per call typically). Tracks raw byte
+// count and valid-fix count so we can diagnose "no signal" vs "no fix".
+//
+// The MyDevice WebSocket broadcast is gated by DEVICE_GPS_UPDATE_INTERVAL
+// (10 s) so the map UI gets a steady once-per-10-sec heartbeat regardless
+// of how fast NMEA is flowing in.
 void handleDeviceOwnGPS()
 {
   unsigned long startTime = millis();
-  bool gpsDataProcessed = false; // Flag to track if any GPS data was processed in this call
 
-  while (gpsSerial1.available() > 0 && (millis() - startTime) < 100) // Timeout after 100ms
+  // Process up to ~100 ms worth of UART bytes per call. We don't drain the
+  // whole queue every loop because TinyGPSPlus::encode() returns true after
+  // each COMPLETE sentence, and we want to keep loop() responsive for the
+  // HTTP server + WebSocket clients.
+  while (gpsSerial1.available() > 0 && (millis() - startTime) < 100)
   {
-    if (gps.encode(gpsSerial1.read()))
+    char c = gpsSerial1.read();
+    gpsBytesRx++;
+    if (gps.encode(c))
     {
-      gpsDataProcessed = true;                                 // Mark that we processed some GPS data
-      if (gps.location.isValid() && gps.location.age() < 3000) // Check if data is fresh
+      // A complete NMEA sentence was parsed. Check if location is fresh
+      // (age < 3 s) and valid (the talker has actually acquired a fix —
+      // GGA/RMC with sat lock, not just NMEA being emitted with empty fields).
+      if (gps.location.isValid() && gps.location.age() < 3000)
       {
-        deviceLocation["lat"] = gps.location.lat();
-        deviceLocation["lon"] = gps.location.lng();
-        deviceLocation["status"] = "Home"; // Use standard status: Home when GPS has fix
-        deviceLocation["satellites"] = gps.satellites.value();
-        deviceLocation["hdop"] = gps.hdop.value();
-        deviceLocation["received_at"] = millis(); // Add receiver timestamp here too
+        gpsValidFixes++;
+        deviceLocation["lat"]         = gps.location.lat();
+        deviceLocation["lon"]         = gps.location.lng();
+        deviceLocation["status"]      = "Home";   // UI status: green/home marker
+        deviceLocation["satellites"]  = gps.satellites.value();
+        deviceLocation["hdop"]        = gps.hdop.value();
+        deviceLocation["received_at"] = millis();
 
-        // Add GPS time information to the JSON document
         if (gps.time.isValid())
         {
-          char timeStr[15]; // Buffer for formatted time string (HH:MM:SS.CC)
+          char timeStr[15];
           sprintf(timeStr, "%02d:%02d:%02d.%02d",
-                  gps.time.hour(),
-                  gps.time.minute(),
-                  gps.time.second(),
-                  gps.time.centisecond());
+                  gps.time.hour(), gps.time.minute(),
+                  gps.time.second(), gps.time.centisecond());
           deviceLocation["gps_time"] = timeStr;
         }
         else
@@ -1931,13 +1977,30 @@ void handleDeviceOwnGPS()
       }
       else
       {
-        // Keep last known good location but update status
-        deviceLocation["status"] = "Error";       // Use standard status: Error when no GPS fix
-        deviceLocation["received_at"] = millis(); // Update timestamp even if no fix
+        // Sentence parsed but no valid lock. Keep the last known good
+        // lat/lon (might have come from a previous fix or the placeholder
+        // from setupGPS) and just flag the loss of fix to the UI.
+        deviceLocation["status"]      = "Error";
+        deviceLocation["received_at"] = millis();
       }
-      // We break after the first valid sentence processing to avoid multiple updates from one burst
+      // Break after one complete sentence — we'll get the next on the next
+      // loop iteration. Stops a single burst monopolising the call.
       break;
     }
+  }
+
+  // Diagnostic heartbeat: once every 10 s, dump the byte/fix counters to
+  // serial. Silent UART → gpsBytesRx stays at 0. UART alive but no lock
+  // (typical indoors, or first 30 s after cold start) → bytes climb,
+  // fixes stay flat. Both climbing = healthy.
+  if (millis() - gpsLastReportMs > 10000)
+  {
+    gpsLastReportMs = millis();
+    Serial.printf("[GPS] diag: rx_bytes=%u valid_fixes=%u sats=%u hdop=%u age=%lu ms\n",
+                  gpsBytesRx, gpsValidFixes,
+                  (unsigned)gps.satellites.value(),
+                  (unsigned)gps.hdop.value(),
+                  (unsigned long)gps.location.age());
   }
 
   // Send update every 10 seconds regardless of GPS data availability
