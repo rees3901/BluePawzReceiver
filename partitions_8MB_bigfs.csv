@@ -1,19 +1,24 @@
-# Custom 8 MB partition table with a coredump region for post-mortem
-# debugging. After a panic the ESP-IDF panic handler writes a coredump
-# blob here; pio extracts it with: pio device monitor + a coredump tool.
+# 8 MB partition table with the LittleFS partition (labelled 'spiffs'
+# for compatibility — Arduino-ESP32's LittleFS lib mounts on a SPIFFS-
+# subtype partition) sized big enough for the web UI + log buffer.
 #
-# Layout (all sizes in bytes, hex):
-#   nvs       16 KB    @ 0x9000     — Preferences / NVS for home location etc.
-#   otadata    8 KB    @ 0xd000     — OTA partition state
-#   coredump  64 KB    @ 0xf000     — panic dump (V3 addition)
-#   app0     2.75 MB   @ 0x20000    — main firmware (this is what we boot from)
-#   app1     2.75 MB   @ 0x2E0000   — OTA staging partition
-#   spiffs   2.375 MB  @ 0x5A0000   — LittleFS data partition (web UI)
+# Layout:
+#   nvs        16 KB    @ 0x9000     — Preferences / NVS (home location etc.)
+#   otadata     8 KB    @ 0xd000     — OTA boot-target state
+#   app0       2.75 MB  @ 0x10000    — main firmware (boots from here)
+#   app1       2.75 MB  @ 0x2D0000   — OTA staging partition
+#   spiffs    2.4375 MB @ 0x590000   — LittleFS data partition (web UI files)
 #
-# Name,    Type, SubType,  Offset,   Size,     Flags
-nvs,       data, nvs,      0x9000,   0x4000,
-otadata,   data, ota,      0xd000,   0x2000,
-coredump,  data, coredump, 0xf000,   0x10000,
-app0,      app,  ota_0,    0x20000,  0x2C0000,
-app1,      app,  ota_1,    0x2E0000, 0x2C0000,
-spiffs,    data, spiffs,   0x5A0000, 0x260000,
+# NOTE: a coredump partition would be nice for post-mortem debugging
+# but inserting one moves app0 off the well-trodden 0x10000 offset,
+# which broke the bootloader sequence on the Heltec V2 (rapid SYS_RST
+# loop in ROM space, no app code executed). Keep this layout boring
+# and identical to the project's pre-V3 default until we have a way to
+# verify the alternative.
+#
+# Name,    Type, SubType, Offset,   Size,     Flags
+nvs,       data, nvs,     0x9000,   0x4000,
+otadata,   data, ota,     0xd000,   0x2000,
+app0,      app,  ota_0,   0x10000,  0x2C0000,
+app1,      app,  ota_1,   0x2D0000, 0x2C0000,
+spiffs,    data, spiffs,  0x590000, 0x270000,
