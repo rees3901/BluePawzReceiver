@@ -187,7 +187,6 @@ struct LoRaCommand
 };
 
 std::vector<LoRaCommand> commandQueue;
-bool loraTransmitting = false;
 unsigned long lastCommandTxTime = 0;
 const unsigned long COMMAND_TX_INTERVAL = 3000; // 3 seconds between command transmissions
 uint32_t nextMessageId = 1;                     // Global message ID counter
@@ -639,7 +638,6 @@ static void transmitCommand(const LoRaCommand &cmd)
 
   lora.startReceive();
   lastCommandTxTime = millis();
-  loraTransmitting = false;
 }
 
 // V3: opportunistic command send. Called the moment a telemetry packet arrives
@@ -653,7 +651,6 @@ static void transmitCommand(const LoRaCommand &cmd)
 // we genuinely want — the collar is awake right now.
 static bool transmitCommandForDevice(const String &reportingDevice)
 {
-  if (loraTransmitting) return false;
   if (commandQueue.empty()) return false;
 
   // Find first queued command targeted to this device (or "broadcast")
@@ -677,8 +674,8 @@ static bool transmitCommandForDevice(const String &reportingDevice)
 // that wasn't dispatched opportunistically (e.g. collar hasn't reported yet).
 void processCommandQueue()
 {
-  // Rate limit command transmission
-  if (loraTransmitting || millis() - lastCommandTxTime < COMMAND_TX_INTERVAL)
+  // Rate limit command transmission (safety-net retry path)
+  if (millis() - lastCommandTxTime < COMMAND_TX_INTERVAL)
   {
     return;
   }
