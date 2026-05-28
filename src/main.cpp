@@ -64,6 +64,7 @@
 #include <secrets.h> // Include your secrets.h file for WiFi credentials
 #include <config.h>  // Shared configuration with TX nodes
 #include "protocol.h"
+#include "version.h" // BLUEPAWZ_VERSION — bump per semver in include/version.h
 #include <WiFi.h>
 #include <WebServer.h>        // Include the WebServer library for HTTP server
 #include <WebSocketsServer.h> // Include the WebSockets library for WebSocket server
@@ -183,7 +184,10 @@ static void tftBegin()
   tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
   tft.setCursor(2, 2);
   tft.setTextSize(1);
-  tft.print(F("BluePaws V3"));
+  // Title bar = "BluePaws " + the current firmware version. See include/version.h.
+  tft.print(F("BluePaws "));
+  tft.print(F("v"));
+  tft.print(BLUEPAWZ_VERSION);
   tft.setCursor(2, 14);
   tft.print(F("Booting..."));
 }
@@ -197,11 +201,13 @@ static void tftRefresh()
 
   tft.fillScreen(ST77XX_BLACK);
 
-  // Title bar
+  // Title bar — version is the most useful at-a-glance datum (so you can
+  // confirm a fresh flash landed) so it sits permanently in the title.
   tft.setTextColor(ST77XX_CYAN);
   tft.setCursor(2, 2);
   tft.setTextSize(1);
-  tft.print(F("BluePaws V3"));
+  tft.print(F("BluePaws v"));
+  tft.print(BLUEPAWZ_VERSION);
 
   // WiFi status / IP
   tft.setTextColor(ST77XX_WHITE);
@@ -1191,6 +1197,19 @@ void handleGetHome()
   server.send(200, "application/json", out);
 }
 
+// HTTP handler: GET /version — return the receiver firmware version.
+// The web UI fetches this on page load so the user can see at a glance
+// which firmware their browser is talking to. Useful right after an OTA
+// push to confirm the new image actually booted.
+void handleGetVersion()
+{
+  JsonDocument doc;
+  doc["version"] = BLUEPAWZ_VERSION;
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
 // HTTP handler: POST /home — set new home lat/lon
 // Accepts either form-encoded ?lat=&lon= or a JSON body {"lat":..,"lon":..}.
 //
@@ -2109,6 +2128,7 @@ void setup()
 {
   Serial.begin(115200);
   Serial.println("[BOOT] Starting setup...");
+  Serial.printf("[BOOT] BluePaws Receiver firmware v%s\n", BLUEPAWZ_VERSION);
 
   // V3: power up Heltec V2's external rail (GPS + TFT) BEFORE touching any
   // peripheral on it. Vext is active-LOW. Without this the UC6580 stays dark
@@ -2232,6 +2252,7 @@ void setup()
   server.on("/send-command", HTTP_POST, handleSendCommand); // Send command to node
   server.on("/home", HTTP_GET, handleGetHome);              // Get current home lat/lon
   server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
+  server.on("/version", HTTP_GET, handleGetVersion);        // Firmware version string
   server.serveStatic("/", LittleFS, "/");
   server.begin();
   Serial.println("[INFO] HTTP server started");

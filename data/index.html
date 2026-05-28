@@ -3,6 +3,13 @@
 <head>
   <meta charset="utf-8" />
   <title>Blue Paws Tracker</title>
+  <!-- Page title is rewritten by loadFirmwareVersion() to include the version
+       once /version returns. This static string is the cold-start fallback. -->
+  <script>
+    fetch('/version').then(r => r.ok ? r.json() : null).then(d => {
+      if (d && d.version) document.title = 'Blue Paws Tracker v' + d.version;
+    }).catch(() => {});
+  </script>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <link rel="icon" type="image/x-icon" href="/icons/favicon.ico">
 
@@ -196,6 +203,23 @@
       vertical-align: middle;
       margin-left: 17.5px; /* Keep margin for now */
     }
+    /* Firmware version badge next to the title. Subtle but visible at a
+       glance — handy for confirming an OTA push landed. Populated from
+       /version on page load by loadFirmwareVersion(). */
+    .firmware-version {
+      display: inline-block;
+      vertical-align: middle;
+      margin-left: 10px;
+      padding: 2px 10px;
+      font-size: 0.45em;
+      font-weight: 600;
+      color: #fff;
+      background: #4a7;
+      border-radius: 12px;
+      font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+      letter-spacing: 0.5px;
+    }
+    .firmware-version.unknown { background: #999; }
     /* Double the size of the dropdown buttons and the icon within */
     .marker-dropdown .btn {
       font-size: 2.66em !important; /* Double from 1.33em */
@@ -1401,7 +1425,8 @@ Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
       <span class="title-favicon">
         <img src="/icons/favicon.ico" style="height: 88px; vertical-align: middle; margin-right: 10px; transform: rotate(-15deg);">
       </span>
-      Blue Paws Tracker 
+      Blue Paws Tracker
+      <span id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
       <span class="title-main-logo">
         <img src="/icons/MainLogoPodgeCarrie_small.avif" style="height: 130px; vertical-align: middle; margin-left: 10px; transform: none;">
       </span>
@@ -2188,11 +2213,38 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       refreshHomeStatusLabel(lat, lon);
     };
 
-    // Kick off the initial fetch as soon as DOM is ready
+    // Fetch the receiver's firmware version (defined in include/version.h
+    // on the firmware side) and inject it into the title badge. Lets the
+    // user confirm at a glance which firmware is actually running — useful
+    // right after an OTA push.
+    async function loadFirmwareVersion() {
+      const el = document.getElementById('firmwareVersionBadge');
+      if (!el) return;
+      try {
+        const r = await fetch('/version');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        if (typeof data.version === 'string' && data.version.length > 0) {
+          el.textContent = 'v' + data.version;
+          el.classList.remove('unknown');
+          el.title = 'Receiver firmware v' + data.version;
+          console.log('Receiver firmware version:', data.version);
+        }
+      } catch (e) {
+        // Don't alert — version is decorative, not load-bearing.
+        console.warn('Could not fetch /version:', e);
+      }
+    }
+
+    // Kick off the initial fetches as soon as DOM is ready
     if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', loadHomeFromServer);
+      document.addEventListener('DOMContentLoaded', () => {
+        loadHomeFromServer();
+        loadFirmwareVersion();
+      });
     } else {
       loadHomeFromServer();
+      loadFirmwareVersion();
     }
 
     function updateZoomValue(value) {

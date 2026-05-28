@@ -151,6 +151,29 @@ Open `http://cattracker.local` or the printed IP in a browser.
 
 ---
 
+## Versioning
+
+The receiver firmware version lives in
+[`include/version.h`](./include/version.h) as a single `#define
+BLUEPAWZ_VERSION "x.y.z"`. Semantic versioning:
+
+- **MAJOR** — protocol or hardware-level generation (V3 = JSON wire
+  protocol + Heltec V2 hardware). A new major means existing collars
+  may no longer talk to the new base station without a reflash.
+- **MINOR** — new user-visible features (e.g. battery telemetry,
+  geofencing). Backwards-compatible with same-major collars.
+- **PATCH** — bug fixes, polish, refactors.
+
+The version is surfaced in three places at runtime:
+
+- the TFT title bar (`BluePaws v3.0.0`)
+- the `GET /version` HTTP endpoint (JSON `{"version":"3.0.0"}`)
+- the web UI title badge (fetched on page load) and the browser tab title
+
+After bumping `BLUEPAWZ_VERSION`, push via `pio run -t upload` (or
+OTA). Refresh the web UI and the badge updates — handy for confirming
+that an OTA flash actually landed.
+
 ## HTTP API
 
 The receiver exposes these endpoints (mostly used by the web UI, but
@@ -166,6 +189,7 @@ useful for scripting too):
 | POST | `/send-command` | Queue a downlink command (see below) |
 | GET | `/home` | Returns `{"lat":...,"lon":...}` |
 | POST | `/home?lat=&lon=` | Save new home location (20 km sanity-check) |
+| GET | `/version` | Returns `{"version":"3.0.0"}` |
 
 ### `/send-command` actions
 
