@@ -145,6 +145,11 @@ static uint32_t tftMsgCount = 0;             // total inbound LoRa packets seen 
 static String   tftLastCatName = "";          // last cat that reported in
 static int16_t  tftLastCatRssi = 0;
 
+// Forward-declared so tftRefresh() (defined just below) can read the BLE
+// state. The actual variable lives further down in the file alongside the
+// other BLE-related globals.
+extern bool bleEnabled;
+
 // Add initial location JSON
 JsonDocument deviceLocation;
 
