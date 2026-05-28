@@ -62,8 +62,73 @@ HardwareSerial gpsSerial1(1);
 
 // Add initial location JSON
 JsonDocument deviceLocation;
-const float HOME_LAT = 51.87378215701798;
-const float HOME_LON = -2.239428653198173;
+
+// ───────────── Dynamic Home Location ─────────────
+// V3: home location lives on the receiver only. Persisted to LittleFS so
+// it survives reboots and can be changed from the web UI without reflashing.
+// Collars no longer compute distance/bearing — the receiver does it on every
+// inbound telemetry packet (handleLoRaPacketJSON) using the haversine via
+// TinyGPSPlus::distanceBetween / courseTo.
+#define HOME_LOCATION_FILE "/home_location.json"
+float g_homeLat = 51.87378215701798f; // Default; overwritten by loadHomeLocation()
+float g_homeLon = -2.239428653198173f;
+
+static bool loadHomeLocation()
+{
+  if (!LittleFS.exists(HOME_LOCATION_FILE))
+  {
+    Serial.println("[HOME] No saved home location, using defaults");
+    return false;
+  }
+  File f = LittleFS.open(HOME_LOCATION_FILE, "r");
+  if (!f)
+  {
+    Serial.println("[HOME] Failed to open home_location.json for read");
+    return false;
+  }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err)
+  {
+    Serial.printf("[HOME] Parse error: %s — falling back to defaults\n", err.c_str());
+    return false;
+  }
+  if (doc["lat"].is<float>() && doc["lon"].is<float>())
+  {
+    g_homeLat = doc["lat"].as<float>();
+    g_homeLon = doc["lon"].as<float>();
+    Serial.printf("[HOME] Loaded: lat=%.6f lon=%.6f\n", g_homeLat, g_homeLon);
+    return true;
+  }
+  Serial.println("[HOME] Missing lat/lon in file — using defaults");
+  return false;
+}
+
+static bool saveHomeLocation(float lat, float lon)
+{
+  // Basic sanity check
+  if (lat < -90.0f || lat > 90.0f || lon < -180.0f || lon > 180.0f)
+  {
+    Serial.printf("[HOME] Refusing to save out-of-range lat/lon: %.6f, %.6f\n", lat, lon);
+    return false;
+  }
+  JsonDocument doc;
+  doc["lat"] = lat;
+  doc["lon"] = lon;
+  File f = LittleFS.open(HOME_LOCATION_FILE, "w");
+  if (!f)
+  {
+    Serial.println("[HOME] Failed to open home_location.json for write");
+    return false;
+  }
+  serializeJson(doc, f);
+  f.close();
+  g_homeLat = lat;
+  g_homeLon = lon;
+  Serial.printf("[HOME] Saved: lat=%.6f lon=%.6f\n", lat, lon);
+  return true;
+}
 
 // Add a flag to track the serial connection state
 bool serialPreviouslyOpened = false;
@@ -108,12 +173,14 @@ struct NodeState
 std::map<String, NodeState> nodeStates; // Track state of each TX node
 
 // ───────────── LoRa Command Queue ─────────────
+// V3 rollout: stays on JSON. Buffer sized for JSON command payloads.
+// (Binary TLV path preserved on the `wip/binary-migration` branch.)
 struct LoRaCommand
 {
-  uint8_t buf[BP_MAX_PACKET_SIZE]; // Binary packet buffer
-  uint8_t len;                     // Packet length
-  uint16_t targetDeviceId;         // Target device numeric ID
-  String targetDevice;             // Device name (for logging)
+  uint8_t buf[256];                // JSON command buffer (was BP_MAX_PACKET_SIZE for binary)
+  uint8_t len;                     // Packet length (JSON byte count, no null terminator)
+  uint16_t targetDeviceId;         // Target device numeric ID (kept for logging; broadcast = 0xFFFF)
+  String targetDevice;             // Device name (collar) or "broadcast"
   uint32_t timestamp;              // When command was queued
   uint32_t messageId;              // Unique message ID for tracking ACKs
 };
@@ -551,9 +618,10 @@ void processCommandQueue()
   LoRaCommand cmd = commandQueue.front();
   commandQueue.erase(commandQueue.begin());
 
-  Serial.printf("[LoRa] Transmitting binary command to %s (msg_id=%lu, %d bytes)\n",
-                cmd.targetDevice.c_str(), cmd.messageId, cmd.len);
-  pkt_print_hex(cmd.buf, cmd.len);
+  // V3: JSON command transmission (binary path on wip/binary-migration branch)
+  Serial.printf("[LoRa] Transmitting JSON command to %s (msg_id=%lu, %d bytes): %.*s\n",
+                cmd.targetDevice.c_str(), cmd.messageId, cmd.len,
+                cmd.len, (const char *)cmd.buf);
 
   // Switch LoRa to standby before transmit
   lora.standby();
@@ -597,7 +665,9 @@ void processCommandQueue()
   loraTransmitting = false;
 }
 
-// Send mode change command to a specific node (binary protocol)
+// Send mode change command to a specific node (JSON protocol for V3 rollout)
+// Wire format: {"cmd":"mode","profile":"<name>","device":"<name>","msg_id":N}
+// Transmitter expects this shape — see handleModeCommand() in BluePawzTransmitter.
 void sendModeCommand(const String &deviceId, const String &profile)
 {
   // Validate profile name
@@ -608,7 +678,7 @@ void sendModeCommand(const String &deviceId, const String &profile)
     return;
   }
 
-  // Resolve device name to numeric ID
+  // Resolve target ID (informational/logging only — JSON uses the device name string)
   uint16_t targetId;
   if (deviceId == "broadcast")
   {
@@ -624,7 +694,7 @@ void sendModeCommand(const String &deviceId, const String &profile)
     }
   }
 
-  // Build binary command packet
+  // Build JSON command packet
   LoRaCommand cmd;
   memset(&cmd, 0, sizeof(cmd));
   cmd.targetDevice = deviceId;
@@ -632,21 +702,25 @@ void sendModeCommand(const String &deviceId, const String &profile)
   cmd.timestamp = millis();
   cmd.messageId = nextMessageId++;
 
-  bp_profile_t profileEnum = profileFromName(profile.c_str());
-  pkt_init(cmd.buf, targetId, cmd.messageId, 0, STATUS_OK, PKT_CMD_MODE);
-  pkt_add_tlv_u8(cmd.buf, TLV_PROFILE, profileEnum);
-  cmd.len = pkt_finalize(cmd.buf);
+  JsonDocument doc;
+  doc["cmd"] = "mode";
+  doc["profile"] = profile;
+  doc["device"] = deviceId; // collar matches against SENDER_ID or "broadcast"
+  doc["msg_id"] = cmd.messageId;
+  size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
+  cmd.len = (uint8_t)written;
 
   commandQueue.push_back(cmd);
 
-  Serial.printf("[CMD] Mode change queued: %s -> %s (%d bytes)\n",
-                deviceId.c_str(), profile.c_str(), cmd.len);
+  Serial.printf("[CMD] Mode change queued: %s -> %s (%u bytes JSON)\n",
+                deviceId.c_str(), profile.c_str(), (unsigned)written);
 }
 
-// Send status request to a specific node (binary protocol)
+// Send status request to a specific node (JSON protocol for V3 rollout)
+// Wire format: {"cmd":"get_status","device":"<name>","msg_id":N}
 void sendStatusRequest(const String &deviceId)
 {
-  // Resolve device name to numeric ID
+  // Resolve target ID (informational/logging only)
   uint16_t targetId;
   if (deviceId == "broadcast")
   {
@@ -662,7 +736,7 @@ void sendStatusRequest(const String &deviceId)
     }
   }
 
-  // Build binary status request packet
+  // Build JSON status request packet
   LoRaCommand cmd;
   memset(&cmd, 0, sizeof(cmd));
   cmd.targetDevice = deviceId;
@@ -670,13 +744,17 @@ void sendStatusRequest(const String &deviceId)
   cmd.timestamp = millis();
   cmd.messageId = nextMessageId++;
 
-  pkt_init(cmd.buf, targetId, cmd.messageId, 0, STATUS_OK, PKT_CMD_STATUS);
-  cmd.len = pkt_finalize(cmd.buf);
+  JsonDocument doc;
+  doc["cmd"] = "get_status";
+  doc["device"] = deviceId;
+  doc["msg_id"] = cmd.messageId;
+  size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
+  cmd.len = (uint8_t)written;
 
   commandQueue.push_back(cmd);
 
-  Serial.printf("[CMD] Status request queued for: %s (%d bytes)\n",
-                deviceId.c_str(), cmd.len);
+  Serial.printf("[CMD] Status request queued for: %s (%u bytes JSON)\n",
+                deviceId.c_str(), (unsigned)written);
 }
 
 // HTTP handler: Get node states as JSON
@@ -754,6 +832,80 @@ void handleSendCommand()
   }
 }
 
+// HTTP handler: GET /home — return current home lat/lon
+void handleGetHome()
+{
+  JsonDocument doc;
+  doc["lat"] = g_homeLat;
+  doc["lon"] = g_homeLon;
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// HTTP handler: POST /home — set new home lat/lon
+// Accepts either form-encoded ?lat=&lon= or a JSON body {"lat":..,"lon":..}.
+void handleSetHome()
+{
+  float lat = 0.0f, lon = 0.0f;
+  bool gotLat = false, gotLon = false;
+
+  if (server.hasArg("lat") && server.hasArg("lon"))
+  {
+    lat = server.arg("lat").toFloat();
+    lon = server.arg("lon").toFloat();
+    gotLat = gotLon = true;
+  }
+  else if (server.hasArg("plain"))
+  {
+    // JSON body fallback
+    JsonDocument doc;
+    if (deserializeJson(doc, server.arg("plain")) == DeserializationError::Ok)
+    {
+      if (doc["lat"].is<float>())
+      {
+        lat = doc["lat"].as<float>();
+        gotLat = true;
+      }
+      if (doc["lon"].is<float>())
+      {
+        lon = doc["lon"].as<float>();
+        gotLon = true;
+      }
+    }
+  }
+
+  if (!gotLat || !gotLon)
+  {
+    server.send(400, "text/plain", "Missing lat/lon (use ?lat=&lon= or JSON body)");
+    return;
+  }
+
+  if (!saveHomeLocation(lat, lon))
+  {
+    server.send(400, "text/plain", "Invalid or unsavable lat/lon");
+    return;
+  }
+
+  // Echo the saved values
+  JsonDocument resp;
+  resp["lat"] = g_homeLat;
+  resp["lon"] = g_homeLon;
+  resp["saved"] = true;
+  String out;
+  serializeJson(resp, out);
+  server.send(200, "application/json", out);
+
+  // Push to all WebSocket clients so the UI map updates immediately
+  JsonDocument wsDoc;
+  wsDoc["type"] = "home_location";
+  wsDoc["lat"] = g_homeLat;
+  wsDoc["lon"] = g_homeLon;
+  String wsMsg;
+  serializeJson(wsDoc, wsMsg);
+  webSocket.broadcastTXT(wsMsg);
+}
+
 // Broadcast node states via WebSocket
 void broadcastNodeStates()
 {
@@ -804,7 +956,7 @@ void onReceive()
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// BINARY PROTOCOL HANDLER HELPERS
+// SHARED HELPERS (used by JSON path and parked binary handlers)
 // ═════════════════════════════════════════════════════════════════════
 
 // Convert bearing degrees to cardinal direction string
@@ -817,6 +969,11 @@ static String cardinalFromDegrees(uint16_t deg)
   return String(dirs[idx]);
 }
 
+// ═════════════════════════════════════════════════════════════════════
+// BINARY PROTOCOL HANDLERS (parked — see wip/binary-migration branch)
+// ═════════════════════════════════════════════════════════════════════
+
+#if 0 // V3 ROLLOUT: binary TLV handlers disabled. Parked on wip/binary-migration branch.
 // Handle binary telemetry packet (TX->RX position / BLEHome / invalidGPS)
 static void handleBinaryTelemetry(const uint8_t *buf, uint8_t pkt_len, int16_t rssi, float snr)
 {
@@ -1018,9 +1175,10 @@ static void handleBinaryAlert(const uint8_t *buf, uint8_t pkt_len, int16_t rssi,
   logMessage(doc, "lora");
   updateNodeState(doc);
 }
+#endif // V3 ROLLOUT (binary handlers)
 
 // ═════════════════════════════════════════════════════════════════════
-// LEGACY JSON HANDLER (backward compatibility)
+// JSON HANDLER (V3 active path)
 // ═════════════════════════════════════════════════════════════════════
 static void handleLoRaPacketJSON(const String &incoming)
 {
@@ -1052,6 +1210,19 @@ static void handleLoRaPacketJSON(const String &incoming)
 
     // Add receiver timestamp before storing and notifying
     doc["received_at"] = millis();
+
+    // V3: receiver computes distance/bearing from home for every fix.
+    // Collars only send raw lat/lon. Overwrites any dist_m/bearing the
+    // collar may have included (older firmware may still send them).
+    if (doc["lat"].is<float>() && doc["lon"].is<float>())
+    {
+      double catLat = doc["lat"].as<double>();
+      double catLon = doc["lon"].as<double>();
+      double distM = TinyGPSPlus::distanceBetween(catLat, catLon, g_homeLat, g_homeLon);
+      double brng = TinyGPSPlus::courseTo(catLat, catLon, g_homeLat, g_homeLon);
+      doc["dist_m"] = distM;
+      doc["bearing"] = String((int)brng) + "-" + cardinalFromDegrees((uint16_t)brng);
+    }
 
     // Normalize status to simplified 4-state system
     if (doc["status"].is<String>())
@@ -1150,6 +1321,7 @@ void handleLoRaPacket()
       Serial.println("[LORA] JSON packet received: " + incoming);
       handleLoRaPacketJSON(incoming);
     }
+#if 0 // V3 ROLLOUT: binary TLV inbound path disabled. Parked on wip/binary-migration branch.
     else if (rxBuf[0] == BP_PROTOCOL_VERSION)
     {
       // Binary protocol packet
@@ -1187,9 +1359,10 @@ void handleLoRaPacket()
         break;
       }
     }
+#endif // V3 ROLLOUT
     else
     {
-      Serial.printf("[LORA] Unknown protocol (first byte: 0x%02X, %d bytes)\n",
+      Serial.printf("[LORA] Unknown/non-JSON packet (first byte: 0x%02X, %d bytes)\n",
                     rxBuf[0], rxLen);
     }
   }
@@ -1220,8 +1393,8 @@ void setupGPS()
 
   // Initialize device location with HOME coordinates
   deviceLocation["id"] = "MyDevice";
-  deviceLocation["lat"] = HOME_LAT;
-  deviceLocation["lon"] = HOME_LON;
+  deviceLocation["lat"] = g_homeLat;
+  deviceLocation["lon"] = g_homeLon;
   deviceLocation["status"] = "Starting up";
 }
 
@@ -1549,12 +1722,18 @@ void setup()
     file = root.openNextFile(); // Get the next file
   }
   delay(3000); // Give time for the filesystem to settle and viewthe setup messages
+
+  // Load persisted home location (defaults applied if file missing/invalid)
+  loadHomeLocation();
+
   server.on("/", HTTP_GET, handleRoot);
   server.on("/data", HTTP_GET, handleData);
   server.on("/messages.json", HTTP_GET, handleMessagesExport);
   server.on("/clear-log", HTTP_POST, handleClearLog);
   server.on("/node-states", HTTP_GET, handleNodeStates);    // Get node operating modes
   server.on("/send-command", HTTP_POST, handleSendCommand); // Send command to node
+  server.on("/home", HTTP_GET, handleGetHome);              // Get current home lat/lon
+  server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
   server.serveStatic("/", LittleFS, "/");
   server.begin();
   Serial.println("[INFO] HTTP server started");

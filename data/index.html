@@ -1275,6 +1275,32 @@ Returns map to home location and default zoom
 Useful when you've panned far away">🎯 Reset View to Home</button>
         </div>
       </div>
+
+      <!-- Home Location -->
+      <div class="menu-section">
+        <h3>🏠 Home Location</h3>
+        <div class="menu-item">
+          <label for="homeLatInput">Latitude</label>
+          <input type="number" id="homeLatInput" step="0.000001" placeholder="51.873782" style="width:100%;padding:6px;">
+        </div>
+        <div class="menu-item">
+          <label for="homeLonInput">Longitude</label>
+          <input type="number" id="homeLonInput" step="0.000001" placeholder="-2.239428" style="width:100%;padding:6px;">
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-secondary" onclick="setHomeFromMapCenter()" title="Use Map Center
+Drops the home pin at the current centre of the map">📍 Use Map Centre</button>
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-primary" onclick="saveHomeLocation()" title="Save Home Location
+Persists this lat/lon on the base station.
+The receiver computes each cat's distance from this point.">💾 Save Home Location</button>
+        </div>
+        <div class="menu-info">
+          <span class="menu-info-label">Saved home:</span>
+          <span class="menu-info-value" id="homeStatus">—</span>
+        </div>
+      </div>
       
       <!-- BLE Beacon Control -->
       <div class="menu-section">
@@ -2088,7 +2114,87 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       document.querySelector('.side-menu').classList.remove('active');
       document.querySelector('.menu-overlay').classList.remove('active');
     }
-    
+
+    // ═══════════════════════════════════════════════════════════
+    // HOME LOCATION (V3 dynamic)
+    // ═══════════════════════════════════════════════════════════
+    function refreshHomeStatusLabel(lat, lon) {
+      const el = document.getElementById('homeStatus');
+      if (el && typeof lat === 'number' && typeof lon === 'number') {
+        el.textContent = `${lat.toFixed(6)}, ${lon.toFixed(6)}`;
+      }
+      const latIn = document.getElementById('homeLatInput');
+      const lonIn = document.getElementById('homeLonInput');
+      if (latIn && typeof lat === 'number') latIn.value = lat.toFixed(6);
+      if (lonIn && typeof lon === 'number') lonIn.value = lon.toFixed(6);
+    }
+
+    // Pull current home from the receiver on page load
+    async function loadHomeFromServer() {
+      try {
+        const r = await fetch('/home');
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        if (typeof data.lat === 'number' && typeof data.lon === 'number') {
+          // Update the Leaflet2_minimal HOME_LOCATION so distance calc & resetView use the live value
+          if (typeof HOME_LOCATION !== 'undefined') {
+            HOME_LOCATION[0] = data.lat;
+            HOME_LOCATION[1] = data.lon;
+          }
+          refreshHomeStatusLabel(data.lat, data.lon);
+          console.log('Home location loaded from server:', data);
+        }
+      } catch (e) {
+        console.warn('Failed to fetch /home — using JS defaults:', e);
+      }
+    }
+
+    // Save the values in the two input boxes
+    async function saveHomeLocation() {
+      const lat = parseFloat(document.getElementById('homeLatInput').value);
+      const lon = parseFloat(document.getElementById('homeLonInput').value);
+      if (!isFinite(lat) || !isFinite(lon)) {
+        alert('Enter valid numeric lat/lon before saving.');
+        return;
+      }
+      try {
+        const r = await fetch(`/home?lat=${encodeURIComponent(lat)}&lon=${encodeURIComponent(lon)}`, { method: 'POST' });
+        if (!r.ok) {
+          alert('Save failed: ' + (await r.text()));
+          return;
+        }
+        const data = await r.json();
+        if (typeof HOME_LOCATION !== 'undefined') {
+          HOME_LOCATION[0] = data.lat;
+          HOME_LOCATION[1] = data.lon;
+        }
+        refreshHomeStatusLabel(data.lat, data.lon);
+        console.log('Home location saved:', data);
+      } catch (e) {
+        alert('Save error: ' + e.message);
+      }
+    }
+
+    // Convenience: drop the home pin at the current map centre
+    function setHomeFromMapCenter() {
+      if (typeof map === 'undefined') return;
+      const c = map.getCenter();
+      document.getElementById('homeLatInput').value = c.lat.toFixed(6);
+      document.getElementById('homeLonInput').value = c.lng.toFixed(6);
+    }
+
+    // Receive live updates pushed by the server (e.g. another tab saved a new home)
+    window.onHomeLocationUpdated = function (lat, lon) {
+      refreshHomeStatusLabel(lat, lon);
+    };
+
+    // Kick off the initial fetch as soon as DOM is ready
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', loadHomeFromServer);
+    } else {
+      loadHomeFromServer();
+    }
+
     function updateZoomValue(value) {
       document.getElementById('zoomValue').textContent = value;
     }

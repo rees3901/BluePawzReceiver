@@ -1,5 +1,7 @@
 // Minimal Leaflet2.js - Just basic map functionality
-const HOME_LOCATION = [51.87378215701798, -2.239428653198173];
+// V3: HOME_LOCATION is mutable. Default is overridden by GET /home on load
+// and by `home_location` WebSocket broadcasts after the user saves a new value.
+let HOME_LOCATION = [51.87378215701798, -2.239428653198173];
 
 // Initialize the map with minimal configuration
 const map = L.map("map", {
@@ -524,6 +526,16 @@ function connectWebSocket() {
         console.log("BLE state update received:", data);
         handleBleState(data);
         return; // Don't process as position data
+      }
+
+      // V3: dynamic home location updated from server.
+      if (data.type === "home_location" && typeof data.lat === "number" && typeof data.lon === "number") {
+        HOME_LOCATION = [data.lat, data.lon];
+        console.log("Home location updated via WS:", HOME_LOCATION);
+        if (window.onHomeLocationUpdated) {
+          window.onHomeLocationUpdated(data.lat, data.lon);
+        }
+        return;
       }
 
       // Handle node state updates (Command & Control)
