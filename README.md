@@ -1,31 +1,227 @@
+# BluePawz Receiver 🐾
 
-# BluePawzReceiver
-BluePawzReceiver is an innovative GPS tracking solution designed for monitoring the real-time location of cats without relying on GSM networks. This project leverages the power of the Seeeduino ESP32S3 Xiao microcontroller combined with LoRa technology to enable long-range, low-power communication between the cat's tracker and a base station.
+The base station half of the BluePawz cat tracker. Runs on a
+**Heltec Wireless Tracker V2** and acts as:
 
-## Key Features
+- a LoRa receiver for telemetry from up to 5 collars,
+- a Wi-Fi web server with a live Leaflet.js map and a settings panel,
+- a BLE beacon that the collars look for to decide "is the cat home?",
+- a downlink command transmitter (mode changes, status requests, renames),
+- a tiny on-board ST7735 TFT status display.
 
-- **GSM-Free Tracking**: Eliminates the need for cellular networks, making it ideal for remote or rural areas.
-- **LoRa Communication**: Utilizes LoRa (Long Range) technology for efficient, low-power, and long-distance data transmission.
-- **ESP32S3 Xiao**: A compact and powerful microcontroller at the heart of the system, enabling seamless GPS data processing and communication.
-- **Real-Time Mapping**: The base station, powered by an ESP32 receiver, serves as a hub to collect location data and display it on a map in real-time.
-- **Cat-Friendly Design**: Lightweight and compact, ensuring comfort for the cats while they roam freely.
+This repo is the receiver-side firmware. The collar firmware lives at
+[**BluePawzTransmitter**](https://github.com/rees3901/BluePawzTransmitter) —
+the two need to be in sync.
 
-## How It Works
+For the system-level design (wire format, downlink timing, mode profiles)
+see [`ARCHITECTURE.md`](./ARCHITECTURE.md).
 
-1. **Cat Tracker**: Each cat wears a GPS-enabled tracker powered by the Seeeduino ESP32S3 Xiao and LoRa module. The tracker collects GPS data and transmits it via LoRa to the base station.
-2. **Base Station Receiver**: The ESP32-based receiver collects the transmitted data and processes it to display the cat's location on a map.
-3. **Mapping**: The base station serves a web-based or local map interface, allowing users to monitor the cat's movements in real-time.
+---
 
-## Applications
+## What's V3?
 
-- **Pet Monitoring**: Keep track of your cat's location to ensure their safety and well-being.
-- **Exploration Tracking**: Understand your cat's roaming patterns and favorite spots.
-- **Rural and Remote Areas**: Ideal for areas with limited or no GSM coverage.
+V3 is the JSON-only protocol generation, ready for first multi-cat rollout.
+The repo was briefly migrated to a binary TLV protocol — that work is parked
+on the [`wip/binary-migration`](https://github.com/rees3901/BluePawzReceiver/tree/wip/binary-migration)
+branch and not on `main`.
 
-## Future Enhancements
+### Headline V3 features
 
-- Integration with additional sensors (e.g., temperature, activity tracking).
-- Improved battery life for extended tracking periods.
-- Enhanced mapping features, such as geofencing and historical route tracking.
+- **Dynamic home location** — set from the web UI, stored in LittleFS,
+  changeable any time without reflashing. The receiver computes
+  distance/bearing per packet using TinyGPSPlus's haversine. The 20 km
+  sanity check refuses obvious typos.
+- **Opportunistic downlink commands** — when telemetry arrives from a
+  collar, queued commands for that collar fire immediately, landing
+  inside its 5 s post-TX RX window (Class-A LoRaWAN style).
+- **Remote collar rename** — ✏️ button on each cat card in the C&C panel
+  prompts for a new name, sends a `set_name` command targeted by the
+  immutable numeric `device_id`. Survives the case where the current name
+  is the default `Device-N`.
+- **ArduinoOTA** — once the receiver is on Wi-Fi, future firmware pushes
+  go over the air. USB cable required only for the very first flash.
+- **Onboard TFT status panel** — title, Wi-Fi/IP, packet counter, last
+  cat + RSSI, home-set state, BLE on/off. 1 Hz refresh.
+- **BLE beacon** advertises name `"Home"` at **-12 dBm** TX power so the
+  signal doesn't bleed outside the building, paired with an RSSI threshold
+  on the collar side for clean indoor-only home detection.
 
-This project is a step toward creating a reliable, GSM-free tracking solution for pet owners who want to ensure their cats' safety while giving them the freedom to explore their surroundings.
+---
+
+## Hardware
+
+| Component | Detail |
+|---|---|
+| Board | Heltec Wireless Tracker V2 (HTIT-Tracker V2.3) |
+| MCU | ESP32-S3FN8 |
+| LoRa radio | Semtech SX1262 (built-in, default SPI bus) |
+| GPS | UC6580 GNSS (built-in, UART1 @ 115200) |
+| Display | ST7735S, 160×80 colour TFT (built-in) |
+| Wi-Fi | ESP32-S3 onboard 2.4 GHz |
+| BLE | ESP32-S3 onboard |
+| Power | USB-C (mains powered — not a battery device) |
+
+### Pin map (verified against schematic HTIT-Tracker_V2.3)
+
+```
+LoRa SX1262 (HSPI):
+  NSS  = 8     SCK  = 9     MOSI = 10    MISO = 11
+  RST  = 12    BUSY = 13    DIO1 = 14
+
+GPS UC6580 (UART1 @115200):
+  ESP32 RX (from GPS TX) = 33
+  ESP32 TX (to GPS RX)   = 34
+
+TFT ST7735S (software SPI to avoid bus contention with LoRa):
+  MOSI = 42    SCK  = 41    CS = 38
+  DC   = 40    RST  = 39    BL = 21
+
+Vext (active LOW — drive LOW to power GPS + TFT)  = 3
+LED (white onboard indicator)                      = 18
+PRG / user button                                  = 0
+```
+
+### LoRa radio settings (must match the collars)
+
+| Setting | Value |
+|---|---|
+| Frequency | 915.0 MHz (US) / 868.0 MHz (EU) — set in `config.h` |
+| Spreading factor | SF8 |
+| Bandwidth | 250 kHz |
+| Coding rate | 4/5 |
+| Preamble | 16 symbols |
+| Sync word | 0x12 (private network) |
+| CRC | enabled |
+| LBT | enabled with random backoff |
+
+---
+
+## Building & flashing
+
+### First time — USB
+
+```bash
+cd BluePawzReceiver
+pio run -e heltec_wireless_tracker_v2 -t upload
+pio run -e heltec_wireless_tracker_v2 -t uploadfs   # upload data/ to LittleFS
+```
+
+Hold the **BOOT** button on the Heltec while plugging in if PIO can't see
+the chip — that drops it into the download-mode bootloader.
+
+### After that — OTA
+
+```bash
+pio run -e heltec_wireless_tracker_v2 -t upload --upload-port cattracker.local
+```
+
+Or uncomment the two `upload_protocol = espota` lines in `platformio.ini`
+and just run `pio run -t upload`.
+
+If `cattracker.local` doesn't resolve, use the device's IP — the serial
+monitor prints it on boot, and the TFT shows it too.
+
+---
+
+## Web UI
+
+Open `http://cattracker.local` or the printed IP in a browser.
+
+### Map
+
+- Live position for each collar via WebSocket (port 81)
+- Breadcrumb trail (configurable length in side panel)
+- Distance-from-home displayed per cat
+- Filter dropdowns to show/hide individual cats
+
+### Settings panel (hamburger top-left)
+
+- **Map Settings**: default zoom, reset-to-home button
+- **🏠 Home Location**: lat/lon inputs, "Use Map Centre" helper,
+  Save button. Persists to LittleFS; broadcasts to all clients via WS.
+- **📶 BLE Beacon**: ON/OFF toggle — turn off to save power if no cats
+  use BLE home detection.
+- **📍 Marker Settings**: breadcrumb trail length.
+- **💾 Data & Logging**: message-count info, export log,
+  clear log buttons.
+- **ℹ️ System Info**: Wi-Fi status, WebSocket state, page uptime.
+- **📡 Command & Control**: one card per known collar. Each card has
+  a mode selector + apply button, status-request 🔄 button, and a
+  rename ✏️ button.
+
+---
+
+## HTTP API
+
+The receiver exposes these endpoints (mostly used by the web UI, but
+useful for scripting too):
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/` | The web UI (serves `data/index.html`) |
+| GET | `/data` | All cached telemetry as JSON |
+| GET | `/messages.json` | Full circular log buffer download |
+| POST | `/clear-log` | Wipe the LittleFS log file |
+| GET | `/node-states` | Current operating-mode state of every known collar |
+| POST | `/send-command` | Queue a downlink command (see below) |
+| GET | `/home` | Returns `{"lat":...,"lon":...}` |
+| POST | `/home?lat=&lon=` | Save new home location (20 km sanity-check) |
+
+### `/send-command` actions
+
+```http
+POST /send-command?device=Podge&action=mode&profile=lost
+POST /send-command?device=Podge&action=status
+POST /send-command?action=rename&device_id=4&name=Whiskers
+```
+
+The `mode` and `status` actions match by collar **name**.
+The `rename` action targets by immutable **`device_id`** because the
+current name may be the default `Device-N`.
+
+---
+
+## File / directory layout
+
+```
+BluePawzReceiver/
+├── README.md                  ← you are here
+├── ARCHITECTURE.md            ← system-wide design notes
+├── platformio.ini             ← build config (Heltec V2 board + libs)
+├── partitions_8MB_bigfs.csv   ← partition table with a big LittleFS region
+├── include/
+│   ├── config.h               ← LoRa radio params, operating modes, shared with TX
+│   └── protocol.h             ← binary TLV header (parked — V3 uses JSON)
+├── src/
+│   └── main.cpp               ← everything: HTTP, WS, LoRa, BLE, TFT, OTA
+├── data/                      ← uploaded to LittleFS via `pio run -t uploadfs`
+│   ├── index.html
+│   ├── Leaflet2_minimal.js
+│   └── icons/                 ← per-cat marker icons
+├── lib/                       ← project-local libs (rarely used)
+└── test/                      ← test scaffolding (mostly empty)
+```
+
+---
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Boot loops + serial silence | Power: check 5 V USB and the orange power LED |
+| TFT stays dark | Vext (GPIO 3) not pulled LOW, OR TFT pin map wrong |
+| GPS never gets a fix | Vext not enabled, antenna disconnected, or indoors |
+| Wi-Fi connect fails | Update `secrets.h` (not committed) with SSID/password |
+| Web page loads but no map | `pio run -t uploadfs` skipped — LittleFS is empty |
+| Cats never appear on map | Check serial: are JSON packets arriving? Are LoRa params identical between RX and TX (frequency, SF, BW, CR, sync word)? |
+| Cat reports "Home" outside | Walk-test the BLE RSSI: lower `HOME_RSSI_THRESHOLD_DBM` in the *transmitter* `config.h` |
+| OTA fails | Make sure laptop and base station are on the same Wi-Fi, port 3232 not blocked |
+
+---
+
+## Related repositories
+
+- 🛰️ **Transmitter (collar) firmware**: https://github.com/rees3901/BluePawzTransmitter
+
+The collar repo carries the same `config.h`. Keep the LoRa radio
+parameters in lockstep across both repos.

@@ -1,9 +1,60 @@
 /*
-  ┌─────────────────────────────────────────────────────────┐
-  ║ 🐾 CAT TRACKER Receiver — LoRa Base + Web Server              ║
-  ║ 🚁 Receives SX1262 LoRa + serves map via WiFi           ║
-  ║ 🕜 Leaflet.js for live GPS display                      ║
-  └─────────────────────────────────────────────────────────┘
+  ╔═══════════════════════════════════════════════════════════════════╗
+  ║                                                                   ║
+  ║  BLUEPAWZ RECEIVER  —  V3 (JSON protocol, Heltec V2 hardware)     ║
+  ║                                                                   ║
+  ║  Mains-powered base station that listens for collar telemetry     ║
+  ║  over LoRa, serves a Leaflet.js map over Wi-Fi, and beacons       ║
+  ║  a short-range BLE "Home" identifier so collars can detect        ║
+  ║  when their cat is back indoors.                                  ║
+  ║                                                                   ║
+  ║  ─────────────────────────────────────────────────────────────    ║
+  ║  This is a SINGLE-FILE Arduino sketch. Conceptually it is six     ║
+  ║  loosely-coupled subsystems, each marked with a banner below:     ║
+  ║                                                                   ║
+  ║    1. Hardware bring-up        Vext rail, ST7735 TFT, LoRa SPI    ║
+  ║    2. LoRa RX                  packet dispatch, JSON parsing,     ║
+  ║                                  haversine distance/bearing       ║
+  ║    3. LoRa TX (command queue)  opportunistic + safety-net send    ║
+  ║                                  to collars during their post-TX  ║
+  ║                                  RX window (Class-A LoRaWAN)      ║
+  ║    4. HTTP + WebSocket server  the web UI lives in data/, this    ║
+  ║                                  file just serves and pushes      ║
+  ║    5. BLE beacon               -12 dBm, name "Home", indoor-only  ║
+  ║                                  reach by design                  ║
+  ║    6. ArduinoOTA               wireless firmware push from PIO    ║
+  ║                                                                   ║
+  ║  ─────────────────────────────────────────────────────────────    ║
+  ║  EXECUTION MODEL                                                  ║
+  ║                                                                   ║
+  ║  Single-core super-loop (NOT FreeRTOS — that's the transmitter).  ║
+  ║  Everything runs from loop() in order, fast enough that the       ║
+  ║  ~1 Hz TFT refresh / ~3 s LoRa command interval / WebSocket       ║
+  ║  servicing all comfortably keep up. LoRa RX is interrupt-driven   ║
+  ║  via DIO1 → setRxFlag → packetReceived; the heavy lifting         ║
+  ║  happens in handleLoRaPacket() from loop().                       ║
+  ║                                                                   ║
+  ║  ─────────────────────────────────────────────────────────────    ║
+  ║  PERSISTENCE                                                      ║
+  ║                                                                   ║
+  ║    /home_location.json    LittleFS — dynamic home {lat,lon}       ║
+  ║    /messages.json         LittleFS — circular log of last 500     ║
+  ║                                       inbound + event messages    ║
+  ║    nodeStates             in-memory std::map (lost on reboot)     ║
+  ║                                                                   ║
+  ║  WiFi creds live in include/secrets.h (NOT committed). Create     ║
+  ║  it as: #define WIFI_SSID "..." / #define WIFI_PASSWORD "..."     ║
+  ║                                                                   ║
+  ║  ─────────────────────────────────────────────────────────────    ║
+  ║  SEE ALSO                                                         ║
+  ║                                                                   ║
+  ║    README.md              quickstart, hardware, HTTP API          ║
+  ║    ARCHITECTURE.md        end-to-end design (JSON wire format,    ║
+  ║                              downlink timing, mode profiles,      ║
+  ║                              binary-TLV history)                  ║
+  ║    The transmitter repo: rees3901/BluePawzTransmitter             ║
+  ║                                                                   ║
+  ╚═══════════════════════════════════════════════════════════════════╝
 */
 
 // ──────────────────────── LIBRARY INCLUDES ─────────────────────────
@@ -422,7 +473,19 @@ void initMessageLog()
   logFileInitialized = true;
 }
 
-// Add message to in-memory buffer
+// Add a message to the in-memory circular log.
+//
+// Two-tier logging strategy:
+//   1) Every inbound LoRa packet (telemetry, ACK, event) gets pushed into
+//      messageLogBuffer (capacity MAX_LOG_MESSAGES = 500). Oldest entries
+//      are dropped when full.
+//   2) Every LOG_FLUSH_INTERVAL ms (60 s) flushMessageLog() rewrites the
+//      buffer to /messages.json on LittleFS.
+//
+// Rationale: flash wear matters. Writing on every packet would chew through
+// LittleFS in weeks. 60 s flush is a sane trade-off between durability and
+// wear; if power is yanked we lose at most one minute of recent messages.
+// The serial monitor still prints everything in real time regardless.
 void logMessage(const JsonDocument &doc, const String &type)
 {
   if (!logFileInitialized)
@@ -586,10 +649,32 @@ void handleClearLog()
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// NODE STATE TRACKING AND COMMAND FUNCTIONS
+// NODE STATE TRACKING & DOWNLINK COMMANDS
 // ═════════════════════════════════════════════════════════════════════
+//
+// Two halves of the same concern: keep track of what every collar's
+// current state is (for the UI), and queue + send commands back to
+// individual collars.
+//
+// nodeStates is keyed by friendly name (String) for fast lookup by the
+// UI. We also store the immutable numeric device_id inside each
+// NodeState so renames can be detected: if a packet arrives whose
+// device_id matches an existing entry but whose "id" (name) differs,
+// the old entry is a rename ghost and gets dropped.
+//
+// commandQueue is a FIFO of pending downlink commands. Two paths
+// consume it:
+//   - transmitCommandForDevice() — called from handleLoRaPacketJSON
+//     whenever a collar reports in. Bypasses the rate gate because
+//     we KNOW the collar is in its post-TX RX window right now.
+//   - processCommandQueue() — called from loop() as a safety-net
+//     retry path. Rate-limited to COMMAND_TX_INTERVAL between sends.
 
-// Update node state based on received message or ACK
+// Update node state based on received message or ACK.
+//
+// Detects renames by comparing the incoming (name, device_id) against
+// existing entries: a matching device_id under a different name means a
+// rename happened, so the stale name is removed from the C&C list.
 void updateNodeState(const JsonDocument &doc)
 {
   String deviceId = "";
@@ -1597,8 +1682,26 @@ static void handleLoRaPacketJSON(const String &incoming)
 }
 
 // ═════════════════════════════════════════════════════════════════════
-// DUAL-MODE LORA PACKET HANDLER
+// LORA RX PACKET DISPATCH
 // ═════════════════════════════════════════════════════════════════════
+//
+// Called from loop() once per pass. The packetReceived flag is set by
+// onReceive() (ISR-attached to DIO1) when the SX1262 finishes decoding
+// a packet. We snapshot the bytes, dispatch by protocol version, and
+// reset the radio for the next packet.
+//
+// V3 dispatch policy:
+//   - First byte '{' (0x7B) → JSON path, the only one we actually use
+//   - First byte == BP_PROTOCOL_VERSION (0x01) → wrapped in #if 0, parked
+//     on wip/binary-migration; the four handleBinary* functions are
+//     similarly parked
+//   - Anything else → logged and discarded
+//
+// All processing is synchronous on the main loop. lora.transmit() inside
+// transmitCommandForDevice() blocks for ~200-300 ms while the command
+// goes out; during that time the radio is in TX state and won't hear new
+// inbound packets. With 5 collars on 5-minute cycles the odds of a
+// collision are negligible.
 
 void handleLoRaPacket()
 {
@@ -1987,6 +2090,21 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
   }
 }
 
+// Boot sequence. Order matters — some peripherals depend on others.
+//
+//   1. Serial up (115200) for diagnostics
+//   2. Vext rail ON (powers GPS + TFT)
+//   3. TFT init (so subsequent boot errors are visible without USB)
+//   4. LEDs + BLE beacon
+//   5. Wi-Fi join (boot loops on failure to avoid a stranded base station)
+//   6. mDNS responder (so cattracker.local resolves on the LAN)
+//   7. ArduinoOTA (after Wi-Fi is up)
+//   8. LittleFS mount
+//   9. Load persisted home location from /home_location.json
+//   10. Register HTTP routes
+//   11. WebSocket server up (port 81)
+//   12. LoRa init + start RX
+//   13. GPS UART up (the receiver's own GPS — feeds the MyDevice marker)
 void setup()
 {
   Serial.begin(115200);
@@ -2180,6 +2298,21 @@ void setup()
   }
 }
 
+// Main super-loop. No FreeRTOS scheduler in use on the receiver —
+// everything runs in order, fast enough to keep up with all subsystems.
+//
+// Per-pass cost budget (typical):
+//   checkWiFiConnection         ~0.01 ms (cached)
+//   server.handleClient          ~0.5 ms (HTTP idle), spikes on requests
+//   webSocket.loop               ~0.5 ms idle, spikes on messages
+//   ArduinoOTA.handle            ~0.05 ms idle
+//   tftRefresh                   ~5 ms but only every 1000 ms (1 Hz)
+//   handleLoRaPacket             ~30-60 ms when a packet arrived, 0 otherwise
+//   processCommandQueue          0 unless rate-gate cleared AND queue non-empty
+//   handleDeviceOwnGPS           ~1-5 ms when GPS bytes pending
+//
+// Total typical: <2 ms, spiking to ~100 ms when packet handling + WS
+// broadcast + command TX coincide.
 void loop()
 {
   checkWiFiConnection();
