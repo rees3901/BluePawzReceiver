@@ -259,30 +259,11 @@ static void tftRefresh()
   char buf[32];
   tft.setTextSize(1);
 
-  // Title bar — version is the most useful at-a-glance datum (so you can
-  // confirm a fresh flash landed) so it sits permanently in the title.
+  // Title bar
   tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
   tft.setCursor(2, 2);
-  snprintf(buf, sizeof(buf), "BluePaws v%-10s", BLUEPAWZ_VERSION);
+  snprintf(buf, sizeof(buf), "BluePaws v%-12s", BLUEPAWZ_VERSION);
   tft.print(buf);
-
-  // GPS status indicator — a labelled coloured box in the top-right of the
-  // title bar. Sized big enough to spot from across a desk.
-  // RGB565 amber: defined locally for portability (ST77XX_ORANGE only
-  // exists in newer Adafruit_ST7735 versions).
-  static const uint16_t TFT_AMBER = 0xFC00;
-  uint16_t gpsColour;
-  if (gpsBytesRx == 0)                gpsColour = ST77XX_RED;
-  else if (gpsValidFixes == 0)        gpsColour = TFT_AMBER;
-  else if (gps.location.age() < 5000) gpsColour = ST77XX_GREEN;
-  else                                gpsColour = TFT_AMBER; // fix went stale
-  // 28x10 px filled rect on the right edge, with "GPS" text overlay in
-  // contrasting colour. At rotation 1 the panel is 160 wide x 80 tall, so
-  // x=130 leaves 30 px to the edge.
-  tft.fillRect(130, 0, 30, 11, gpsColour);
-  tft.setTextColor(ST77XX_BLACK, gpsColour);
-  tft.setCursor(135, 2);
-  tft.print(F("GPS"));
 
   // WiFi status / IP
   tft.setCursor(2, 14);
@@ -328,11 +309,52 @@ static void tftRefresh()
   snprintf(buf, sizeof(buf), "Home set: %-10s", g_homeLocationSaved ? "yes" : "no");
   tft.print(buf);
 
-  // BLE beacon state line
+  // BLE beacon state — on the SAME row as the GPS status (right-half) so we
+  // can fit them both onto the panel.
   tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
   tft.setCursor(2, 68);
-  snprintf(buf, sizeof(buf), "BLE: %-15s", bleEnabled ? "on" : "off");
+  snprintf(buf, sizeof(buf), "BLE: %-3s", bleEnabled ? "on" : "off");
   tft.print(buf);
+
+  // GPS status line — full-width row at the very bottom of the panel.
+  // This is the LAST thing drawn so it can't be hidden by anything else.
+  // Uses big readable text + a full-row background colour so the state is
+  // unmistakable from across the room.
+  //
+  //   RED   "GPS NO DATA"     no NMEA bytes ever       hardware fault
+  //   AMBER "GPS ACQUIRING"   bytes but no lock yet    cold start in progress
+  //   GREEN "GPS LOCKED Nsat" fresh fix                all good
+  //
+  static const uint16_t TFT_AMBER = 0xFC00;
+  uint16_t gpsColour;
+  const char *gpsText;
+  char gpsBuf[24];
+  if (gpsBytesRx == 0)
+  {
+    gpsColour = ST77XX_RED;
+    gpsText = "GPS NO DATA";
+  }
+  else if (gpsValidFixes == 0)
+  {
+    gpsColour = TFT_AMBER;
+    gpsText = "GPS ACQUIRING";
+  }
+  else if (gps.location.age() < 5000)
+  {
+    gpsColour = ST77XX_GREEN;
+    snprintf(gpsBuf, sizeof(gpsBuf), "GPS LOCK %u sat", (unsigned)gps.satellites.value());
+    gpsText = gpsBuf;
+  }
+  else
+  {
+    gpsColour = TFT_AMBER;
+    gpsText = "GPS STALE";
+  }
+  // Wider GPS pill on the bottom-right. Avoids overlapping the BLE label.
+  tft.fillRect(60, 68, 100, 11, gpsColour);
+  tft.setTextColor(ST77XX_BLACK, gpsColour);
+  tft.setCursor(63, 70);
+  tft.print(gpsText);
 }
 
 static bool loadHomeLocation()
@@ -2087,11 +2109,13 @@ void handleDeviceOwnGPS()
     }
   }
 
-  // Diagnostic heartbeat: once every 10 s, dump the byte/fix counters to
-  // serial. Silent UART → gpsBytesRx stays at 0. UART alive but no lock
-  // (typical indoors, or first 30 s after cold start) → bytes climb,
-  // fixes stay flat. Both climbing = healthy.
-  if (millis() - gpsLastReportMs > 10000)
+  // Diagnostic heartbeat: every 5 s, dump the byte/fix counters to serial.
+  // Frequent enough that the user always sees current state without having
+  // to catch the boot-time logs. Decision tree from these numbers:
+  //   rx_bytes = 0              → silent UART (Vext, reset pin, wiring)
+  //   rx_bytes climbs, fixes=0  → GPS alive, acquiring sats (be patient)
+  //   both climb                → healthy
+  if (millis() - gpsLastReportMs > 5000)
   {
     gpsLastReportMs = millis();
     Serial.printf("[GPS] diag: rx_bytes=%u valid_fixes=%u sats=%u hdop=%u age=%lu ms\n",

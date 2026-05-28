@@ -2,6 +2,23 @@
 <html>
 <head>
   <meta charset="utf-8" />
+  <!-- V3 dark mode: apply the saved theme BEFORE first paint so there's no
+       white flash. localStorage key 'bluepaws.theme' = 'light' | 'dark'.
+       Default (nothing stored) is dark. -->
+  <script>
+    (function () {
+      try {
+        var t = localStorage.getItem('bluepaws.theme');
+        if (t === 'light') document.documentElement.classList.add('light-mode-pending');
+      } catch (e) {}
+    })();
+    document.addEventListener('DOMContentLoaded', function () {
+      if (document.documentElement.classList.contains('light-mode-pending')) {
+        document.body.classList.add('light-mode');
+        document.documentElement.classList.remove('light-mode-pending');
+      }
+    });
+  </script>
   <title>Blue Paws Tracker</title>
   <!-- Page title is rewritten by loadFirmwareVersion() to include the version
        once /version returns. This static string is the cold-start fallback. -->
@@ -17,6 +34,43 @@
   <link rel="stylesheet" href="leaflet.css" />
   <link rel="stylesheet" href="cat-tracker.css" />
     <style>
+    /* V3: dark mode theme.
+       Default to dark — applied immediately by the inline script in <head>
+       below so there's no flash of white on page load. Light mode is
+       opt-in via the side-panel toggle and persists in localStorage. */
+    body { margin: 0; font-family: sans-serif; background: #111; color: #e8e8e8; }
+    body.light-mode { background: #ffffff; color: #212529; }
+
+    /* Status banner (top right): translucent dark in dark mode */
+    body:not(.light-mode) #statusBanner { background: rgba(30,30,30,0.85); color: #e8e8e8; }
+
+    /* The page title bar lives in main-logo-title — make it dark by default */
+    body:not(.light-mode) .main-logo-title { background: #1a1a1a !important; color: #e8e8e8; }
+
+    /* Hamburger side menu, marker cards, and other Bootstrap surfaces */
+    body:not(.light-mode) .side-menu        { background: #1c1c1c; color: #e8e8e8; }
+    body:not(.light-mode) .menu-header      { background: #111; color: #e8e8e8; border-color: #333; }
+    body:not(.light-mode) .menu-section     { border-color: #2a2a2a; }
+    body:not(.light-mode) .menu-section h3  { color: #ccc; }
+    body:not(.light-mode) .menu-info-label  { color: #aaa; }
+    body:not(.light-mode) .menu-info-value  { color: #e8e8e8; }
+    body:not(.light-mode) .menu-btn-secondary { background: #333; color: #e8e8e8; border-color: #555; }
+    body:not(.light-mode) .menu-btn-primary  { background: #2563eb; color: #fff; border-color: #2563eb; }
+    body:not(.light-mode) input[type="number"],
+    body:not(.light-mode) input[type="text"],
+    body:not(.light-mode) select {
+      background: #222; color: #e8e8e8; border: 1px solid #444;
+    }
+    body:not(.light-mode) .node-control-item { background: #1c1c1c; color: #e8e8e8; }
+    body:not(.light-mode) .debug-console-card { background: #1a1a1a; color: #e8e8e8; }
+    body:not(.light-mode) .debug-console-header { background: #111; color: #e8e8e8; }
+
+    /* Leaflet has its own dark-tile choice — we leave the map tiles alone
+       (they're already a satellite/OSM image) but darken the controls. */
+    body:not(.light-mode) .leaflet-control-zoom a {
+      background: #222; color: #e8e8e8; border-color: #444;
+    }
+
     body { margin: 0; font-family: sans-serif; }
     #map { 
       height: 70vh; 
@@ -1286,6 +1340,15 @@
     </div>
     
     <div class="menu-content">
+      <!-- Theme -->
+      <div class="menu-section">
+        <h3>🎨 Theme</h3>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-secondary" id="themeToggleBtn" onclick="toggleTheme()" title="Toggle Dark/Light Mode
+Persists across sessions. Default is dark.">🌙 Switch to Light Mode</button>
+        </div>
+      </div>
+
       <!-- Map Settings -->
       <div class="menu-section">
         <h3>🗺️ Map Settings</h3>
@@ -2139,6 +2202,31 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       document.querySelector('.side-menu').classList.remove('active');
       document.querySelector('.menu-overlay').classList.remove('active');
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // DARK / LIGHT MODE (V3)
+    // ═══════════════════════════════════════════════════════════
+    // The early-paint script in <head> applies the saved theme before the
+    // user sees any pixels. This function just flips it on demand and
+    // persists the choice to localStorage so the next page load matches.
+    function refreshThemeButtonLabel() {
+      var btn = document.getElementById('themeToggleBtn');
+      if (!btn) return;
+      var isLight = document.body.classList.contains('light-mode');
+      btn.textContent = isLight ? '🌙 Switch to Dark Mode' : '☀️ Switch to Light Mode';
+    }
+    function toggleTheme() {
+      var isLight = document.body.classList.toggle('light-mode');
+      try { localStorage.setItem('bluepaws.theme', isLight ? 'light' : 'dark'); } catch (e) {}
+      refreshThemeButtonLabel();
+    }
+    // Run once after DOM is ready so the button label matches the loaded theme
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', refreshThemeButtonLabel);
+    } else {
+      refreshThemeButtonLabel();
+    }
+
 
     // ═══════════════════════════════════════════════════════════
     // HOME LOCATION (V3 dynamic)
