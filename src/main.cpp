@@ -2361,10 +2361,14 @@ void setup()
 
   Serial.println("[BOOT] Step 3/13: LEDs");
   Serial.flush();
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW); // Turn off the LED
-  pinMode(LORA_LED, OUTPUT);      // Initialize LoRa LED pin
-  digitalWrite(LORA_LED, LOW);    // Turn off LoRa LED
+  // DO NOT touch LED_BUILTIN on this board. The arduino-esp32
+  // heltec_wifi_lora_32_V3 variant header (which our custom V2 board JSON
+  // inherits from) defines LED_BUILTIN = 35 — but on the Wireless Tracker V2
+  // GPIO 35 is the GPS reset line. Driving LED_BUILTIN puts the GPS into
+  // reset and we get zero NMEA bytes in loop(). Use LORA_LED (GPIO 18, the
+  // actual white indicator LED per the V2 schematic netlist NL18) instead.
+  pinMode(LORA_LED, OUTPUT);
+  digitalWrite(LORA_LED, LOW);
   Serial.println("[BOOT] Step 4/13: BLE beacon");
   Serial.flush();
   setupBLE();
@@ -2571,13 +2575,15 @@ void setup()
   // Initialize message logging system
   initMessageLog();
 
-  // Flash builtin LED 5 times to indicate setup complete
+  // Flash the LoRa indicator LED 5 times to signal setup complete.
+  // Using LORA_LED (GPIO 18 = the V2's actual white LED) and emphatically
+  // NOT LED_BUILTIN — see the long comment in Step 3 above for why.
   Serial.println("[BOOT] Setup complete - signaling ready");
   for (int i = 0; i < 5; i++)
   {
-    digitalWrite(LED_BUILTIN, HIGH);
+    digitalWrite(LORA_LED, HIGH);
     delay(100);
-    digitalWrite(LED_BUILTIN, LOW);
+    digitalWrite(LORA_LED, LOW);
     delay(100);
   }
 }
