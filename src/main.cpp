@@ -1947,6 +1947,15 @@ uint32_t gpsBytesRx     = 0;  // total raw NMEA bytes received (extern in tftRef
 uint32_t gpsValidFixes  = 0;  // # of complete sentences with a valid fix
 uint32_t gpsLastReportMs = 0;
 
+// V3.0.4 NMEA debug: when true the receiver echoes each complete NMEA
+// sentence to the serial monitor as it arrives. Lets you see exactly what
+// the UC6580 is producing — talker IDs ($GP/$GN/$GL/$BD/$GA), fix quality
+// field, satellite counts, the lot. Set to false to silence the (~700
+// bytes/sec) firehose once the receiver is reliably getting fixes.
+#define GPS_NMEA_DEBUG true
+static char    nmeaLineBuf[128];
+static uint8_t nmeaLineLen = 0;
+
 void setupGPS()
 {
   // Make sure Vext is asserted (re-driving here in case anything earlier
@@ -2032,12 +2041,40 @@ void handleDeviceOwnGPS()
     char c = gpsSerial1.read();
     if (gpsBytesRx == 0)
     {
-      // Log the very first byte the loop sees so we can pinpoint when
-      // (and whether) the live UART starts producing data.
       Serial.printf("[GPS] First byte received by loop(): 0x%02X ('%c')\n",
                     (unsigned)(uint8_t)c, (c >= 0x20 && c <= 0x7E) ? c : '?');
     }
     gpsBytesRx++;
+
+#if GPS_NMEA_DEBUG
+    // Accumulate bytes into a line buffer and print complete sentences
+    // (terminated by \n) prefixed with [NMEA]. Lets you read raw output
+    // straight off the serial monitor without splicing the byte stream.
+    if (c == '\n')
+    {
+      if (nmeaLineLen > 0)
+      {
+        nmeaLineBuf[nmeaLineLen] = '\0';
+        // Trim trailing \r if present so the print doesn't add a blank line
+        if (nmeaLineLen > 0 && nmeaLineBuf[nmeaLineLen - 1] == '\r')
+          nmeaLineBuf[nmeaLineLen - 1] = '\0';
+        Serial.print("[NMEA] ");
+        Serial.println(nmeaLineBuf);
+      }
+      nmeaLineLen = 0;
+    }
+    else if (nmeaLineLen < sizeof(nmeaLineBuf) - 1)
+    {
+      nmeaLineBuf[nmeaLineLen++] = c;
+    }
+    else
+    {
+      // Overflowed buffer (sentence longer than 127 chars — shouldn't
+      // happen with valid NMEA but reset rather than crash). Drop the line.
+      nmeaLineLen = 0;
+    }
+#endif
+
     if (gps.encode(c))
     {
       // A complete NMEA sentence was parsed. Check if location is fresh
@@ -2089,11 +2126,22 @@ void handleDeviceOwnGPS()
   if (millis() - gpsLastReportMs > 5000)
   {
     gpsLastReportMs = millis();
+    // Expanded diag: charsProcessed/sentencesWithFix/failedChecksum come
+    // straight from TinyGPSPlus and tell us whether the parser is keeping
+    // up. If charsProcessed climbs but sentencesWithFix stays 0, the lib
+    // is parsing NMEA but the GGA/RMC sentences carry an empty fix —
+    // i.e. the chip is talking but hasn't locked yet. failedChecksum
+    // climbing fast = corrupted UART (baud, wiring, noise).
     Serial.printf("[GPS] diag: rx_bytes=%u valid_fixes=%u sats=%u hdop=%u age=%lu ms\n",
                   gpsBytesRx, gpsValidFixes,
                   (unsigned)gps.satellites.value(),
                   (unsigned)gps.hdop.value(),
                   (unsigned long)gps.location.age());
+    Serial.printf("[GPS] parser: chars=%lu sentences_with_fix=%lu failed_csum=%lu passed_csum=%lu\n",
+                  (unsigned long)gps.charsProcessed(),
+                  (unsigned long)gps.sentencesWithFix(),
+                  (unsigned long)gps.failedChecksum(),
+                  (unsigned long)gps.passedChecksum());
   }
 
   // Send update every 10 seconds regardless of GPS data availability
