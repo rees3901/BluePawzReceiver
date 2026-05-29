@@ -73,6 +73,7 @@
 #include <vector> // Include for message log buffer
 #include <TinyGPS++.h>
 #include <ESPmDNS.h> // Add mDNS library
+#include <DNSServer.h> // V3.1.2: captive portal DNS wildcard in roaming mode
 #include <ArduinoOTA.h> // V3: wireless firmware push from PlatformIO (espota)
 #include <Adafruit_GFX.h>     // V3: graphics primitives for the V2 TFT
 #include <Adafruit_ST7735.h>  // V3: ST7735S driver for the Heltec V2 onboard display
@@ -613,6 +614,13 @@ IPAddress g_apIp;                         // saved softAP IP for UI display
 #define ROAMING_SWITCH_TIMEOUT_MS    30000UL   // 30 s offline → switch to AP
 #define ROAMING_HOMESCAN_INTERVAL_MS 60000UL   // 60 s between home-SSID scans
 #define ROAMING_AP_SSID              "BluePaws-Roaming"
+
+// V3.1.2: captive-portal DNS server. Bound to port 53 only while we're
+// in NET_ROAMING. Wildcard mapping: every DNS query resolves to the AP
+// gateway IP (192.168.4.1). Combined with the HTTP probe-URL handlers
+// below, this triggers the phone's "Sign in to network" popup that
+// opens the UI directly when tapped — no need to type an IP.
+DNSServer dnsServer;
 
 // Forward declarations for the mode-switch helpers (defined further down).
 void switchToRoamingMode();
@@ -1513,6 +1521,53 @@ void handleGetHome()
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
+}
+
+// V3.1.2: captive-portal probe responder. Phones poll these well-known
+// URLs to detect whether the WiFi network has internet. If we respond
+// with anything other than the expected "I have internet" payload, the
+// OS shows a "Sign in to network" notification. Tapping it opens the
+// browser at the same URL — which we redirect back to / so the user
+// lands on the cat tracker UI instantly.
+//
+// Specific URLs we care about:
+//   iOS:     captive.apple.com/hotspot-detect.html, /library/test/success.html
+//   Android: connectivitycheck.gstatic.com/generate_204,
+//            www.google.com/generate_204, /gen_204
+//   Windows: www.msftncsi.com/ncsi.txt, /connecttest.txt
+//
+// We catch all of these (and the generic "anything else") via a
+// onNotFound handler that returns a small HTML page redirecting to /.
+// The page also includes a meta refresh as a fallback for older
+// browsers / strict captive-portal clients.
+void handleCaptivePortalRedirect()
+{
+  // V3.1.2: only kick in in ROAMING mode. In HOME mode, a 404 stays a
+  // genuine 404 because the home network probably has real internet
+  // and the user would be confused by spurious redirects.
+  if (netModeRaw() != 1 /* not roaming */)
+  {
+    server.send(404, "text/plain", "Not found");
+    return;
+  }
+
+  // The phone is asking "do I have internet?". By replying with a
+  // non-success response that points to our root, the OS interprets
+  // this as "captive portal present, click to sign in".
+  String body = F(
+    "<!DOCTYPE html>"
+    "<html><head>"
+    "<meta charset='utf-8'>"
+    "<meta http-equiv='refresh' content='0; url=http://192.168.4.1/'>"
+    "<title>BluePaws</title>"
+    "</head><body>"
+    "<p>Redirecting to <a href='http://192.168.4.1/'>BluePaws cat tracker</a>...</p>"
+    "</body></html>");
+  // 200 OK with HTML — most modern phones treat any non-expected response
+  // body as captive portal trigger. (302 redirect also works but some
+  // older Android versions handle it less consistently.)
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "text/html", body);
 }
 
 // HTTP handler: GET /netmode — V3.1 roaming-mode state for the web UI.
@@ -2467,6 +2522,14 @@ void switchToRoamingMode()
   // V3.1: BLE role-swap. Stop Home beacon, start collar-finder scanner.
   bleStartCollarScan();
 
+  // V3.1.2: captive-portal DNS. Wildcard '*' means EVERY hostname resolves
+  // to the AP IP. The phone tries to load its connectivity-probe URL
+  // (e.g. captive.apple.com), DNS sends it here, the HTTP handler below
+  // returns a redirect or HTML, and the phone shows the 'Sign in' popup.
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(53, "*", g_apIp);
+  Serial.println("[CAPTIVE] DNS wildcard server up on port 53");
+
   JsonDocument ev;
   ev["event"]       = "wifi_roaming_on";
   ev["ap_ssid"]     = ROAMING_AP_SSID;
@@ -2514,6 +2577,11 @@ void switchToHomeMode()
 
   // V3.1: BLE role-swap back. Stop collar scanner, resume Home beacon.
   bleStopCollarScan();
+
+  // V3.1.2: stop the captive-portal DNS — no longer needed on a real
+  // network where the upstream resolver works.
+  dnsServer.stop();
+  Serial.println("[CAPTIVE] DNS wildcard server stopped");
 
   JsonDocument ev;
   ev["event"]    = "wifi_roaming_off";
@@ -3064,6 +3132,11 @@ void setup()
   server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
   server.on("/version", HTTP_GET, handleGetVersion);        // Firmware version string
   server.on("/netmode", HTTP_GET, handleGetNetMode);        // V3.1: roaming mode + collar RSSI
+  // V3.1.2: catch-all for captive-portal probe URLs (iOS, Android, Windows
+  // all probe specific paths). onNotFound fires for ANY route the regular
+  // server.on() handlers don't claim — in ROAMING mode the handler returns
+  // a redirect to / so the phone's 'Sign in' popup opens the UI directly.
+  server.onNotFound(handleCaptivePortalRedirect);
   server.serveStatic("/", LittleFS, "/");
   server.begin();
   Serial.println("[INFO] HTTP server started");
@@ -3166,6 +3239,10 @@ void loop()
   // Handle HTTP server and WebSocket events
   server.handleClient();
   webSocket.loop();
+  // V3.1.2: pump the captive-portal DNS in roaming mode. processNextRequest
+  // is a no-op when no packet is waiting, so it's safe to call every pass.
+  // In HOME mode the server isn't running so this no-ops too.
+  if (netModeRaw() == 1 /* NET_ROAMING */) dnsServer.processNextRequest();
   ArduinoOTA.handle(); // V3: service incoming OTA firmware uploads
   tftRefresh();        // V3: ~1Hz status panel on Heltec V2 onboard TFT
 
