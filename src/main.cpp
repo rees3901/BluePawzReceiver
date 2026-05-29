@@ -164,6 +164,20 @@ extern bool bleEnabled;
 extern uint32_t gpsBytesRx;
 extern uint32_t gpsValidFixes;
 
+// V3.1: collar BLE advertising prefix. Defined here near the top of the
+// file so both tftRefresh() (early) and the BLE scan code (later) see it.
+#define COLLAR_BLE_PREFIX "BLUEPAWZ-"
+
+// V3.1 forward decls for roaming-mode UI. The full enum / globals live
+// near the WiFi setup further down. Accessor functions wrap the
+// complex globals (std::map etc.) so tftRefresh stays simple.
+extern uint8_t netModeRaw();        // 0 = HOME, 1 = ROAMING
+extern String  netModeApIpStr();    // AP IP as text, "" when not roaming
+extern int     bleCollarCount();    // how many collars seen
+extern String  bleStrongestCollarName();
+extern int16_t bleStrongestCollarRssi();
+extern uint32_t bleStrongestCollarLastSeenMs();
+
 // Add initial location JSON
 JsonDocument deviceLocation;
 
@@ -265,9 +279,17 @@ static void tftRefresh()
   snprintf(buf, sizeof(buf), "BluePaws v%-12s", BLUEPAWZ_VERSION);
   tft.print(buf);
 
-  // WiFi status / IP
+  // WiFi status / IP — different display per network mode (V3.1 roaming).
   tft.setCursor(2, 14);
-  if (WiFi.status() == WL_CONNECTED)
+  if (netModeRaw() == 1 /* NET_ROAMING */)
+  {
+    // AP mode: show the AP IP prefixed with a R: tag in bright magenta
+    // so the user can clearly tell we're in roaming mode from across a room.
+    tft.setTextColor(ST77XX_MAGENTA, ST77XX_BLACK);
+    String apIp = netModeApIpStr();
+    snprintf(buf, sizeof(buf), "R:%-18s", apIp.length() ? apIp.c_str() : "(no AP)");
+  }
+  else if (WiFi.status() == WL_CONNECTED)
   {
     tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
     snprintf(buf, sizeof(buf), "%-20s", WiFi.localIP().toString().c_str());
@@ -285,9 +307,36 @@ static void tftRefresh()
   snprintf(buf, sizeof(buf), "Pkts: %-14u", tftMsgCount);
   tft.print(buf);
 
-  // Last cat that reported in + its RSSI
+  // Last cat row — in HOME mode: last LoRa packet. In ROAMING mode: the
+  // strongest BLE-scanned collar (the user's "getting warmer" indicator).
   tft.setCursor(2, 42);
-  if (tftLastCatName.length() > 0)
+  if (netModeRaw() == 1 /* NET_ROAMING */)
+  {
+    if (bleCollarCount() > 0)
+    {
+      String name = bleStrongestCollarName();
+      int16_t rssi = bleStrongestCollarRssi();
+      // Strength bucket: <-85 cold, -85..-70 lukewarm, -70..-55 warm, >-55 hot
+      const char *tag;
+      uint16_t col;
+      if      (rssi >= -55) { tag = "HOT"; col = ST77XX_RED; }
+      else if (rssi >= -70) { tag = "WARM"; col = 0xFC00; /* amber */ }
+      else if (rssi >= -85) { tag = "COOL"; col = ST77XX_CYAN; }
+      else                  { tag = "COLD"; col = ST77XX_BLUE; }
+      tft.setTextColor(col, ST77XX_BLACK);
+      // Trim 'BLUEPAWZ-' prefix from display name to save space.
+      String displayName = name;
+      if (displayName.startsWith(COLLAR_BLE_PREFIX))
+        displayName = displayName.substring(strlen(COLLAR_BLE_PREFIX));
+      snprintf(buf, sizeof(buf), "%-4s %s %ddBm    ", tag, displayName.c_str(), rssi);
+    }
+    else
+    {
+      tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+      snprintf(buf, sizeof(buf), "%-20s", "scanning...");
+    }
+  }
+  else if (tftLastCatName.length() > 0)
   {
     tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
     snprintf(buf, sizeof(buf), "%s %ddBm        ", tftLastCatName.c_str(), tftLastCatRssi);
@@ -426,6 +475,39 @@ bool serialPreviouslyOpened = false;
 // Add WiFi connection status
 bool isWiFiConnected = false;
 
+// ───────────── V3.1: Network mode (HOME / ROAMING) ─────────────
+// Receiver runs in one of two network modes:
+//   NET_HOME    — STA, joined the user's configured home WiFi. Normal
+//                 gateway operation. BLE advertises the 'Home' beacon.
+//   NET_ROAMING — Own open AP 'BluePaws-Roaming' for the user's phone
+//                 to connect to while out searching for a lost cat.
+//                 BLE switches from advertiser to scanner (looks for
+//                 collar lost-mode beacons named 'BLUEPAWZ-*').
+//
+// Transition triggers:
+//   HOME → ROAMING when home WiFi has been disconnected for
+//                  ROAMING_SWITCH_TIMEOUT_MS (30 s) and reconnect
+//                  attempts have failed.
+//   ROAMING → HOME when a periodic scan detects the home SSID back
+//                  on the air.
+//
+// The web server, WebSocket server, and HTTP routes don't care about
+// which mode we're in — they bind to whichever interface is up.
+enum NetMode { NET_HOME, NET_ROAMING };
+NetMode  g_netMode = NET_HOME;
+uint32_t g_disconnectStartMs = 0;        // when we first noticed disconnection
+uint32_t g_lastHomeScanMs    = 0;        // last time we scanned for home SSID
+IPAddress g_apIp;                         // saved softAP IP for UI display
+
+#define ROAMING_SWITCH_TIMEOUT_MS    30000UL   // 30 s offline → switch to AP
+#define ROAMING_HOMESCAN_INTERVAL_MS 60000UL   // 60 s between home-SSID scans
+#define ROAMING_AP_SSID              "BluePaws-Roaming"
+
+// Forward declarations for the mode-switch helpers (defined further down).
+void switchToRoamingMode();
+void switchToHomeMode();
+bool homeSsidVisible();
+
 // Track WebSocket clients
 uint8_t connectedClients = 0;
 
@@ -436,6 +518,23 @@ const unsigned long DEVICE_GPS_UPDATE_INTERVAL = 10000; // 10 seconds in millise
 // ───────────── BLE Beacon Config ─────────────
 #define BLE_DEVICE_NAME "CAT_TRACKER_HQ"
 BLEAdvertising *pAdvertising = nullptr;
+
+// V3.1: BLE collar discovery (used in NET_ROAMING for cat-finder mode).
+// Collars in lost mode advertise as 'BLUEPAWZ-<DEVICE_ID_INT>'. The
+// receiver scans for those names and tracks RSSI with a simple EMA so
+// the "getting warmer / colder" indicator is stable instead of jumping
+// every frame.
+struct CollarBleSighting
+{
+  String   name;          // advertised local name
+  int16_t  rssiInst;      // last raw RSSI
+  int16_t  rssiEMA;       // exponential moving average (alpha = 0.3)
+  uint32_t lastSeenMs;    // millis() of most recent advertisement
+  uint32_t sightingCount; // total advertisements seen since boot
+};
+std::map<String, CollarBleSighting> collarBleSeen;
+BLEScan *pCollarScan = nullptr;  // set by bleStartCollarScan(), null otherwise
+#define COLLAR_RSSI_EMA_ALPHA 30  // / 100 → 0.30; new sample weight
 unsigned long lastBLEAdvertTime = 0;
 const unsigned long BLE_ADVERT_INTERVAL = 3000; // 5 seconds
 bool bleEnabled = true;                         // BLE beacon control flag
@@ -494,6 +593,8 @@ void checkWiFiConnection();
 void setupBLE();
 void enableBLE();
 void disableBLE();
+void bleStartCollarScan();
+void bleStopCollarScan();
 void sendBleStateWS(uint8_t clientId = 255);
 void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length);
 void LED_flicker();
@@ -1298,6 +1399,41 @@ void handleGetHome()
   JsonDocument doc;
   doc["lat"] = g_homeLat;
   doc["lon"] = g_homeLon;
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// HTTP handler: GET /netmode — V3.1 roaming-mode state for the web UI.
+// Returns { mode, ap_ip, sta_ip, collars:[{name,rssi,age_ms,count}] }.
+// The UI polls this every couple of seconds to draw the proximity
+// indicator when the receiver is in roaming mode.
+void handleGetNetMode()
+{
+  JsonDocument doc;
+  doc["mode"] = (netModeRaw() == 1) ? "roaming" : "home";
+  if (netModeRaw() == 1)
+  {
+    doc["ap_ip"]   = netModeApIpStr();
+    doc["ap_ssid"] = ROAMING_AP_SSID;
+  }
+  else
+  {
+    doc["sta_ip"] = WiFi.localIP().toString();
+  }
+  JsonArray collars = doc["collars"].to<JsonArray>();
+  uint32_t now = millis();
+  for (auto &p : collarBleSeen)
+  {
+    JsonObject c = collars.add<JsonObject>();
+    String displayName = p.second.name;
+    if (displayName.startsWith(COLLAR_BLE_PREFIX))
+      displayName = displayName.substring(strlen(COLLAR_BLE_PREFIX));
+    c["name"]   = displayName;
+    c["rssi"]   = p.second.rssiEMA;
+    c["age_ms"] = now - p.second.lastSeenMs;
+    c["count"]  = p.second.sightingCount;
+  }
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -2192,21 +2328,156 @@ void handleData()
   server.send(200, "application/json", output);
 }
 
+// V3.1: Switch from home/STA mode to roaming/AP mode. Tears down the
+// STA connection, brings up the open access point. Web/WebSocket
+// servers keep running and bind to the new AP interface automatically
+// (HTTP and WS servers are mode-agnostic).
+void switchToRoamingMode()
+{
+  if (g_netMode == NET_ROAMING) return;
+  Serial.println("[WIFI] ── Switching to ROAMING mode (own AP) ──");
+  WiFi.disconnect(true);
+  delay(100);
+  // AP_STA dual mode: AP for the phone to connect to, STA available so
+  // we can still WiFi.scanNetworks() to detect when home SSID returns.
+  WiFi.mode(WIFI_AP_STA);
+  bool ok = WiFi.softAP(ROAMING_AP_SSID);  // open AP, no password
+  g_apIp  = WiFi.softAPIP();
+  Serial.printf("[WIFI] AP up: SSID='%s' (open) IP=%s\n",
+                ROAMING_AP_SSID, g_apIp.toString().c_str());
+  if (!ok)
+  {
+    Serial.println("[WIFI] WARNING: softAP() reported failure");
+  }
+  g_netMode        = NET_ROAMING;
+  isWiFiConnected  = false;     // not on home WiFi any more
+  g_lastHomeScanMs = millis();
+
+  // V3.1: BLE role-swap. Stop Home beacon, start collar-finder scanner.
+  bleStartCollarScan();
+
+  JsonDocument ev;
+  ev["event"]       = "wifi_roaming_on";
+  ev["ap_ssid"]     = ROAMING_AP_SSID;
+  ev["ap_ip"]       = g_apIp.toString();
+  logMessage(ev, "event");
+}
+
+// V3.1: Switch from roaming/AP back to home/STA mode. Stops the AP and
+// re-attaches to the configured home network. Called when a periodic
+// SSID scan reveals the home network is reachable again.
+void switchToHomeMode()
+{
+  if (g_netMode == NET_HOME) return;
+  Serial.println("[WIFI] ── Switching back to HOME mode (STA) ──");
+  WiFi.softAPdisconnect(true);
+  delay(100);
+  WiFi.mode(WIFI_STA);
+  if (strlen(WIFI_PASSWORD) == 0)
+    WiFi.begin(WIFI_SSID);
+  else
+    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  // Brief blocking wait so the next loop pass has WL_CONNECTED ready.
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20)
+  {
+    delay(500);
+    attempts++;
+  }
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    isWiFiConnected = true;
+    Serial.printf("[WIFI] Reconnected to home: %s\n", WiFi.localIP().toString().c_str());
+  }
+  else
+  {
+    // Couldn't actually reconnect even though scan found the SSID. Go
+    // back to roaming so the UI stays reachable.
+    Serial.println("[WIFI] STA reconnect failed — flipping back to ROAMING");
+    switchToRoamingMode();
+    return;
+  }
+  g_netMode            = NET_HOME;
+  g_disconnectStartMs  = 0;
+
+  // V3.1: BLE role-swap back. Stop collar scanner, resume Home beacon.
+  bleStopCollarScan();
+
+  JsonDocument ev;
+  ev["event"]    = "wifi_roaming_off";
+  ev["sta_ip"]   = WiFi.localIP().toString();
+  logMessage(ev, "event");
+}
+
+// V3.1: Active WiFi scan, return true if the configured home SSID
+// appears in the results. Used in ROAMING mode to decide when to
+// switch back to HOME.
+bool homeSsidVisible()
+{
+  int n = WiFi.scanNetworks(false /*async*/, false /*hidden*/);
+  bool found = false;
+  for (int i = 0; i < n; i++)
+  {
+    if (WiFi.SSID(i) == WIFI_SSID)
+    {
+      Serial.printf("[WIFI] Home SSID '%s' visible (RSSI=%d)\n",
+                    WIFI_SSID, WiFi.RSSI(i));
+      found = true;
+      break;
+    }
+  }
+  WiFi.scanDelete();
+  return found;
+}
+
 void checkWiFiConnection()
 {
+  // ──────────────── ROAMING (AP) branch ────────────────
+  if (g_netMode == NET_ROAMING)
+  {
+    // Every ROAMING_HOMESCAN_INTERVAL_MS, sweep the air for the home
+    // SSID. If it's back, switch over. Scan is blocking (~2-3 s), so
+    // we only do it on the configured interval to avoid stalling loop().
+    if (millis() - g_lastHomeScanMs >= ROAMING_HOMESCAN_INTERVAL_MS)
+    {
+      g_lastHomeScanMs = millis();
+      Serial.printf("[WIFI] (roaming) periodic scan for '%s'...\n", WIFI_SSID);
+      if (homeSsidVisible())
+      {
+        switchToHomeMode();
+      }
+    }
+    return;
+  }
+
+  // ──────────────── HOME (STA) branch ────────────────
   if (WiFi.status() != WL_CONNECTED)
   {
     if (isWiFiConnected)
     {
       Serial.println("[WIFI] Connection lost");
-      isWiFiConnected = false;
+      isWiFiConnected      = false;
+      g_disconnectStartMs  = millis();   // start the 30s clock
 
-      // Log WiFi disconnect event
       JsonDocument eventDoc;
-      eventDoc["event"] = "wifi_disconnected";
+      eventDoc["event"]       = "wifi_disconnected";
       eventDoc["description"] = "WiFi connection lost";
       logMessage(eventDoc, "event");
     }
+
+    // If we've been disconnected for longer than the tolerance, switch
+    // to roaming. This is the home → roaming auto-trigger.
+    if (g_disconnectStartMs > 0 &&
+        millis() - g_disconnectStartMs > ROAMING_SWITCH_TIMEOUT_MS)
+    {
+      Serial.printf("[WIFI] STA down for >%lu s — going ROAMING\n",
+                    ROAMING_SWITCH_TIMEOUT_MS / 1000);
+      switchToRoamingMode();
+      return;
+    }
+
+    // Try a single non-blocking reconnect attempt per call.
     Serial.print("[WIFI] Reconnecting...");
     WiFi.reconnect();
     int attempts = 0;
@@ -2218,11 +2489,11 @@ void checkWiFiConnection()
     }
     if (WiFi.status() == WL_CONNECTED)
     {
-      isWiFiConnected = true;
+      isWiFiConnected     = true;
+      g_disconnectStartMs = 0;
       Serial.println("\n[WIFI] Reconnected!");
       Serial.println(WiFi.localIP());
 
-      // Log WiFi reconnect event
       JsonDocument eventDoc;
       eventDoc["event"] = "wifi_reconnected";
       eventDoc["description"] = "WiFi connection restored";
@@ -2268,6 +2539,115 @@ void setupBLE()
   BLEDevice::startAdvertising();
   lastBLEAdvertTime = millis();
   Serial.println("[BLE] Advertising started: name='Home' tx_pwr=-12dBm (short-range)");
+}
+
+// V3.1 BLE callback: invoked for every advertisement seen during a scan.
+// Only collar 'BLUEPAWZ-*' names get tracked. RSSI is smoothed with an EMA
+// so the proximity bar in the UI doesn't twitch.
+class CollarScanCallbacks : public BLEAdvertisedDeviceCallbacks
+{
+  void onResult(BLEAdvertisedDevice dev) override
+  {
+    if (!dev.haveName()) return;
+    String name = String(dev.getName().c_str());
+    if (!name.startsWith(COLLAR_BLE_PREFIX)) return;
+
+    int16_t rssi = dev.haveRSSI() ? dev.getRSSI() : -127;
+    auto it = collarBleSeen.find(name);
+    if (it == collarBleSeen.end())
+    {
+      CollarBleSighting s;
+      s.name = name;
+      s.rssiInst = rssi;
+      s.rssiEMA = rssi;
+      s.lastSeenMs = millis();
+      s.sightingCount = 1;
+      collarBleSeen[name] = s;
+      Serial.printf("[BLE-scan] NEW collar '%s' rssi=%d\n", name.c_str(), rssi);
+    }
+    else
+    {
+      it->second.rssiInst = rssi;
+      // EMA: new_avg = alpha * sample + (1-alpha) * old_avg
+      // Implemented in integer arithmetic with /100 fixed point.
+      int32_t newEma = (COLLAR_RSSI_EMA_ALPHA * (int32_t)rssi +
+                       (100 - COLLAR_RSSI_EMA_ALPHA) * (int32_t)it->second.rssiEMA) / 100;
+      it->second.rssiEMA = (int16_t)newEma;
+      it->second.lastSeenMs = millis();
+      it->second.sightingCount++;
+    }
+  }
+};
+static CollarScanCallbacks g_collarScanCb;
+
+// V3.1: start the collar-finder BLE scanner. Called when we enter
+// NET_ROAMING mode. Uses ESP32 BLEScan in continuous (async) mode with
+// a callback so we don't have to poll. Active scan (which solicits a
+// scan response for the name) so we reliably pick up 'BLUEPAWZ-*'.
+void bleStartCollarScan()
+{
+  if (pCollarScan) return; // already running
+
+  // Stop our own advertising first — can't safely advertise + scan
+  // on the same controller in this stack.
+  if (pAdvertising)
+  {
+    BLEDevice::stopAdvertising();
+  }
+
+  pCollarScan = BLEDevice::getScan();
+  pCollarScan->setAdvertisedDeviceCallbacks(&g_collarScanCb, true /*wantDuplicates*/);
+  pCollarScan->setActiveScan(true);
+  pCollarScan->setInterval(160);  // units of 0.625 ms → 100 ms
+  pCollarScan->setWindow(150);    //                   → ~94 ms (94% duty)
+  pCollarScan->start(0, nullptr, false); // 0 duration = continuous
+  Serial.println("[BLE] Collar scanner started (looking for BLUEPAWZ-*)");
+}
+
+// V3.1 forward-decl accessors — let tftRefresh / web handlers read the
+// roaming-mode state without needing to know about the complex globals.
+uint8_t  netModeRaw()                  { return (uint8_t)g_netMode; }
+String   netModeApIpStr()              { return (g_netMode == NET_ROAMING) ? g_apIp.toString() : String(""); }
+int      bleCollarCount()              { return collarBleSeen.size(); }
+String   bleStrongestCollarName()
+{
+  String best; int16_t bestR = -127;
+  for (auto &p : collarBleSeen) {
+    if (p.second.rssiEMA > bestR) { bestR = p.second.rssiEMA; best = p.second.name; }
+  }
+  return best;
+}
+int16_t  bleStrongestCollarRssi()
+{
+  int16_t bestR = -127;
+  for (auto &p : collarBleSeen) if (p.second.rssiEMA > bestR) bestR = p.second.rssiEMA;
+  return bestR;
+}
+uint32_t bleStrongestCollarLastSeenMs()
+{
+  uint32_t newest = 0;
+  for (auto &p : collarBleSeen) if (p.second.lastSeenMs > newest) newest = p.second.lastSeenMs;
+  return newest;
+}
+
+// V3.1: stop the collar-finder scanner and resume Home-beacon advertising.
+// Called when we leave NET_ROAMING and return to NET_HOME.
+void bleStopCollarScan()
+{
+  if (!pCollarScan) return;
+  pCollarScan->stop();
+  pCollarScan->clearResults();
+  pCollarScan = nullptr;
+
+  if (bleEnabled && pAdvertising)
+  {
+    BLEDevice::startAdvertising();
+    Serial.println("[BLE] Collar scanner stopped, Home beacon resumed");
+  }
+  else
+  {
+    Serial.println("[BLE] Collar scanner stopped");
+  }
 }
 
 void enableBLE()
@@ -2572,6 +2952,7 @@ void setup()
   server.on("/home", HTTP_GET, handleGetHome);              // Get current home lat/lon
   server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
   server.on("/version", HTTP_GET, handleGetVersion);        // Firmware version string
+  server.on("/netmode", HTTP_GET, handleGetNetMode);        // V3.1: roaming mode + collar RSSI
   server.serveStatic("/", LittleFS, "/");
   server.begin();
   Serial.println("[INFO] HTTP server started");
@@ -2658,7 +3039,13 @@ void setup()
 void loop()
 {
   checkWiFiConnection();
-  if (!isWiFiConnected)
+  // V3.1: in NET_ROAMING the AP is up and we want to KEEP serving the
+  // web UI, even though isWiFiConnected (which now means 'STA joined to
+  // home network') is false. Only bail out if we're nominally HOME mode
+  // and currently disconnected — i.e. still trying to recover, no UI to
+  // serve, no point spinning. ArduinoOTA also doesn't run in roaming mode
+  // (no point — the user's laptop probably isn't on the AP).
+  if (g_netMode == NET_HOME && !isWiFiConnected)
   {
     Serial.println("[WIFI] ⚠️ No connection, waiting...");
     delay(1000);
