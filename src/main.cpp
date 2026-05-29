@@ -301,69 +301,180 @@ static void tftRefresh()
   }
   tft.print(buf);
 
-  // Packets seen since boot
-  tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
-  tft.setCursor(2, 28);
-  snprintf(buf, sizeof(buf), "Pkts: %-14u", tftMsgCount);
-  tft.print(buf);
+  // Packets seen since boot — only shown in HOME mode. In ROAMING mode
+  // the proximity widget takes over this row.
+  if (netModeRaw() == 0 /* NET_HOME */)
+  {
+    tft.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
+    tft.setCursor(2, 28);
+    snprintf(buf, sizeof(buf), "Pkts: %-14u", tftMsgCount);
+    tft.print(buf);
+  }
 
-  // Last cat row — in HOME mode: last LoRa packet. In ROAMING mode: the
-  // strongest BLE-scanned collar (the user's "getting warmer" indicator).
-  tft.setCursor(2, 42);
+  // V3.1: 'last cat' row — different display per mode.
+  //
+  // HOME mode    → last LoRa packet (existing behaviour)
+  // ROAMING mode → graphical proximity meter ('cat finder'):
+  //                  NOTHING: nothing heard for >60 s → bar hidden,
+  //                           text says SEARCHING. The whole widget
+  //                           area is blanked to reinforce "no signal".
+  //                  COLD:    25% bar height, dark red
+  //                  COOL:    50% bar height, amber
+  //                  WARM:    75% bar height, yellow
+  //                  HOT:    100% bar height, green, flashes
+  //                          between bright green and white at 1 Hz.
+  //
+  // Layout in roaming mode (occupies y=28..78 left half + bar on right):
+  //                ┌────────────────────┐
+  //   y=28 - 38    │  FINDING:          │   bar
+  //   y=40 - 50    │   Podge            │   ▓▓▓▓
+  //   y=52 - 62    │  HOT -52dBm        │   ▓▓▓▓
+  //   y=64 - 74    │  age: 0.3s         │   ▓▓▓▓
+  //                └────────────────────┘
+  //
+  // The bar is a thermometer-style filled rectangle that grows upward
+  // from the bottom. Outline always visible to anchor the widget; fill
+  // height + colour change with signal strength.
   if (netModeRaw() == 1 /* NET_ROAMING */)
   {
-    if (bleCollarCount() > 0)
+    uint32_t now           = millis();
+    uint32_t lastSeen      = bleStrongestCollarLastSeenMs();
+    uint32_t silenceMs     = (lastSeen == 0) ? 0xFFFFFFFFu : (now - lastSeen);
+    bool     haveLiveCollar = (lastSeen != 0) && (silenceMs < 60000UL);
+
+    // Bar geometry — must NOT overlap the GPS status pill at y=68..78,
+    // so we cap the bottom at y=66.
+    const int barX      = 130;
+    const int barY      = 24;     // top of the bar box
+    const int barW      = 26;
+    const int barMaxH   = 42;     // ends at y=66, one row above GPS pill
+    const int barBottom = barY + barMaxH;
+
+    // Draw / refresh the white outline (defines the widget visually)
+    tft.drawRect(barX, barY, barW, barMaxH, ST77XX_WHITE);
+
+    // Always blank the inside before redrawing the fill, so when the bar
+    // shrinks (or disappears) we don't leave a tall fragment behind.
+    tft.fillRect(barX + 1, barY + 1, barW - 2, barMaxH - 2, ST77XX_BLACK);
+
+    if (!haveLiveCollar)
     {
-      String name = bleStrongestCollarName();
+      // ── NOTHING: no live collar, hide the bar and the data lines ──
+      // Also blank the bar outline AND interior so the user sees just a
+      // dark area where the meter was — reinforces "signal lost".
+      tft.fillRect(barX, barY, barW, barMaxH, ST77XX_BLACK);
+
+      tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+      tft.setCursor(2, 28);
+      snprintf(buf, sizeof(buf), "%-16s", "SEARCHING...");
+      tft.print(buf);
+      // Clear the other text rows so we don't leave stale collar info.
+      tft.fillRect(2, 40, 120, 24, ST77XX_BLACK);
+    }
+    else
+    {
       int16_t rssi = bleStrongestCollarRssi();
-      // Strength bucket: <-85 cold, -85..-70 lukewarm, -70..-55 warm, >-55 hot
+      // Trim 'BLUEPAWZ-' prefix from name for display.
+      String name = bleStrongestCollarName();
+      if (name.startsWith(COLLAR_BLE_PREFIX))
+        name = name.substring(strlen(COLLAR_BLE_PREFIX));
+
+      // 5-state bucket
       const char *tag;
-      uint16_t col;
-      if      (rssi >= -55) { tag = "HOT"; col = ST77XX_RED; }
-      else if (rssi >= -70) { tag = "WARM"; col = 0xFC00; /* amber */ }
-      else if (rssi >= -85) { tag = "COOL"; col = ST77XX_CYAN; }
-      else                  { tag = "COLD"; col = ST77XX_BLUE; }
-      tft.setTextColor(col, ST77XX_BLACK);
-      // Trim 'BLUEPAWZ-' prefix from display name to save space.
-      String displayName = name;
-      if (displayName.startsWith(COLLAR_BLE_PREFIX))
-        displayName = displayName.substring(strlen(COLLAR_BLE_PREFIX));
-      snprintf(buf, sizeof(buf), "%-4s %s %ddBm    ", tag, displayName.c_str(), rssi);
+      uint16_t fillCol;
+      int      fillHpx;     // height of the fill (px from bottom of bar)
+      uint16_t textCol;
+      // Static toggles state-by-frame so HOT flashes
+      static bool hotFlashPhase = false;
+
+      if (rssi >= -55)
+      {
+        tag      = "HOT";
+        // Flash green ↔ white at the 1 Hz refresh rate
+        hotFlashPhase = !hotFlashPhase;
+        fillCol  = hotFlashPhase ? ST77XX_WHITE : ST77XX_GREEN;
+        fillHpx  = barMaxH - 2;
+        textCol  = ST77XX_GREEN;
+      }
+      else if (rssi >= -70)
+      {
+        tag      = "WARM";
+        fillCol  = ST77XX_YELLOW;
+        fillHpx  = (barMaxH - 2) * 3 / 4;
+        textCol  = ST77XX_YELLOW;
+        hotFlashPhase = false;
+      }
+      else if (rssi >= -85)
+      {
+        tag      = "COOL";
+        fillCol  = 0xFC00; // amber
+        fillHpx  = (barMaxH - 2) * 2 / 4;
+        textCol  = 0xFC00;
+        hotFlashPhase = false;
+      }
+      else
+      {
+        tag      = "COLD";
+        fillCol  = 0x8000; // dark red
+        fillHpx  = (barMaxH - 2) * 1 / 4;
+        textCol  = 0xC000; // medium red (text needs readability)
+        hotFlashPhase = false;
+      }
+
+      // Fill the bar from the bottom upward
+      int fillY = (barBottom - 1) - fillHpx;
+      tft.fillRect(barX + 1, fillY, barW - 2, fillHpx, fillCol);
+
+      // Text lines on the left
+      tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
+      tft.setCursor(2, 28);
+      snprintf(buf, sizeof(buf), "%-16s", "FINDING:");
+      tft.print(buf);
+
+      tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+      tft.setCursor(2, 40);
+      snprintf(buf, sizeof(buf), "%-16s", name.c_str());
+      tft.print(buf);
+
+      tft.setTextColor(textCol, ST77XX_BLACK);
+      tft.setCursor(2, 52);
+      snprintf(buf, sizeof(buf), "%-4s %4ddBm  ", tag, rssi);
+      tft.print(buf);
+
+      // (No 'age' row — collapsed to keep everything above the GPS pill.)
+    }
+  }
+  else
+  {
+    // ── HOME mode: existing 'last cat' row ──
+    tft.setCursor(2, 42);
+    if (tftLastCatName.length() > 0)
+    {
+      tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+      snprintf(buf, sizeof(buf), "%s %ddBm        ", tftLastCatName.c_str(), tftLastCatRssi);
     }
     else
     {
       tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-      snprintf(buf, sizeof(buf), "%-20s", "scanning...");
+      snprintf(buf, sizeof(buf), "%-20s", "(no cats yet)");
     }
+    tft.print(buf);
   }
-  else if (tftLastCatName.length() > 0)
-  {
-    tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
-    snprintf(buf, sizeof(buf), "%s %ddBm        ", tftLastCatName.c_str(), tftLastCatRssi);
-  }
-  else
-  {
-    tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
-    snprintf(buf, sizeof(buf), "%-20s", "(no cats yet)");
-  }
-  tft.print(buf);
 
-  // Home location: shown small in the corner so users can sanity-check.
-  // Uses the cached g_homeLocationSaved flag instead of LittleFS.exists()
-  // because exists() internally open()s the file, and vfs_api logs an
-  // error on every failed open — would flood the console at 1 Hz on a
-  // fresh install where the user hasn't set a home yet.
-  tft.setTextColor(ST77XX_MAGENTA, ST77XX_BLACK);
-  tft.setCursor(2, 56);
-  snprintf(buf, sizeof(buf), "Home set: %-10s", g_homeLocationSaved ? "yes" : "no");
-  tft.print(buf);
+  // Home location + BLE state — only shown in HOME mode. In ROAMING the
+  // proximity widget occupies these rows.
+  if (netModeRaw() == 0 /* NET_HOME */)
+  {
+    tft.setTextColor(ST77XX_MAGENTA, ST77XX_BLACK);
+    tft.setCursor(2, 56);
+    snprintf(buf, sizeof(buf), "Home set: %-10s", g_homeLocationSaved ? "yes" : "no");
+    tft.print(buf);
 
-  // BLE beacon state — on the SAME row as the GPS status (right-half) so we
-  // can fit them both onto the panel.
-  tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
-  tft.setCursor(2, 68);
-  snprintf(buf, sizeof(buf), "BLE: %-3s", bleEnabled ? "on" : "off");
-  tft.print(buf);
+    tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
+    tft.setCursor(2, 68);
+    snprintf(buf, sizeof(buf), "BLE: %-3s", bleEnabled ? "on" : "off");
+    tft.print(buf);
+  }
 
   // GPS status line — full-width row at the very bottom of the panel.
   // This is the LAST thing drawn so it can't be hidden by anything else.
