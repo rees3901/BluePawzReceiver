@@ -1340,6 +1340,27 @@
     </div>
     
     <div class="menu-content">
+      <!-- V3.2: Offline Map Cache -->
+      <div class="menu-section">
+        <h3>🗺️ Offline Map Cache</h3>
+        <div class="menu-info">
+          <span class="menu-info-label">Tiles cached:</span>
+          <span class="menu-info-value" id="tileCacheCount">—</span>
+        </div>
+        <div class="menu-info">
+          <span class="menu-info-label">Size:</span>
+          <span class="menu-info-value" id="tileCacheBytes">—</span>
+        </div>
+        <div class="menu-item">
+          <button class="menu-btn menu-btn-danger" onclick="clearTileCache()" title="Clear Map Cache
+Wipes all cached tiles. Next time you pan the map at home, new tiles will be downloaded.">🗑️ Clear Map Cache</button>
+        </div>
+        <p style="font-size:0.7em;color:#999;margin:6px 2px;">
+          Tiles cache automatically as you pan the map at home. When out
+          searching (roaming mode), only the cached area is visible.
+        </p>
+      </div>
+
       <!-- Theme -->
       <div class="menu-section">
         <h3>🎨 Theme</h3>
@@ -2202,6 +2223,40 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       document.querySelector('.side-menu').classList.remove('active');
       document.querySelector('.menu-overlay').classList.remove('active');
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // V3.2: OFFLINE MAP TILE CACHE
+    // ═══════════════════════════════════════════════════════════
+    function formatBytes(n) {
+      if (n < 1024) return n + ' B';
+      if (n < 1024*1024) return (n/1024).toFixed(1) + ' KB';
+      return (n/1024/1024).toFixed(2) + ' MB';
+    }
+    async function refreshTileCacheInfo() {
+      try {
+        const r = await fetch('/tilecache');
+        if (!r.ok) return;
+        const d = await r.json();
+        document.getElementById('tileCacheCount').textContent =
+          d.count + ' (' + d.pct_used + '% of budget)';
+        document.getElementById('tileCacheBytes').textContent =
+          formatBytes(d.bytes) + ' / ' + formatBytes(d.budget_bytes);
+      } catch (e) { /* silently ignore — UI just shows '—' */ }
+    }
+    async function clearTileCache() {
+      if (!confirm('Clear all cached map tiles?\n\nNext time you pan the map at home, new tiles will be downloaded.')) return;
+      try {
+        const r = await fetch('/tilecache/clear', { method: 'POST' });
+        if (!r.ok) { alert('Clear failed'); return; }
+        const d = await r.json();
+        alert('Cleared ' + d.deleted + ' tiles.');
+        refreshTileCacheInfo();
+      } catch (e) {
+        alert('Clear error: ' + e.message);
+      }
+    }
+    // Refresh whenever the side menu opens. (toggleMenu adds .active to .side-menu.)
+    document.addEventListener('DOMContentLoaded', refreshTileCacheInfo);
 
     // ═══════════════════════════════════════════════════════════
     // DARK / LIGHT MODE (V3)
