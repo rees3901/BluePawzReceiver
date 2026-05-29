@@ -1949,94 +1949,58 @@ uint32_t gpsLastReportMs = 0;
 
 void setupGPS()
 {
-  // Sanity check: confirm Vext is actually HIGH right now. If it isn't,
-  // the GPS has no power and the rest of this is futile. Read the pin
-  // back and log — gives us a one-line answer to "is the module powered?"
-  pinMode(VEXT_CTRL, INPUT);   // briefly switch to input to read the actual line state
-  delay(2);
-  int vextActual = digitalRead(VEXT_CTRL);
-  pinMode(VEXT_CTRL, OUTPUT);  // restore output
+  // Make sure Vext is asserted (re-driving here in case anything earlier
+  // in setup() momentarily clobbered the pin). Active HIGH on Heltec V2.
+  pinMode(VEXT_CTRL, OUTPUT);
   digitalWrite(VEXT_CTRL, HIGH);
-  Serial.printf("[GPS] Vext line read-back: %s\n",
-                vextActual == HIGH ? "HIGH (ok)" : "LOW (no power to GPS!)");
 
-  // Reset the UC6580. R26 (10K) on the schematic pulls GNSS_RST to Vext_3V3
-  // so the chip is normally out of reset, but an explicit pulse forces a
-  // known-good cold start. Longer than the strict minimum (10 ms) on purpose
-  // — first boot after a power-on sometimes needs more settle time.
+  // Reset the UC6580. R26 (10K) on the schematic pulls GNSS_RST high to
+  // Vext_3V3 so the chip is normally out of reset; an explicit LOW→HIGH
+  // pulse here forces a known-good cold start.
   pinMode(GPS_RST, OUTPUT);
-  digitalWrite(GPS_RST, LOW);    // assert reset
-  delay(100);                     // hold reset 100 ms
-  digitalWrite(GPS_RST, HIGH);   // release reset
-  delay(500);                     // 500 ms for chip to boot + start NMEA output
+  digitalWrite(GPS_RST, LOW);
+  delay(100);
+  digitalWrite(GPS_RST, HIGH);
+  delay(500);     // 500 ms for chip to boot + start NMEA output
 
-  // Bigger RX buffer so a burst of NMEA at boot doesn't overflow before
-  // loop() gets a chance to drain it.
+  // SINGLE begin() — V3.0.1 lesson: the previous auto-detect did
+  //   gpsSerial1.end() / delay(20) / gpsSerial1.begin() multiple times.
+  // The redundant end+begin cycle leaves the ESP32-S3 UART driver in a
+  // state where the sniff inside setupGPS works fine but the loop()
+  // handler that comes later reads zero bytes — driver wedged after the
+  // re-init. Lesson: install the driver once and leave it alone.
+  //
+  // The UC6580's verified default baud is 115200 (last boot's auto-detect
+  // confirmed: 1215 bytes of NMEA-like data in 1.5 s). Hardcoding it.
   gpsSerial1.setRxBufferSize(1024);
+  gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
+  Serial.printf("[GPS] UART1 up: rx=GPIO%d tx=GPIO%d baud=%d (UC6580)\n",
+                GPS_RX, GPS_TX, GPS_BAUD);
 
-  // Baud auto-detect. UC6580's datasheet says 115200 default, but board
-  // batches have been known to ship at 9600 (legacy mode) or 38400. Rather
-  // than picking one and hoping, we try each in turn — for each candidate
-  // open UART1, sniff for 1.5 s, count bytes that look like printable ASCII
-  // (NMEA is all printable). Lock onto the first baud that produces a
-  // signal. Falls back to 115200 if none of them respond (so loop() will
-  // still try forever via the existing handler).
-  static const uint32_t bauds[] = {115200, 9600, 38400, 57600};
-  const int nBauds = sizeof(bauds) / sizeof(bauds[0]);
-  uint32_t winnerBaud = 0;
-  uint32_t winnerBytes = 0;
-  for (int i = 0; i < nBauds; i++)
+  // One-shot sniff for confirmation only. We DON'T re-init the UART after
+  // this; the begin() above is the one that loop() will keep using.
+  uint32_t sniffStart = millis();
+  uint32_t sniffBytes = 0;
+  uint32_t printableBytes = 0;
+  while (millis() - sniffStart < 1500)
   {
-    gpsSerial1.end();
-    delay(20);
-    gpsSerial1.begin(bauds[i], SERIAL_8N1, GPS_RX, GPS_TX);
-    Serial.printf("[GPS] Trying %u baud", bauds[i]);
-    uint32_t sniffStart = millis();
-    uint32_t sniffBytes = 0;
-    uint32_t printableBytes = 0;
-    while (millis() - sniffStart < 1500)
+    while (gpsSerial1.available() > 0)
     {
-      while (gpsSerial1.available() > 0)
-      {
-        int c = gpsSerial1.read();
-        sniffBytes++;
-        if ((c >= 0x20 && c <= 0x7E) || c == '\r' || c == '\n') printableBytes++;
-      }
-      delay(10);
+      int c = gpsSerial1.read();
+      sniffBytes++;
+      if ((c >= 0x20 && c <= 0x7E) || c == '\r' || c == '\n') printableBytes++;
     }
-    // Heuristic: real NMEA at the right baud will be >90% printable. Wrong
-    // baud at a real GPS produces random binary noise (UART framing errors
-    // look like garbage bytes in the read buffer).
-    bool looksLikeNmea = sniffBytes > 20 && (printableBytes * 100 / sniffBytes) > 80;
-    Serial.printf(" → %u bytes, %u printable%s\n", sniffBytes, printableBytes,
-                  looksLikeNmea ? " ✓ NMEA-like" : "");
-    if (looksLikeNmea && sniffBytes > winnerBytes)
-    {
-      winnerBaud = bauds[i];
-      winnerBytes = sniffBytes;
-      break; // accept first hit — no point trying more once we've found it
-    }
+    delay(10);
   }
-
-  if (winnerBaud > 0)
+  Serial.printf("[GPS] post-reset sniff: %u bytes, %u printable%s\n",
+                sniffBytes, printableBytes,
+                (sniffBytes > 20 && printableBytes * 100 / sniffBytes > 80)
+                    ? " ✓ NMEA-like" : "");
+  if (sniffBytes == 0)
   {
-    Serial.printf("[GPS] Auto-detected baud: %u (UC6580 talking)\n", winnerBaud);
-    gpsSerial1.end();
-    delay(20);
-    gpsSerial1.begin(winnerBaud, SERIAL_8N1, GPS_RX, GPS_TX);
+    Serial.println("[GPS] WARNING: 0 bytes in post-reset sniff window.");
+    Serial.println("[GPS]   GPS may be unpowered, in reset, or the chip is dead.");
   }
-  else
-  {
-    Serial.println("[GPS] WARNING: no baud produced NMEA-like traffic.");
-    Serial.println("[GPS]   Falling back to 115200 — loop() will keep trying.");
-    Serial.println("[GPS]   Likely causes: Vext not powering GPS, GNSS_RST stuck,");
-    Serial.println("[GPS]   RX/TX swap, or UC6580 needs a config command we're missing.");
-    gpsSerial1.end();
-    delay(20);
-    gpsSerial1.begin(GPS_BAUD, SERIAL_8N1, GPS_RX, GPS_TX);
-  }
-  Serial.printf("[GPS] UART1 final: rx=GPIO%d tx=GPIO%d baud=%u\n",
-                GPS_RX, GPS_TX, winnerBaud ? winnerBaud : (uint32_t)GPS_BAUD);
 
   // Initialize device location with default home until the GPS produces
   // a real fix. Status field is what the UI keys on — "Starting up" means
@@ -2066,6 +2030,13 @@ void handleDeviceOwnGPS()
   while (gpsSerial1.available() > 0 && (millis() - startTime) < 100)
   {
     char c = gpsSerial1.read();
+    if (gpsBytesRx == 0)
+    {
+      // Log the very first byte the loop sees so we can pinpoint when
+      // (and whether) the live UART starts producing data.
+      Serial.printf("[GPS] First byte received by loop(): 0x%02X ('%c')\n",
+                    (unsigned)(uint8_t)c, (c >= 0x20 && c <= 0x7E) ? c : '?');
+    }
     gpsBytesRx++;
     if (gps.encode(c))
     {
