@@ -1952,7 +1952,11 @@ uint32_t gpsLastReportMs = 0;
 // the UC6580 is producing — talker IDs ($GP/$GN/$GL/$BD/$GA), fix quality
 // field, satellite counts, the lot. Set to false to silence the (~700
 // bytes/sec) firehose once the receiver is reliably getting fixes.
-#define GPS_NMEA_DEBUG true
+// Set true to echo every complete NMEA sentence to serial as it arrives.
+// Useful for debugging "no fix" / antenna issues — see ~700 bytes/sec
+// of NMEA chatter prefixed with [NMEA]. Default false because once the
+// receiver is reliably getting fixes, the firehose just clutters the log.
+#define GPS_NMEA_DEBUG false
 static char    nmeaLineBuf[128];
 static uint8_t nmeaLineLen = 0;
 
