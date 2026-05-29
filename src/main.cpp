@@ -74,8 +74,6 @@
 #include <TinyGPS++.h>
 #include <ESPmDNS.h> // Add mDNS library
 #include <DNSServer.h> // V3.1.2: captive portal DNS wildcard in roaming mode
-#include <HTTPClient.h>      // V3.2: tile downloader for offline map cache
-#include <WiFiClientSecure.h> // V3.2: OSM tile servers are HTTPS-only
 #include <ArduinoOTA.h> // V3: wireless firmware push from PlatformIO (espota)
 #include <Adafruit_GFX.h>     // V3: graphics primitives for the V2 TFT
 #include <Adafruit_ST7735.h>  // V3: ST7735S driver for the Heltec V2 onboard display
@@ -1525,248 +1523,6 @@ void handleGetHome()
   server.send(200, "application/json", out);
 }
 
-// V3.2: OFFLINE MAP TILE CACHE
-// ────────────────────────────────────────────────────────────────────
-//
-// Browsers (Leaflet) request tile images at /tile/{z}/{x}/{y}.png.
-// We serve them from a LittleFS cache at /tiles/{z}_{x}_{y}.png.
-//
-// Behaviour by mode:
-//   HOME mode + WiFi up   serve from cache; if miss, download from
-//                         OSM (https://tile.openstreetmap.org/...),
-//                         save to LittleFS, then return. Cache fills
-//                         opportunistically as the user pans the map.
-//   ROAMING mode          serve from cache only; 404 on miss (Leaflet
-//                         shows a blank tile — no internet anyway).
-//
-// Storage policy: bounded by TILE_CACHE_BUDGET_BYTES (~3 MB target on
-// the 2.44 MB free LittleFS). When the budget is reached, new tiles
-// are silently dropped — the existing cache is preserved. The user
-// can hit /tilecache/clear to wipe and rebuild.
-//
-// OSM tile usage policy compliance:
-//   - User-Agent identifies the project clearly
-//   - HTTPS via WiFiClientSecure (insecure-mode = no cert validation;
-//     map tiles aren't security-sensitive)
-//   - Cache reduces repeat requests (the whole point)
-//
-// File layout chosen as flat names (/tiles/Z_X_Y.png) rather than
-// nested directories — LittleFS overhead per directory entry is non-
-// trivial and tile counts are bounded, so the flat scheme wins.
-
-#define TILE_CACHE_DIR        "/tiles"
-#define TILE_CACHE_BUDGET_BYTES (3UL * 1024UL * 1024UL)  // 3 MB
-#define TILE_USER_AGENT       "BluePawsReceiver/3.2 (cat-tracker; +https://github.com/rees3901)"
-
-// In-memory tile cache stats. Refreshed lazily by countTileCache().
-static uint32_t g_tileCacheCount    = 0;
-static uint32_t g_tileCacheBytes    = 0;
-static uint32_t g_tileCacheLastScan = 0;
-
-// Recount the cache on disk. Cheap enough to do every minute or on
-// demand (the cache typically has <300 files).
-static void recountTileCache()
-{
-  uint32_t count = 0, bytes = 0;
-  File dir = LittleFS.open(TILE_CACHE_DIR);
-  if (dir && dir.isDirectory())
-  {
-    File entry = dir.openNextFile();
-    while (entry)
-    {
-      if (!entry.isDirectory())
-      {
-        count++;
-        bytes += entry.size();
-      }
-      entry = dir.openNextFile();
-    }
-  }
-  g_tileCacheCount    = count;
-  g_tileCacheBytes    = bytes;
-  g_tileCacheLastScan = millis();
-}
-
-// Build the LittleFS path for a tile.
-static String tilePath(int z, int x, int y)
-{
-  char buf[48];
-  snprintf(buf, sizeof(buf), TILE_CACHE_DIR "/%d_%d_%d.png", z, x, y);
-  return String(buf);
-}
-
-// Download a tile from OpenStreetMap and write it to LittleFS.
-// Returns true on success. Skips the download if the budget is full.
-static bool downloadAndCacheTile(int z, int x, int y)
-{
-  // Bail if over budget. Cached tiles stay available; only new
-  // additions are blocked.
-  if (g_tileCacheBytes >= TILE_CACHE_BUDGET_BYTES)
-  {
-    Serial.printf("[TILES] Skip download z=%d x=%d y=%d — cache budget full (%u bytes)\n",
-                  z, x, y, g_tileCacheBytes);
-    return false;
-  }
-
-  String url;
-  url.reserve(80);
-  url = "https://tile.openstreetmap.org/" + String(z) + "/" + String(x) + "/" + String(y) + ".png";
-
-  WiFiClientSecure client;
-  client.setInsecure(); // tile images aren't security-sensitive
-  HTTPClient http;
-  http.setUserAgent(TILE_USER_AGENT);
-  http.setConnectTimeout(5000);
-  http.setTimeout(10000);
-  if (!http.begin(client, url))
-  {
-    Serial.printf("[TILES] http.begin failed for %s\n", url.c_str());
-    return false;
-  }
-  int code = http.GET();
-  if (code != HTTP_CODE_OK)
-  {
-    Serial.printf("[TILES] HTTP %d for %s\n", code, url.c_str());
-    http.end();
-    return false;
-  }
-
-  String path = tilePath(z, x, y);
-  File f = LittleFS.open(path, "w");
-  if (!f)
-  {
-    Serial.printf("[TILES] Failed to open %s for write\n", path.c_str());
-    http.end();
-    return false;
-  }
-
-  // Stream the body to LittleFS in 512-byte chunks.
-  WiFiClient *stream = http.getStreamPtr();
-  uint8_t buf[512];
-  size_t total = 0;
-  while (http.connected() && (stream->available() || stream->connected()))
-  {
-    size_t avail = stream->available();
-    if (avail == 0) { delay(5); continue; }
-    size_t n = stream->readBytes(buf, min(avail, sizeof(buf)));
-    if (n == 0) break;
-    f.write(buf, n);
-    total += n;
-    if (total > 200000) { break; } // safety cap; no real tile is this big
-  }
-  f.close();
-  http.end();
-
-  g_tileCacheCount++;
-  g_tileCacheBytes += total;
-  Serial.printf("[TILES] Cached z=%d x=%d y=%d (%u bytes, total cache %u/%lu)\n",
-                z, x, y, total, g_tileCacheBytes, TILE_CACHE_BUDGET_BYTES);
-  return true;
-}
-
-// HTTP handler: serve tile from cache, optionally download on miss.
-// Leaflet calls e.g. GET /tile/16/32418/22132.png
-void handleTileRequest()
-{
-  // Parse z/x/y from the URI: /tile/<z>/<x>/<y>.png
-  String uri = server.uri();
-  int z = 0, x = 0, y = 0;
-  if (sscanf(uri.c_str(), "/tile/%d/%d/%d.png", &z, &x, &y) != 3)
-  {
-    server.send(400, "text/plain", "Bad tile URI");
-    return;
-  }
-  // Sanity check the zoom + coordinates against the Slippy Map scheme.
-  if (z < 0 || z > 19) { server.send(400, "text/plain", "Bad z"); return; }
-  long maxXY = 1L << z;
-  if (x < 0 || x >= maxXY || y < 0 || y >= maxXY)
-  {
-    server.send(400, "text/plain", "Bad x/y");
-    return;
-  }
-
-  String path = tilePath(z, x, y);
-  if (LittleFS.exists(path))
-  {
-    File f = LittleFS.open(path, "r");
-    if (f)
-    {
-      // Cache aggressively in the browser — these images are immutable
-      // for the lifetime of our copy.
-      server.sendHeader("Cache-Control", "public, max-age=604800"); // 1 week
-      server.streamFile(f, "image/png");
-      f.close();
-      return;
-    }
-  }
-
-  // Miss. Either download (HOME + WiFi) or 404 (anything else).
-  if (netModeRaw() == 0 /* HOME */ && isWiFiConnected)
-  {
-    if (downloadAndCacheTile(z, x, y))
-    {
-      File f = LittleFS.open(path, "r");
-      if (f)
-      {
-        server.sendHeader("Cache-Control", "public, max-age=604800");
-        server.streamFile(f, "image/png");
-        f.close();
-        return;
-      }
-    }
-  }
-  server.send(404, "text/plain", "Tile not cached");
-}
-
-// HTTP handler: GET /tilecache → JSON cache stats for the UI.
-void handleTileCacheInfo()
-{
-  // Refresh stats if they're stale (>60 s old).
-  if (millis() - g_tileCacheLastScan > 60000)
-  {
-    recountTileCache();
-  }
-  JsonDocument doc;
-  doc["count"]        = g_tileCacheCount;
-  doc["bytes"]        = g_tileCacheBytes;
-  doc["budget_bytes"] = TILE_CACHE_BUDGET_BYTES;
-  doc["pct_used"]     = (g_tileCacheBytes * 100UL) / TILE_CACHE_BUDGET_BYTES;
-  String out;
-  serializeJson(doc, out);
-  server.send(200, "application/json", out);
-}
-
-// HTTP handler: POST /tilecache/clear → wipe all cached tiles.
-// Useful when the cache fills up or to force a refresh of stale tiles.
-void handleTileCacheClear()
-{
-  uint32_t deleted = 0;
-  File dir = LittleFS.open(TILE_CACHE_DIR);
-  if (dir && dir.isDirectory())
-  {
-    // Collect filenames first because deleting while iterating breaks.
-    std::vector<String> victims;
-    File entry = dir.openNextFile();
-    while (entry)
-    {
-      if (!entry.isDirectory())
-      {
-        victims.push_back(String(TILE_CACHE_DIR) + "/" + entry.name());
-      }
-      entry = dir.openNextFile();
-    }
-    for (auto &p : victims)
-    {
-      if (LittleFS.remove(p)) deleted++;
-    }
-  }
-  g_tileCacheCount = 0;
-  g_tileCacheBytes = 0;
-  Serial.printf("[TILES] Cache cleared: deleted %u files\n", deleted);
-  String out = "{\"deleted\":" + String(deleted) + "}";
-  server.send(200, "application/json", out);
-}
-
 // V3.1.2: captive-portal probe responder. Phones poll these well-known
 // URLs to detect whether the WiFi network has internet. If we respond
 // with anything other than the expected "I have internet" payload, the
@@ -1786,17 +1542,9 @@ void handleTileCacheClear()
 // browsers / strict captive-portal clients.
 void handleCaptivePortalRedirect()
 {
-  // V3.2: tile URIs are matched here via prefix because Arduino-ESP32
-  // WebServer doesn't support {z}/{x}/{y} URL templates natively.
-  if (server.uri().startsWith("/tile/"))
-  {
-    handleTileRequest();
-    return;
-  }
-
-  // V3.1.2: captive portal only kicks in in ROAMING mode. In HOME mode,
-  // a 404 stays a genuine 404 because the home network probably has
-  // real internet and the user would be confused by spurious redirects.
+  // V3.1.2: only kick in in ROAMING mode. In HOME mode, a 404 stays a
+  // genuine 404 because the home network probably has real internet
+  // and the user would be confused by spurious redirects.
   if (netModeRaw() != 1 /* not roaming */)
   {
     server.send(404, "text/plain", "Not found");
@@ -3374,18 +3122,6 @@ void setup()
   // Load persisted home location (defaults applied if file missing/invalid)
   loadHomeLocation();
 
-  // V3.2: ensure the tile cache directory exists and pre-count contents.
-  if (!LittleFS.exists(TILE_CACHE_DIR))
-  {
-    LittleFS.mkdir(TILE_CACHE_DIR);
-    Serial.printf("[TILES] Created cache dir %s\n", TILE_CACHE_DIR);
-  }
-  recountTileCache();
-  Serial.printf("[TILES] Cache at boot: %u tiles, %u bytes (%lu%% of %lu budget)\n",
-                g_tileCacheCount, g_tileCacheBytes,
-                (g_tileCacheBytes * 100UL) / TILE_CACHE_BUDGET_BYTES,
-                TILE_CACHE_BUDGET_BYTES);
-
   server.on("/", HTTP_GET, handleRoot);
   server.on("/data", HTTP_GET, handleData);
   server.on("/messages.json", HTTP_GET, handleMessagesExport);
@@ -3396,11 +3132,6 @@ void setup()
   server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
   server.on("/version", HTTP_GET, handleGetVersion);        // Firmware version string
   server.on("/netmode", HTTP_GET, handleGetNetMode);        // V3.1: roaming mode + collar RSSI
-  // V3.2: offline map tile cache. Leaflet hits /tile/{z}/{x}/{y}.png.
-  // Catch-all via uri-pattern matching — WebServer doesn't support globs,
-  // so onNotFound checks the prefix and dispatches.
-  server.on("/tilecache",       HTTP_GET,  handleTileCacheInfo);
-  server.on("/tilecache/clear", HTTP_POST, handleTileCacheClear);
   // V3.1.2: catch-all for captive-portal probe URLs (iOS, Android, Windows
   // all probe specific paths). onNotFound fires for ANY route the regular
   // server.on() handlers don't claim — in ROAMING mode the handler returns

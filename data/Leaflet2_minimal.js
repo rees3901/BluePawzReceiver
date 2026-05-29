@@ -10,18 +10,13 @@ const map = L.map("map", {
   maxZoom: 23,
 });
 
-// V3.2: tile source points at the RECEIVER, not at OSM directly. The
-// receiver acts as a caching proxy:
-//   - HOME mode + internet: serves cached tile, downloads on miss
-//   - ROAMING mode: serves only cached tiles, blank on miss
-// User pans the map at home → tiles get cached → still works in
-// roaming mode without internet.
+// Define multiple map layers
 const osmLayer = L.tileLayer(
-  "/tile/{z}/{x}/{y}.png",
+  "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
   {
-    maxZoom: 18,  // limited by what we want to cache on 2.4 MB
+    maxZoom: 19,
     attribution:
-      'Map &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors (cached on receiver)',
+      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
   }
 ).addTo(map);
 
