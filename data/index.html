@@ -257,6 +257,74 @@
       vertical-align: middle;
       margin-left: 17.5px; /* Keep margin for now */
     }
+    /* V3.1.4: floating command-status panel — bottom-right corner.
+       Shows live state of every in-flight command (one row per command)
+       with a cancel button on cancellable rows. Auto-hides when empty,
+       slides up from the bottom when non-empty. */
+    #commandStatusPanel {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      max-width: 360px;
+      min-width: 260px;
+      max-height: 60vh;
+      overflow-y: auto;
+      background: rgba(20, 20, 20, 0.96);
+      color: #e8e8e8;
+      border: 1px solid #444;
+      border-radius: 10px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+      padding: 10px;
+      z-index: 2000;
+      font-size: 0.85em;
+      display: none;
+    }
+    #commandStatusPanel.has-items { display: block; }
+    body.light-mode #commandStatusPanel {
+      background: rgba(255, 255, 255, 0.97); color: #222; border-color: #ccc;
+    }
+    #commandStatusPanel h4 {
+      margin: 0 0 8px 0; font-size: 0.95em;
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .cmd-item {
+      padding: 6px 8px; margin: 4px 0;
+      border-radius: 6px;
+      background: rgba(255, 255, 255, 0.05);
+      border-left: 3px solid #888;
+      display: flex; align-items: center; gap: 8px;
+    }
+    body.light-mode .cmd-item { background: rgba(0, 0, 0, 0.04); }
+    .cmd-item.s-queued       { border-left-color: #aaa; }
+    .cmd-item.s-sending      { border-left-color: #fc0;  }
+    .cmd-item.s-awaiting_ack { border-left-color: #4a7;  }
+    .cmd-item.s-delivered    { border-left-color: #2c2; background: rgba(34, 204, 34, 0.12); }
+    .cmd-item.s-failed       { border-left-color: #d22; background: rgba(221, 34, 34, 0.12); }
+    .cmd-item.s-cancelled    { border-left-color: #777; opacity: 0.6; }
+    .cmd-target { font-weight: 700; }
+    .cmd-label  { color: #bbb; font-size: 0.85em; }
+    body.light-mode .cmd-label { color: #666; }
+    .cmd-status-pill {
+      margin-left: auto;
+      padding: 2px 8px; border-radius: 10px; font-size: 0.75em; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.5px;
+    }
+    .s-queued       .cmd-status-pill { background: #555; color: #fff; }
+    .s-sending      .cmd-status-pill { background: #fc0; color: #000; }
+    .s-awaiting_ack .cmd-status-pill { background: #4a7; color: #fff; }
+    .s-delivered    .cmd-status-pill { background: #2c2; color: #fff; }
+    .s-failed       .cmd-status-pill { background: #d22; color: #fff; }
+    .s-cancelled    .cmd-status-pill { background: #777; color: #fff; }
+    .cmd-cancel-btn {
+      background: transparent; border: 1px solid currentColor; color: inherit;
+      padding: 1px 8px; border-radius: 10px; font-size: 0.75em; cursor: pointer;
+    }
+    .cmd-cancel-btn:hover { background: rgba(255,255,255,0.1); }
+    .cmd-clear-all {
+      background: transparent; border: 1px solid #888; color: inherit;
+      padding: 1px 8px; border-radius: 10px; font-size: 0.7em; cursor: pointer;
+    }
+
     /* Firmware version badge next to the title. Subtle but visible at a
        glance — handy for confirming an OTA push landed. Populated from
        /version on page load by loadFirmwareVersion(). */
@@ -1496,6 +1564,16 @@ Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
     </h4>
   </div>
   <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</div>
+
+  <!-- V3.1.4: live command status panel. Populated by the WS push-on-status-change
+       handler in the JS below. Auto-hidden when empty. -->
+  <div id="commandStatusPanel">
+    <h4>
+      📡 Commands
+      <button class="cmd-clear-all" onclick="clearAllCommands()" title="Cancel all pending commands">Clear pending</button>
+    </h4>
+    <div id="commandStatusList"></div>
+  </div>
   
   <!-- Marker Cards Control -->
   <div style="text-align: center; margin: 10px;">
@@ -2202,6 +2280,116 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       document.querySelector('.side-menu').classList.remove('active');
       document.querySelector('.menu-overlay').classList.remove('active');
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // V3.1.4: COMMAND STATUS PANEL
+    // ═══════════════════════════════════════════════════════════
+    // Keeps an in-memory map of every command we know about (keyed by
+    // msg_id). Updated by:
+    //   - GET /commands on page load (initial population)
+    //   - WS 'command_status' messages (live updates after that)
+    // Renders the floating panel in the bottom-right corner.
+    const commandsByMsgId = new Map();
+
+    function renderCommandPanel() {
+      const list = document.getElementById('commandStatusList');
+      const panel = document.getElementById('commandStatusPanel');
+      if (!list || !panel) return;
+      const items = Array.from(commandsByMsgId.values())
+        .sort((a, b) => a.msg_id - b.msg_id);
+      if (items.length === 0) {
+        panel.classList.remove('has-items');
+        list.innerHTML = '';
+        return;
+      }
+      panel.classList.add('has-items');
+      list.innerHTML = items.map(c => {
+        const cancellable = (c.status === 'queued' || c.status === 'awaiting_ack' || c.status === 'sending');
+        const cancelBtn = cancellable
+          ? `<button class="cmd-cancel-btn" onclick="cancelCommand(${c.msg_id})">Cancel</button>`
+          : '';
+        const statusLabel = c.status === 'awaiting_ack' ? 'waiting' : c.status;
+        return `
+          <div class="cmd-item s-${c.status}">
+            <span class="cmd-target">${c.device}</span>
+            <span class="cmd-label">${c.label || ''}</span>
+            <span class="cmd-status-pill">${statusLabel}</span>
+            ${cancelBtn}
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Apply a command_status WS message OR a /commands GET item.
+    function applyCommandUpdate(c) {
+      // Status transitions: keep the latest. Don't downgrade.
+      commandsByMsgId.set(c.msg_id, c);
+      renderCommandPanel();
+      // Auto-remove DELIVERED entries after 5s for a tidy UI (the
+      // server lingers them for 10s; we hide them sooner on the client).
+      if (c.status === 'delivered') {
+        setTimeout(() => {
+          const cur = commandsByMsgId.get(c.msg_id);
+          if (cur && cur.status === 'delivered') {
+            commandsByMsgId.delete(c.msg_id);
+            renderCommandPanel();
+          }
+        }, 5000);
+      }
+      // FAILED / CANCELLED entries fade after 30s
+      if (c.status === 'failed' || c.status === 'cancelled') {
+        setTimeout(() => {
+          const cur = commandsByMsgId.get(c.msg_id);
+          if (cur && (cur.status === 'failed' || cur.status === 'cancelled')) {
+            commandsByMsgId.delete(c.msg_id);
+            renderCommandPanel();
+          }
+        }, 30000);
+      }
+    }
+
+    async function refreshCommandList() {
+      try {
+        const r = await fetch('/commands');
+        if (!r.ok) return;
+        const arr = await r.json();
+        // Replace local state with server truth
+        commandsByMsgId.clear();
+        for (const c of arr) commandsByMsgId.set(c.msg_id, c);
+        renderCommandPanel();
+      } catch (e) { /* ignore — WS will fill in */ }
+    }
+
+    async function cancelCommand(msgId) {
+      try {
+        const r = await fetch('/command?msg_id=' + encodeURIComponent(msgId), { method: 'DELETE' });
+        const d = await r.json().catch(() => ({}));
+        if (!d.cancelled) {
+          console.warn('Cancel rejected:', d);
+        }
+        // Status update will land via WS — no need to refresh here
+      } catch (e) { console.error('Cancel error:', e); }
+    }
+
+    async function clearAllCommands() {
+      if (!confirm('Cancel all pending commands?')) return;
+      try {
+        const r = await fetch('/commands/clear', { method: 'POST' });
+        const d = await r.json();
+        console.log('Cleared', d.cancelled, 'commands');
+      } catch (e) { console.error('Clear error:', e); }
+    }
+
+    // Expose so the WS handler in Leaflet2_minimal.js (in another file)
+    // can dispatch incoming command_status messages here.
+    window.applyCommandUpdate = applyCommandUpdate;
+
+    // Initial fetch on load + periodic safety-net refresh every 15s
+    // (covers the case where a WS message was missed due to a reconnect).
+    document.addEventListener('DOMContentLoaded', () => {
+      refreshCommandList();
+      setInterval(refreshCommandList, 15000);
+    });
 
     // ═══════════════════════════════════════════════════════════
     // DARK / LIGHT MODE (V3)

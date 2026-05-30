@@ -538,6 +538,14 @@ function connectWebSocket() {
         return;
       }
 
+      // V3.1.4: command status updates pushed every time a queued command
+      // changes state on the receiver. The handler is defined in
+      // index.html's inline JS — we just dispatch.
+      if (data.type === "command_status" && window.applyCommandUpdate) {
+        window.applyCommandUpdate(data);
+        return;
+      }
+
       // Handle node state updates (Command & Control)
       if (data.type === "node_states" || data.type === "node_alert") {
         if (window.handleNodeStateUpdate) {

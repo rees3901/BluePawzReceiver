@@ -684,20 +684,75 @@ std::map<String, NodeState> nodeStates; // Track state of each TX node
 // ───────────── LoRa Command Queue ─────────────
 // V3 rollout: stays on JSON. Buffer sized for JSON command payloads.
 // (Binary TLV path preserved on the `wip/binary-migration` branch.)
+//
+// V3.1.4: command lifecycle states. Every command moves through this
+// machine from enqueue to terminal (DELIVERED / FAILED / CANCELLED).
+// The UI subscribes to status changes via WebSocket so users can see
+// exactly where their command is — no more 'I clicked send, did it work?'
+//
+//   QUEUED        sitting in the queue, not transmitted yet
+//   SENDING       lora.transmit() in progress (very brief, ~300 ms)
+//   AWAITING_ACK  TX succeeded on the air, waiting for collar's ACK
+//   DELIVERED     ACK matched by msg_id — terminal, cleaned up after 10s
+//   FAILED        too many failed TX attempts — terminal, cleaned up 60s
+//   CANCELLED     user cancelled via DELETE /command/{msg_id}
+//
+// Note: SENDING is a transient state we mostly don't observe externally
+// because transmitCommand() is synchronous and completes within one
+// loop() pass. It's still in the enum so the WS clients see the full
+// sequence (QUEUED → SENDING → AWAITING_ACK → DELIVERED) in their logs.
+enum CommandStatus : uint8_t
+{
+  CMD_QUEUED       = 0,
+  CMD_SENDING      = 1,
+  CMD_AWAITING_ACK = 2,
+  CMD_DELIVERED    = 3,
+  CMD_FAILED       = 4,
+  CMD_CANCELLED    = 5,
+};
+
+// String form of a status, used in JSON responses + WS messages.
+static const char *commandStatusName(CommandStatus s)
+{
+  switch (s)
+  {
+    case CMD_QUEUED:       return "queued";
+    case CMD_SENDING:      return "sending";
+    case CMD_AWAITING_ACK: return "awaiting_ack";
+    case CMD_DELIVERED:    return "delivered";
+    case CMD_FAILED:       return "failed";
+    case CMD_CANCELLED:    return "cancelled";
+  }
+  return "unknown";
+}
+
 struct LoRaCommand
 {
-  uint8_t buf[256];                // JSON command buffer (was BP_MAX_PACKET_SIZE for binary)
+  uint8_t buf[256];                // JSON command buffer
   uint8_t len;                     // Packet length (JSON byte count, no null terminator)
   uint16_t targetDeviceId;         // Target device numeric ID (kept for logging; broadcast = 0xFFFF)
   String targetDevice;             // Device name (collar) or "broadcast"
-  uint32_t timestamp;              // When command was queued
-  uint32_t messageId;              // Unique message ID for tracking ACKs
+  uint32_t timestamp;              // When command was queued (millis)
+  uint32_t messageId;              // Unique message ID, echoed in the collar's ACK
+
+  // V3.1.4 status-machine fields
+  CommandStatus status;            // current state in the lifecycle
+  uint32_t      statusChangedMs;   // millis() of last status transition
+  uint8_t       txAttempts;        // how many times we've called lora.transmit()
+  String        cmdLabel;          // human-readable summary for the UI ("mode→lost")
 };
 
 std::vector<LoRaCommand> commandQueue;
 unsigned long lastCommandTxTime = 0;
 const unsigned long COMMAND_TX_INTERVAL = 3000; // 3 seconds between command transmissions
 uint32_t nextMessageId = 1;                     // Global message ID counter
+
+// V3.1.4: max TX attempts before marking a command FAILED. The
+// opportunistic-on-telemetry path means we typically only need 1
+// attempt; this caps the safety-net path's retry storm.
+#define COMMAND_MAX_TX_ATTEMPTS  6
+#define COMMAND_DELIVERED_LINGER_MS  10000UL   // keep DELIVERED visible for 10 s
+#define COMMAND_FAILED_LINGER_MS     60000UL   // keep FAILED visible for 60 s
 
 // Function declarations
 void notifyClients();
@@ -734,6 +789,9 @@ void processCommandQueue();
 void sendModeCommand(const String &deviceId, const String &profile);
 void sendStatusRequest(const String &deviceId);
 void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
+// V3.1.4: forward-decl so handleLoRaPacketJSON (defined earlier in file)
+// can call the command-status helpers defined after the transmit code.
+static bool markCommandDelivered(const String &device, uint32_t ackMsgId);
 void handleNodeResponse(const JsonDocument &doc);
 void handleNodeStates();    // HTTP handler for /node-states
 void handleSendCommand();   // HTTP handler for /send-command
@@ -1078,6 +1136,18 @@ void updateNodeState(const JsonDocument &doc)
                     deviceId.c_str());
     }
 
+    // V3.1.4: mark the matching queued command DELIVERED. The status
+    // machine takes care of the WS push so the web UI updates live.
+    if (markCommandDelivered(deviceId, msgId))
+    {
+      Serial.printf("[ACK] matched + marked DELIVERED (msg_id=%lu)\n", msgId);
+    }
+    else
+    {
+      Serial.printf("[ACK] WARNING: no matching queued command for msg_id=%lu device=%s\n",
+                    msgId, deviceId.c_str());
+    }
+
     // Handle mode ACK: extract profile, power, sleep
     if (ackType == "mode")
     {
@@ -1173,81 +1243,181 @@ void updateNodeState(const JsonDocument &doc)
   }
 }
 
-// Transmit a single LoRaCommand right now and log success/failure.
-// Bypasses queue lookup — caller is responsible for picking the cmd.
-static void transmitCommand(const LoRaCommand &cmd)
+// V3.1.4: forward-decl the WS push helper. Defined later near the other
+// WS senders.
+void pushCommandStatusWS(const LoRaCommand &cmd);
+
+// V3.1.4: status-transition helper. Centralised so every state change
+// timestamps + logs + pushes a WS notification consistently.
+static void setCmdStatus(LoRaCommand &cmd, CommandStatus newStatus)
 {
-  Serial.printf("[LoRa] Transmitting JSON command to %s (msg_id=%lu, %d bytes): %.*s\n",
-                cmd.targetDevice.c_str(), cmd.messageId, cmd.len,
+  if (cmd.status == newStatus) return;
+  Serial.printf("[CMD] %lu %s → %s\n", cmd.messageId,
+                commandStatusName(cmd.status), commandStatusName(newStatus));
+  cmd.status = newStatus;
+  cmd.statusChangedMs = millis();
+  pushCommandStatusWS(cmd);
+}
+
+// V3.1.4: actually transmit a queued command's payload. Mutates the
+// command (status SENDING → AWAITING_ACK on success, stays QUEUED on
+// failure with retry count bumped, → FAILED if retries exhausted).
+// Does NOT remove from the queue — that's done lazily by the cleanup
+// pass once the command reaches a terminal state + linger time expires.
+static void transmitCommandAt(size_t idx)
+{
+  if (idx >= commandQueue.size()) return;
+  LoRaCommand &cmd = commandQueue[idx];
+
+  setCmdStatus(cmd, CMD_SENDING);
+  cmd.txAttempts++;
+
+  Serial.printf("[LoRa] TX msg_id=%lu attempt=%u target=%s bytes=%u: %.*s\n",
+                cmd.messageId, cmd.txAttempts,
+                cmd.targetDevice.c_str(), cmd.len,
                 cmd.len, (const char *)cmd.buf);
 
   lora.standby();
   int state = lora.transmit(cmd.buf, cmd.len);
+  lora.startReceive();
+  lastCommandTxTime = millis();
 
   if (state == RADIOLIB_ERR_NONE)
   {
-    Serial.printf("[LoRa] Command transmitted successfully (msg_id=%lu)\n", cmd.messageId);
+    Serial.printf("[LoRa] TX OK msg_id=%lu\n", cmd.messageId);
     LED_flicker();
 
     JsonDocument logDoc;
-    logDoc["event"] = "command_sent";
+    logDoc["event"]  = "command_sent";
     logDoc["target"] = cmd.targetDevice;
     logDoc["msg_id"] = cmd.messageId;
-    logDoc["bytes"] = cmd.len;
+    logDoc["bytes"]  = cmd.len;
     logMessage(logDoc, "event");
+
+    setCmdStatus(cmd, CMD_AWAITING_ACK);
   }
   else
   {
-    Serial.printf("[LoRa] Command transmission failed: %d (msg_id=%lu)\n",
-                  state, cmd.messageId);
+    Serial.printf("[LoRa] TX FAIL msg_id=%lu err=%d (attempt %u/%u)\n",
+                  cmd.messageId, state, cmd.txAttempts, COMMAND_MAX_TX_ATTEMPTS);
 
     JsonDocument logDoc;
-    logDoc["event"] = "command_failed";
-    logDoc["target"] = cmd.targetDevice;
-    logDoc["msg_id"] = cmd.messageId;
+    logDoc["event"]      = "command_tx_failed";
+    logDoc["target"]     = cmd.targetDevice;
+    logDoc["msg_id"]     = cmd.messageId;
     logDoc["error_code"] = state;
+    logDoc["attempt"]    = cmd.txAttempts;
     logMessage(logDoc, "event");
-  }
 
-  lora.startReceive();
-  lastCommandTxTime = millis();
+    if (cmd.txAttempts >= COMMAND_MAX_TX_ATTEMPTS)
+    {
+      setCmdStatus(cmd, CMD_FAILED);
+    }
+    else
+    {
+      // Stay QUEUED so the safety-net pass + opportunistic pass try again.
+      setCmdStatus(cmd, CMD_QUEUED);
+    }
+  }
 }
 
-// V3: opportunistic command send. Called the moment a telemetry packet arrives
-// from a collar — we KNOW the collar is in its post-TX RX window, so anything
-// queued for it goes out immediately. Sends at most ONE command per call to
-// keep airtime fair; a burst is delivered across the next 3s extension window
-// on the collar side via subsequent calls (or via processCommandQueue's normal
-// path). Returns true if a command was transmitted.
-//
-// Bypasses the COMMAND_TX_INTERVAL gate because the timing case is the one
-// we genuinely want — the collar is awake right now.
+// V3.1.4: opportunistic send. Called the moment a telemetry packet
+// arrives — we know the collar is in its post-TX RX window. Bypasses
+// the rate gate; finds the FIRST queued command targeted at this collar
+// (or "broadcast") and transmits it. Mutates status in-place.
 static bool transmitCommandForDevice(const String &reportingDevice)
 {
-  if (commandQueue.empty()) return false;
-
-  // Find first queued command targeted to this device (or "broadcast")
-  for (auto it = commandQueue.begin(); it != commandQueue.end(); ++it)
+  for (size_t i = 0; i < commandQueue.size(); i++)
   {
-    if (it->targetDevice == reportingDevice || it->targetDevice == "broadcast")
+    LoRaCommand &c = commandQueue[i];
+    if (c.status != CMD_QUEUED) continue;
+    if (c.targetDevice == reportingDevice || c.targetDevice == "broadcast")
     {
-      LoRaCommand cmd = *it;
-      commandQueue.erase(it);
-      Serial.printf("[LoRa] Opportunistic send: %s reported in, dispatching queued cmd msg_id=%lu\n",
-                    reportingDevice.c_str(), cmd.messageId);
-      transmitCommand(cmd);
+      Serial.printf("[LoRa] Opportunistic send for %s: dispatching msg_id=%lu\n",
+                    reportingDevice.c_str(), c.messageId);
+      transmitCommandAt(i);
       return true;
     }
   }
   return false;
 }
 
-// Process command queue and transmit via LoRa (JSON protocol).
-// Safety-net path: handles broadcasts and acts as retry for any command
-// that wasn't dispatched opportunistically (e.g. collar hasn't reported yet).
+// V3.1.4: mark a queued/awaiting command as DELIVERED based on the
+// ACK msg_id echoed back by the collar. Called from handleLoRaPacketJSON
+// when a JSON ACK arrives. msg_id == 0 means "no msg_id in the ACK",
+// in which case we fall back to the oldest AWAITING_ACK command for
+// the same device (best-effort, for legacy ACKs that don't echo msg_id).
+static bool markCommandDelivered(const String &device, uint32_t ackMsgId)
+{
+  // Exact match by msg_id is the gold standard.
+  if (ackMsgId != 0)
+  {
+    for (auto &c : commandQueue)
+    {
+      if (c.messageId == ackMsgId &&
+          (c.status == CMD_AWAITING_ACK || c.status == CMD_SENDING || c.status == CMD_QUEUED))
+      {
+        setCmdStatus(c, CMD_DELIVERED);
+        return true;
+      }
+    }
+  }
+  // Fallback: oldest awaiting-ack for the same device.
+  for (auto &c : commandQueue)
+  {
+    if (c.targetDevice == device && c.status == CMD_AWAITING_ACK)
+    {
+      setCmdStatus(c, CMD_DELIVERED);
+      return true;
+    }
+  }
+  return false;
+}
+
+// V3.1.4: lazy cleanup of terminal-state commands. Called from
+// processCommandQueue() each pass. Keeps DELIVERED/FAILED visible
+// to the UI for a brief linger period, then erases.
+static void reapTerminalCommands()
+{
+  uint32_t now = millis();
+  for (auto it = commandQueue.begin(); it != commandQueue.end(); )
+  {
+    uint32_t age = now - it->statusChangedMs;
+    bool reap = false;
+    if (it->status == CMD_DELIVERED && age > COMMAND_DELIVERED_LINGER_MS) reap = true;
+    if (it->status == CMD_FAILED    && age > COMMAND_FAILED_LINGER_MS)    reap = true;
+    if (it->status == CMD_CANCELLED)                                       reap = true;
+    if (reap)
+    {
+      Serial.printf("[CMD] reap msg_id=%lu (%s, age %lu ms)\n",
+                    it->messageId, commandStatusName(it->status), (unsigned long)age);
+      it = commandQueue.erase(it);
+    }
+    else
+    {
+      ++it;
+    }
+  }
+}
+
+// V3.1.4: process command queue and reap terminals. Called from loop().
+//
+// Two responsibilities:
+//   1. Reap terminal-state commands once their linger period expires
+//      (DELIVERED 10 s, FAILED 60 s, CANCELLED immediate)
+//   2. Safety-net retry: for any still-QUEUED command, try TX once per
+//      COMMAND_TX_INTERVAL. The opportunistic-on-telemetry path handles
+//      the happy case; this catches commands sent before the next
+//      check-in (e.g. user clicks Send right after the collar slept).
+//
+// Walks the queue front-to-back; sends the FIRST eligible QUEUED command
+// per pass to keep airtime fair.
 void processCommandQueue()
 {
-  // Rate limit command transmission (safety-net retry path)
+  // Step 1: reap terminals (cheap; no radio touch).
+  reapTerminalCommands();
+
+  // Step 2: rate-gated safety-net retry
   if (millis() - lastCommandTxTime < COMMAND_TX_INTERVAL)
   {
     return;
@@ -1258,9 +1428,43 @@ void processCommandQueue()
     return;
   }
 
-  LoRaCommand cmd = commandQueue.front();
-  commandQueue.erase(commandQueue.begin());
-  transmitCommand(cmd);
+  // Find the first QUEUED command (skip ones already AWAITING_ACK or
+  // in a terminal state waiting for cleanup). Send that one.
+  for (size_t i = 0; i < commandQueue.size(); i++)
+  {
+    if (commandQueue[i].status == CMD_QUEUED)
+    {
+      transmitCommandAt(i);
+      return;
+    }
+  }
+}
+
+// V3.1.4: enqueue a built LoRaCommand and immediately attempt one TX.
+// Used by sendModeCommand / sendStatusRequest / sendRenameCommand so
+// the user's click translates to a radio transmission within ~50 ms
+// (not whenever the next 3 s rate-gate window opens).
+//
+// If the immediate TX fails (LBT collision, channel busy, etc.), the
+// command stays QUEUED in the list and the safety-net + opportunistic
+// passes will retry it. Eventually it lands or hits FAILED after
+// COMMAND_MAX_TX_ATTEMPTS attempts.
+static void enqueueAndSendNow(LoRaCommand &cmd, const String &humanLabel)
+{
+  cmd.status          = CMD_QUEUED;
+  cmd.statusChangedMs = millis();
+  cmd.txAttempts      = 0;
+  cmd.cmdLabel        = humanLabel;
+
+  commandQueue.push_back(cmd);
+  pushCommandStatusWS(commandQueue.back());
+
+  // Try transmitting immediately. This bypasses the rate gate because
+  // we WANT the first attempt to be 'now', not 'next 3 s window'.
+  // The collar might or might not be awake — that's fine, retries
+  // handle the sleep case.
+  size_t idx = commandQueue.size() - 1;
+  transmitCommandAt(idx);
 }
 
 // Send mode change command to a specific node (JSON protocol for V3 rollout)
@@ -1308,10 +1512,10 @@ void sendModeCommand(const String &deviceId, const String &profile)
   size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
   cmd.len = (uint8_t)written;
 
-  commandQueue.push_back(cmd);
-
+  String label = "mode→" + profile;
   Serial.printf("[CMD] Mode change queued: %s -> %s (%u bytes JSON)\n",
                 deviceId.c_str(), profile.c_str(), (unsigned)written);
+  enqueueAndSendNow(cmd, label);
 }
 
 // Send status request to a specific node (JSON protocol for V3 rollout)
@@ -1349,10 +1553,9 @@ void sendStatusRequest(const String &deviceId)
   size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
   cmd.len = (uint8_t)written;
 
-  commandQueue.push_back(cmd);
-
   Serial.printf("[CMD] Status request queued for: %s (%u bytes JSON)\n",
                 deviceId.c_str(), (unsigned)written);
+  enqueueAndSendNow(cmd, "get_status");
 }
 
 // V3: rename a collar (set_name). Targets by numeric device_id because the
@@ -1403,10 +1606,10 @@ void sendRenameCommand(uint16_t deviceIdNum, const String &newName)
   size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
   cmd.len = (uint8_t)written;
 
-  commandQueue.push_back(cmd);
-
+  String label = "rename→" + newName;
   Serial.printf("[CMD] Rename queued: device_id=%u -> '%s' (%u bytes JSON)\n",
                 deviceIdNum, newName.c_str(), (unsigned)written);
+  enqueueAndSendNow(cmd, label);
 }
 
 // HTTP handler: Get node states as JSON
@@ -2862,6 +3065,104 @@ void disableBLE()
   }
 }
 
+// V3.1.4: WebSocket push for command status updates. Called from
+// setCmdStatus() every time a queued/sent command transitions state.
+// The web UI listens for type:'command_status' messages and updates
+// its per-command status badge live.
+void pushCommandStatusWS(const LoRaCommand &cmd)
+{
+  JsonDocument doc;
+  doc["type"]      = "command_status";
+  doc["msg_id"]    = cmd.messageId;
+  doc["device"]    = cmd.targetDevice;
+  doc["status"]    = commandStatusName(cmd.status);
+  doc["label"]     = cmd.cmdLabel;
+  doc["attempts"]  = cmd.txAttempts;
+  doc["age_ms"]    = (uint32_t)(millis() - cmd.timestamp);
+  String out;
+  serializeJson(doc, out);
+  webSocket.broadcastTXT(out);
+}
+
+// HTTP handler: GET /commands → list every command currently in the
+// queue (including recently-DELIVERED/FAILED ones during their linger
+// period). The web UI polls this on load + uses WS push for updates.
+void handleGetCommands()
+{
+  JsonDocument doc;
+  JsonArray arr = doc.to<JsonArray>();
+  uint32_t now = millis();
+  for (auto &c : commandQueue)
+  {
+    JsonObject o = arr.add<JsonObject>();
+    o["msg_id"]     = c.messageId;
+    o["device"]     = c.targetDevice;
+    o["device_id"]  = c.targetDeviceId;
+    o["status"]     = commandStatusName(c.status);
+    o["label"]      = c.cmdLabel;
+    o["attempts"]   = c.txAttempts;
+    o["age_ms"]     = (uint32_t)(now - c.timestamp);
+  }
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
+}
+
+// HTTP handler: DELETE /command — cancel a queued command. Takes the
+// msg_id as a query argument (?msg_id=N). Only cancels commands that
+// are still QUEUED or AWAITING_ACK; terminal states are no-op.
+void handleCancelCommand()
+{
+  if (!server.hasArg("msg_id"))
+  {
+    server.send(400, "text/plain", "Missing msg_id");
+    return;
+  }
+  uint32_t msgId = (uint32_t)server.arg("msg_id").toInt();
+  for (auto &c : commandQueue)
+  {
+    if (c.messageId == msgId)
+    {
+      if (c.status == CMD_QUEUED || c.status == CMD_AWAITING_ACK || c.status == CMD_SENDING)
+      {
+        Serial.printf("[CMD] User cancelled msg_id=%lu\n", msgId);
+        setCmdStatus(c, CMD_CANCELLED);
+        server.send(200, "application/json",
+                    "{\"cancelled\":true,\"msg_id\":" + String(msgId) + "}");
+        return;
+      }
+      else
+      {
+        server.send(409, "application/json",
+                    "{\"cancelled\":false,\"reason\":\"already terminal\",\"status\":\"" +
+                    String(commandStatusName(c.status)) + "\"}");
+        return;
+      }
+    }
+  }
+  server.send(404, "application/json",
+              "{\"cancelled\":false,\"reason\":\"not found\"}");
+}
+
+// HTTP handler: POST /commands/clear — drop every QUEUED / AWAITING_ACK
+// command currently pending. DELIVERED/FAILED entries are left to linger
+// out naturally so the UI history isn't wiped from underneath them.
+void handleClearCommands()
+{
+  uint32_t cancelled = 0;
+  for (auto &c : commandQueue)
+  {
+    if (c.status == CMD_QUEUED || c.status == CMD_AWAITING_ACK || c.status == CMD_SENDING)
+    {
+      setCmdStatus(c, CMD_CANCELLED);
+      cancelled++;
+    }
+  }
+  Serial.printf("[CMD] User clear queue: %u commands cancelled\n", cancelled);
+  String out = "{\"cancelled\":" + String(cancelled) + "}";
+  server.send(200, "application/json", out);
+}
+
 // Broadcast or unicast current BLE state over WebSocket
 void sendBleStateWS(uint8_t clientId)
 {
@@ -3132,6 +3433,10 @@ void setup()
   server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
   server.on("/version", HTTP_GET, handleGetVersion);        // Firmware version string
   server.on("/netmode", HTTP_GET, handleGetNetMode);        // V3.1: roaming mode + collar RSSI
+  // V3.1.4: per-command status tracking
+  server.on("/commands",       HTTP_GET,    handleGetCommands);    // list all
+  server.on("/command",        HTTP_DELETE, handleCancelCommand);  // ?msg_id=N
+  server.on("/commands/clear", HTTP_POST,   handleClearCommands);  // wipe pending
   // V3.1.2: catch-all for captive-portal probe URLs (iOS, Android, Windows
   // all probe specific paths). onNotFound fires for ANY route the regular
   // server.on() handlers don't claim — in ROAMING mode the handler returns
