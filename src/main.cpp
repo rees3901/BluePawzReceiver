@@ -1214,6 +1214,18 @@ void updateNodeState(const JsonDocument &doc)
                   deviceId.c_str(), state.currentMode.c_str(),
                   state.txPower, state.sleepInterval);
 
+    // V3.2.3: status responses are ACKs to get_status commands but don't
+    // carry the "ack" field, so the ACK branch above doesn't fire. The
+    // collar echoes the request's msg_id under req_msg_id (NOT msg_id,
+    // because that key is reserved for the collar's outbound counter).
+    // Without this, status requests hung in AWAITING_ACK forever.
+    uint32_t reqId = 0;
+    if (doc["req_msg_id"].is<uint32_t>()) reqId = doc["req_msg_id"].as<uint32_t>();
+    if (markCommandDelivered(deviceId, reqId))
+    {
+      Serial.printf("[ACK] status response paired to queued command (req_msg_id=%lu)\n", reqId);
+    }
+
     // Broadcast state update via WebSocket
     broadcastNodeStates();
   }
@@ -1269,6 +1281,19 @@ static void transmitCommandAt(size_t idx)
   if (idx >= commandQueue.size()) return;
   LoRaCommand &cmd = commandQueue[idx];
 
+  // V3.2.3: cap retries BEFORE we transmit, not only on radio-level
+  // failure. Previously txAttempts was only checked after a TX error;
+  // an AWAITING_ACK that the collar never ACKed could be retried by
+  // the opportunistic path indefinitely. Now we mark FAILED here if
+  // we've already burned through every attempt.
+  if (cmd.txAttempts >= COMMAND_MAX_TX_ATTEMPTS)
+  {
+    Serial.printf("[CMD] msg_id=%lu retry cap reached (%u/%u) — marking FAILED\n",
+                  cmd.messageId, cmd.txAttempts, COMMAND_MAX_TX_ATTEMPTS);
+    setCmdStatus(cmd, CMD_FAILED);
+    return;
+  }
+
   setCmdStatus(cmd, CMD_SENDING);
   cmd.txAttempts++;
 
@@ -1323,18 +1348,30 @@ static void transmitCommandAt(size_t idx)
 
 // V3.1.4: opportunistic send. Called the moment a telemetry packet
 // arrives — we know the collar is in its post-TX RX window. Bypasses
-// the rate gate; finds the FIRST queued command targeted at this collar
-// (or "broadcast") and transmits it. Mutates status in-place.
+// the rate gate; finds the FIRST eligible command targeted at this
+// collar (or "broadcast") and transmits it. Mutates status in-place.
+//
+// V3.2.3: includes AWAITING_ACK commands, not just QUEUED. ROOT CAUSE
+// of the "command hangs on waiting forever" bug — the first TX fires
+// the instant the user clicks (from enqueueAndSendNow), but the collar
+// is asleep, so the bytes go nowhere. The radio call returns success
+// regardless, so status jumps to AWAITING_ACK. Without retransmitting
+// on the next telemetry arrival (which is the actual moment the collar
+// is in RX), every command except "user clicked while collar happened
+// to be awake" would sit forever in AWAITING_ACK. We retransmit
+// AWAITING_ACK opportunistically; transmitCommandAt() caps total
+// attempts so a permanently-deaf collar still resolves to FAILED.
 static bool transmitCommandForDevice(const String &reportingDevice)
 {
   for (size_t i = 0; i < commandQueue.size(); i++)
   {
     LoRaCommand &c = commandQueue[i];
-    if (c.status != CMD_QUEUED) continue;
+    if (c.status != CMD_QUEUED && c.status != CMD_AWAITING_ACK) continue;
     if (c.targetDevice == reportingDevice || c.targetDevice == "broadcast")
     {
-      Serial.printf("[LoRa] Opportunistic send for %s: dispatching msg_id=%lu\n",
-                    reportingDevice.c_str(), c.messageId);
+      Serial.printf("[LoRa] Opportunistic send for %s: dispatching msg_id=%lu (state=%s, attempt=%u)\n",
+                    reportingDevice.c_str(), c.messageId,
+                    commandStatusName(c.status), c.txAttempts);
       transmitCommandAt(i);
       return true;
     }

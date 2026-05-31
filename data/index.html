@@ -2924,54 +2924,10 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
                   ${node.sleep > 0 ? `<span>| ${Math.floor(node.sleep / 60)}m sleep</span>` : ''}
                 </div>
                 ${warningText}
+                <!-- V3.2.3: controls now rendered by window.buildRemoteControlsHTML
+                     so the marker-tile card stays byte-identical with this panel. -->
                 <div class="node-controls">
-                  <select class="node-mode-select" id="mode-select-${node.device}" title="Operating Mode
-Normal: Balanced (5min, 19dBm)
-Active: Frequent updates (1min, 19dBm)
-Powersave: Battery saving (20min, 10dBm)
-Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
-                    <option value="normal" ${node.mode === 'normal' ? 'selected' : ''}>Normal</option>
-                    <option value="active" ${node.mode === 'active' ? 'selected' : ''}>Active</option>
-                    <option value="powersave" ${node.mode === 'powersave' ? 'selected' : ''}>Powersave</option>
-                    <option value="lost" ${node.mode === 'lost' ? 'selected' : ''}>Lost</option>
-                  </select>
-                  <button class="node-btn node-btn-apply"
-                          onclick="sendModeChange('${node.device}')"
-                          id="apply-btn-${node.device}"
-                          ${commandPending[node.device] ? 'disabled' : ''}
-                          title="Apply Mode Change
-Sends command to tracker via LoRa
-Wait for acknowledgment (⏳ shows pending)">
-                    ${commandPending[node.device] ? '⏳' : '✓ Apply'}
-                  </button>
-                  <!-- V3.1.5: per-card Cancel button. Cancels any pending
-                       commands targeted at this specific collar. Greys out
-                       when nothing is pending for this device. -->
-                  <button class="node-btn node-btn-cancel"
-                          onclick="cancelPendingForDevice('${node.device}')"
-                          id="cancel-btn-${node.device}"
-                          title="Cancel pending commands for this collar
-Cancels every queued/in-flight command targeting this device.
-Greyed out when nothing's pending.">
-                    ✗ Cancel
-                  </button>
-                  <button class="node-btn node-btn-status"
-                          onclick="requestNodeStatus('${node.device}')"
-                          ${commandPending[node.device] ? 'disabled' : ''}
-                          title="Query Status
-Requests battery level, GPS lock, and uptime
-Response updates the info display above">
-                    🔄
-                  </button>
-                  <button class="node-btn node-btn-rename"
-                          onclick="renameCollar(${node.device_id || 0}, '${(node.device || '').replace(/'/g, "\\'")}')"
-                          ${(node.device_id ? '' : 'disabled')}
-                          title="Rename Collar
-Sets a new friendly name for this collar.
-Targets the immutable numeric device_id, so it works even
-if the current name is just the default Device-N.">
-                    ✏️
-                  </button>
+                  ${window.buildRemoteControlsHTML(node, '')}
                 </div>
               </div>
             `;
@@ -2995,6 +2951,68 @@ if the current name is just the default Device-N.">
       return `${hours}h ${mins}m ago`;
     }
     
+    // V3.2.3: shared renderer for the per-collar Remote Controls block.
+    // Used by BOTH the C&C panel (prefix='') and the marker-tile card
+    // (prefix='card-'). Single source of truth keeps the two surfaces
+    // identical and directly mirrored — same options, same buttons,
+    // same disabled-while-pending behaviour, same confirm dialog (the
+    // lost-mode confirm lives in sendModeChange itself, shared by both).
+    window.buildRemoteControlsHTML = function (node, prefix) {
+      prefix = prefix || '';
+      const dev = node.device;
+      const devEsc = String(dev).replace(/'/g, "\\'");
+      const cur = node.mode_known ? node.mode : '';
+      const isPending = !!window.commandPending && !!window.commandPending[dev];
+      const devIdNum = node.device_id || 0;
+      const opts = ['normal', 'active', 'powersave', 'lost']
+        .map(m => `<option value="${m}" ${cur === m ? 'selected' : ''}>${m.charAt(0).toUpperCase() + m.slice(1)}</option>`)
+        .join('');
+      return `
+        <select class="node-mode-select" id="${prefix}mode-select-${dev}" title="Operating Mode
+Normal: Balanced (5min, 19dBm)
+Active: Frequent updates (1min, 19dBm)
+Powersave: Battery saving (20min, 10dBm)
+Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
+          ${opts}
+        </select>
+        <button class="node-btn node-btn-apply"
+                onclick="window.sendModeChange('${devEsc}')"
+                id="${prefix}apply-btn-${dev}"
+                ${isPending ? 'disabled' : ''}
+                title="Apply Mode Change&#10;Sends command to tracker via LoRa&#10;Wait for acknowledgment (⏳ shows pending)">
+          ${isPending ? '⏳' : '✓ Apply'}
+        </button>
+        <button class="node-btn node-btn-cancel"
+                onclick="window.cancelPendingForDevice('${devEsc}')"
+                id="${prefix}cancel-btn-${dev}"
+                title="Cancel pending commands for this collar&#10;Cancels every queued/in-flight command targeting this device.&#10;Greyed out when nothing's pending.">
+          ✗ Cancel
+        </button>
+        <button class="node-btn node-btn-status"
+                onclick="window.requestNodeStatus('${devEsc}')"
+                id="${prefix}status-btn-${dev}"
+                ${isPending ? 'disabled' : ''}
+                title="Query Status&#10;Requests battery level, GPS lock, and uptime&#10;Response updates the info display above">
+          🔄
+        </button>
+        <button class="node-btn node-btn-rename"
+                onclick="window.renameCollar(${devIdNum}, '${devEsc}')"
+                id="${prefix}rename-btn-${dev}"
+                ${devIdNum ? '' : 'disabled'}
+                title="Rename Collar&#10;Sets a new friendly name for this collar.&#10;Targets the immutable numeric device_id, so it works even&#10;if the current name is just the default Device-N.">
+          ✏️
+        </button>
+      `;
+    };
+
+    // V3.2.3: fill the marker-tile's placeholder div with the shared
+    // controls. Called from handleNodeStateUpdate so every WS push
+    // refreshes the card in lockstep with the C&C panel.
+    window.refreshCardControls = function (node) {
+      const slot = document.getElementById(`card-controls-${node.device}`);
+      if (slot) slot.innerHTML = window.buildRemoteControlsHTML(node, 'card-');
+    };
+
     // Send mode change command
     function sendModeChange(deviceId) {
       console.log('[CMD] sendModeChange clicked for', deviceId);
@@ -3130,16 +3148,44 @@ if the current name is just the default Device-N.">
         });
     }
     
+    // V3.2.3: expose to window so marker-tile inline onclicks can reach
+    // these. Plain `function foo()` declarations are already on the global
+    // scope inside a non-module <script>, but being explicit makes the
+    // intent clear and survives any future refactor to ES modules.
+    window.sendModeChange = sendModeChange;
+    window.requestNodeStatus = requestNodeStatus;
+    window.cancelPendingForDevice = cancelPendingForDevice;
+    window.renameCollar = renameCollar;
+    window.commandPending = commandPending;
+    // V3.2.3: expose so a freshly-created marker card can pull cached
+    // node state immediately, rather than waiting for the next WS push.
+    window.nodeStates = nodeStates;
+
     // Update UI for a specific node
     function updateNodeControlUI(deviceId) {
+      // V3.2.3: update BOTH the C&C panel buttons AND the marker-tile
+      // card buttons. The two surfaces share the same shape, just with
+      // different ID prefixes.
+      ['', 'card-'].forEach(prefix => {
+        const applyBtn  = document.getElementById(`${prefix}apply-btn-${deviceId}`);
+        const statusBtn = document.getElementById(`${prefix}status-btn-${deviceId}`);
+        if (applyBtn) {
+          applyBtn.disabled = commandPending[deviceId];
+          applyBtn.textContent = commandPending[deviceId] ? '⏳' : (prefix ? '✓' : '✓ Apply');
+        }
+        if (statusBtn) {
+          statusBtn.disabled = commandPending[deviceId];
+        }
+      });
+      // Legacy lookup kept for any panel-only fallback (no-op when the
+      // device isn't rendered in the C&C list).
       const applyBtn = document.getElementById(`apply-btn-${deviceId}`);
       const statusBtn = document.querySelector(`#node-${deviceId} .node-btn-status`);
-      
+
       if (applyBtn) {
         applyBtn.disabled = commandPending[deviceId];
-        applyBtn.textContent = commandPending[deviceId] ? '⏳' : '✓';
       }
-      
+
       if (statusBtn) {
         statusBtn.disabled = commandPending[deviceId];
       }
@@ -3156,12 +3202,21 @@ if the current name is just the default Device-N.">
             commandPending[node.device] = false;
           }
           
-          // Update marker card mode selector if it exists
+          // V3.2.3: re-render the marker-tile controls slot from the same
+          // shared helper used by the C&C panel. The two surfaces stay
+          // identical and in lockstep after every WS state push.
+          if (window.refreshCardControls) {
+            window.refreshCardControls(node);
+          }
+
+          // Update marker card mode selector if it exists (kept as a
+          // belt-and-braces sync — refreshCardControls above already
+          // bakes the current mode in via `selected`).
           const cardSelect = document.getElementById(`card-mode-select-${node.device}`);
           if (cardSelect && node.mode_known) {
             cardSelect.value = node.mode;
           }
-          
+
           // Update card mode status text
           const cardStatus = document.getElementById(`card-mode-status-${node.device}`);
           const cardModeText = document.getElementById(`card-mode-text-${node.device}`);

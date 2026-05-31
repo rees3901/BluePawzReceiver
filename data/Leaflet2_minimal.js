@@ -309,23 +309,15 @@ Useful for debugging and seeing exact coordinates">
         <div style="font-size: 0.75em; font-weight: 600; color: #666; margin-bottom: 4px; text-transform: uppercase;">
           Remote Commands
         </div>
-        <div style="display: flex; gap: 4px; align-items: center; margin-bottom: 4px;">
-          <select class="node-mode-select" id="card-mode-select-${id}" style="flex: 1; font-size: 0.85em;" title="Operating Mode
-Normal: 5min updates, 19dBm power
-Active: 1min updates, 19dBm power
-Powersave: 20min updates, 10dBm power
-Lost: 30sec updates, 22dBm max power (auto-reverts after 2hrs)">
-            <option value="normal">Normal</option>
-            <option value="active">Active</option>
-            <option value="powersave">Powersave</option>
-            <option value="lost">Lost</option>
-          </select>
-          <button class="node-btn node-btn-apply" onclick="window.sendModeChange('${id}')" style="padding: 6px 10px;" title="Apply Mode Change
-Sends selected mode to tracker via LoRa
-Tracker will acknowledge when received">✓</button>
-          <button class="node-btn node-btn-status" onclick="window.requestNodeStatus('${id}')" style="padding: 6px 10px;" title="Query Status
-Requests current battery, GPS lock, and uptime info
-Response appears in Current Status below">🔄</button>
+        <!-- V3.2.3: this slot is filled by window.refreshCardControls
+             on every WS node-state push, using the SAME shared helper
+             (window.buildRemoteControlsHTML) the C&C panel uses. That
+             keeps the two surfaces identical and in lockstep — same
+             options, same buttons, same disabled-while-pending state,
+             same lost-mode confirm. Before the first node-state arrives
+             the slot shows a placeholder. -->
+        <div class="node-controls" id="card-controls-${id}" style="display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 4px;">
+          <span style="font-size: 0.8em; color: #999;">Waiting for node state…</span>
         </div>
         <div id="card-mode-status-${id}" style="font-size: 0.75em; color: #666;">
           <strong>Current Status:</strong> <span id="card-mode-text-${id}">Waiting for data...</span>
@@ -343,6 +335,13 @@ Response appears in Current Status below">🔄</button>
   `;
 
   document.querySelector(".marker-cards-container").appendChild(card);
+
+  // V3.2.3: if node state is already cached for this device, fill the
+  // controls slot immediately. Otherwise the next /node-states WS push
+  // will fill it via window.refreshCardControls.
+  if (id !== "MyDevice" && window.refreshCardControls && window.nodeStates && window.nodeStates[id]) {
+    window.refreshCardControls(window.nodeStates[id]);
+  }
 }
 
 // Jump to marker location
