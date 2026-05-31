@@ -84,15 +84,20 @@
   filter: grayscale(30%);
 }
 
-/* Pulsing animation for updates */
+/* Pulsing animation for updates.
+   V3.2.0: bumped from a single subtle 0.6s scale-up to two repeats
+   (~1.2s total) with a slightly larger peak scale and a soft blue
+   glow on the peak. Goal: catch the eye when a marker refreshes
+   without becoming distracting — two beats reads as "ping!" where
+   one beat was easy to miss in peripheral vision. */
 @keyframes dropdown-pulse {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-  100% { transform: scale(1); }
+  0%   { transform: scale(1);    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.10); }
+  50%  { transform: scale(1.08); box-shadow: 0 0 12px rgba(0, 123, 255, 0.55); }
+  100% { transform: scale(1);    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.10); }
 }
 
 .dropdown-pulse {
-  animation: dropdown-pulse 0.6s ease;
+  animation: dropdown-pulse 0.6s ease 2;
 }
 
 /* Better organization for closely positioned cats */
