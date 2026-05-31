@@ -282,6 +282,15 @@
     .menu-section.build-info .ver-label { color: #888; font-weight: 600; }
     body:not(.light-mode) .menu-section.build-info .ver-label { color: #aaa; }
     .menu-section.build-info .ver-value { font-weight: 700; }
+    /* V3.2.2: git-hash chip — smaller, dimmer, sits to the right of the
+       version number. flex-basis:auto so the version stays left-aligned
+       and the hash hugs the right. */
+    .menu-section.build-info .ver-hash {
+      font-weight: 500;
+      font-size: 0.85em;
+      opacity: 0.7;
+      margin-left: auto;
+    }
 
     /* V3.1.4: floating command-status panel — bottom-right corner.
        Shows live state of every in-flight command (one row per command)
@@ -1460,10 +1469,14 @@
         <div class="ver-row">
           <span class="ver-label">Firmware:</span>
           <span class="ver-value" id="verFirmware">—</span>
+          <!-- V3.2.2: short git hash baked in at build time. "-dirty"
+               suffix means the build had uncommitted changes. -->
+          <span class="ver-value ver-hash" id="verFirmwareHash" title="Git commit the firmware was built from"></span>
         </div>
         <div class="ver-row">
           <span class="ver-label">Filesystem:</span>
           <span class="ver-value" id="verFilesystem">—</span>
+          <span class="ver-value ver-hash" id="verFilesystemHash" title="Git commit the LittleFS image was built from"></span>
         </div>
       </div>
 
@@ -2628,26 +2641,44 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // signal. Just show the numbers; troubleshooters can read them
     // and judge for themselves.
     async function loadFirmwareVersion() {
-      const fwBadge = document.getElementById('firmwareVersionBadge');
-      const fwEl    = document.getElementById('verFirmware');
-      const fsEl    = document.getElementById('verFilesystem');
+      const fwBadge  = document.getElementById('firmwareVersionBadge');
+      const fwEl     = document.getElementById('verFirmware');
+      const fsEl     = document.getElementById('verFilesystem');
+      const fwHashEl = document.getElementById('verFirmwareHash');
+      const fsHashEl = document.getElementById('verFilesystemHash');
       try {
         const r = await fetch('/version');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
-        const fw = data.firmware_version || data.version || '?';
-        const fs = data.fs_version || '?';
+        const fw     = data.firmware_version || data.version || '?';
+        const fs     = data.fs_version || '?';
+        const fwHash = data.firmware_git_hash || 'unknown';
+        const fsHash = data.fs_git_hash || 'unknown';
 
         if (fwEl) fwEl.textContent = 'v' + fw;
         if (fsEl) fsEl.textContent = (fs === 'unknown') ? '(not uploaded)' : 'v' + fs;
+
+        // V3.2.2: show short git hash next to each version. "unknown"
+        // hash → hide the chip rather than display literal "unknown",
+        // since that just clutters the panel.
+        const renderHash = (el, h) => {
+          if (!el) return;
+          if (!h || h === 'unknown') { el.textContent = ''; el.style.display = 'none'; return; }
+          el.textContent = '@' + h;
+          el.style.display = '';
+        };
+        renderHash(fwHashEl, fwHash);
+        renderHash(fsHashEl, fsHash);
 
         // Title-bar badge tracks firmware version (the headline number).
         if (fwBadge) {
           fwBadge.textContent = 'v' + fw;
           fwBadge.classList.remove('unknown');
-          fwBadge.title = 'Firmware v' + fw + ' / FS v' + fs;
+          fwBadge.title = 'Firmware v' + fw + ' @ ' + fwHash +
+                          '\nFilesystem v' + fs + ' @ ' + fsHash;
         }
-        console.log('Receiver firmware v' + fw + ', filesystem v' + fs);
+        console.log('Receiver firmware v' + fw + ' @ ' + fwHash +
+                    ', filesystem v' + fs + ' @ ' + fsHash);
       } catch (e) {
         if (fwEl) fwEl.textContent = 'unreachable';
         console.warn('Could not fetch /version:', e);

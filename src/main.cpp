@@ -1831,24 +1831,39 @@ void handleGetVersion()
 {
   JsonDocument doc;
   doc["firmware_version"] = BLUEPAWZ_VERSION;
+  // V3.2.2: git commit hash baked in at build time by
+  // scripts/inject_git_hash.py. Falls back to "unknown" if the build
+  // happened outside a git checkout (e.g. release tarball).
+#ifdef BLUEPAWZ_GIT_HASH
+  doc["firmware_git_hash"] = BLUEPAWZ_GIT_HASH;
+#else
+  doc["firmware_git_hash"] = "unknown";
+#endif
 
-  // Read filesystem version from /version.json on LittleFS.
+  // Read filesystem version + git hash from /version.json on LittleFS.
+  // Both are stamped at FS-image build time, so a mismatch between
+  // firmware_git_hash and fs_git_hash means firmware was OTA'd from
+  // a different commit than the FS image (or one of them is "dirty").
   String fsVer = "unknown";
+  String fsHash = "unknown";
   if (LittleFS.exists("/version.json"))
   {
     File f = LittleFS.open("/version.json", "r");
     if (f)
     {
       JsonDocument fsDoc;
-      if (deserializeJson(fsDoc, f) == DeserializationError::Ok &&
-          fsDoc["fs_version"].is<const char *>())
+      if (deserializeJson(fsDoc, f) == DeserializationError::Ok)
       {
-        fsVer = fsDoc["fs_version"].as<const char *>();
+        if (fsDoc["fs_version"].is<const char *>())
+          fsVer = fsDoc["fs_version"].as<const char *>();
+        if (fsDoc["fs_git_hash"].is<const char *>())
+          fsHash = fsDoc["fs_git_hash"].as<const char *>();
       }
       f.close();
     }
   }
   doc["fs_version"] = fsVer;
+  doc["fs_git_hash"] = fsHash;
 
   // Backwards compat for any older UI that still reads "version":
   doc["version"] = BLUEPAWZ_VERSION;
