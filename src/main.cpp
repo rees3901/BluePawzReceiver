@@ -1809,19 +1809,20 @@ void handleGetNetMode()
 }
 
 // HTTP handler: GET /version — returns BOTH firmware and filesystem
-// versions plus a 'match' flag. The web UI displays them side-by-side
-// in the top-right info panel.
+// versions. The web UI displays them side-by-side in the top-right
+// info panel for at-a-glance troubleshooting.
 //
 // Why two versions:
 //   - firmware_version comes from include/version.h compiled into the
 //     binary that lives in app0/app1
 //   - fs_version comes from data/version.json which is stored in the
 //     LittleFS partition (uploaded via `pio run -t uploadfs`)
-// These get out of sync when the user uploads firmware but skips
-// uploadfs (common gotcha with OTA flows — ArduinoOTA only writes
-// the app partition, not the filesystem partition). When they
-// disagree the UI shows a loud warning so the user knows to run
-// uploadfs.
+//
+// V3.1.8 NOTE: we used to also emit a 'match' boolean and the UI would
+// loudly warn on mismatch. Dropped — firmware-only releases (most of
+// them) leave the FS untouched, so a mismatch is not a problem signal,
+// just an information item. Users can read the two numbers and judge
+// for themselves.
 //
 // The 'unknown' fallback for fs_version covers the case where
 // /version.json doesn't exist on the LittleFS partition at all —
@@ -1848,7 +1849,6 @@ void handleGetVersion()
     }
   }
   doc["fs_version"] = fsVer;
-  doc["match"]      = (fsVer == String(BLUEPAWZ_VERSION));
 
   // Backwards compat for any older UI that still reads "version":
   doc["version"] = BLUEPAWZ_VERSION;

@@ -284,37 +284,6 @@
     #versionInfoPanel .ver-label { color: #888; font-weight: 600; }
     body:not(.light-mode) #versionInfoPanel .ver-label { color: #999; }
     #versionInfoPanel .ver-value { font-weight: 700; }
-    #versionInfoPanel .ver-status {
-      margin-top: 4px;
-      padding: 2px 6px;
-      border-radius: 4px;
-      text-align: center;
-      font-weight: 700;
-      font-size: 0.9em;
-    }
-    #versionInfoPanel .ver-status.match {
-      background: rgba(40, 167, 69, 0.2); color: #1e7e34;
-    }
-    body:not(.light-mode) #versionInfoPanel .ver-status.match { color: #4ade80; }
-    #versionInfoPanel .ver-status.mismatch {
-      background: rgba(220, 53, 69, 0.25); color: #b21f2d;
-    }
-    body:not(.light-mode) #versionInfoPanel .ver-status.mismatch { color: #ff6b6b; }
-    #versionInfoPanel .ver-mismatch-warning {
-      margin-top: 6px;
-      padding: 6px 8px;
-      background: rgba(220, 53, 69, 0.18);
-      border-left: 3px solid #dc3545;
-      color: #b21f2d;
-      font-size: 0.95em;
-      line-height: 1.3;
-    }
-    body:not(.light-mode) #versionInfoPanel .ver-mismatch-warning { color: #ff8a8a; }
-    #versionInfoPanel code {
-      background: rgba(0,0,0,0.07); padding: 1px 4px; border-radius: 3px;
-      font-size: 0.9em;
-    }
-    body:not(.light-mode) #versionInfoPanel code { background: rgba(255,255,255,0.1); }
 
     /* V3.1.4: floating command-status panel — bottom-right corner.
        Shows live state of every in-flight command (one row per command)
@@ -1640,11 +1609,11 @@ Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
   </div>
   <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</div>
 
-  <!-- V3.1.6: version-info panel — sits directly under the WiFi banner in
-       the top-right corner. Shows firmware and filesystem versions
-       separately so a firmware/fs mismatch (common gotcha when OTA is
-       used without uploadfs) is immediately visible. Loud red banner
-       below when they disagree. Populated by loadFirmwareVersion(). -->
+  <!-- V3.1.8: version-info panel — sits directly under the WiFi banner in
+       the top-right corner. Displays firmware and filesystem versions
+       side-by-side for at-a-glance troubleshooting. No automatic
+       mismatch warning — firmware-only releases are common and don't
+       imply a problem, so flagging every mismatch creates noise. -->
   <div id="versionInfoPanel">
     <div class="ver-row">
       <span class="ver-label">Firmware:</span>
@@ -1653,12 +1622,6 @@ Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
     <div class="ver-row">
       <span class="ver-label">Filesystem:</span>
       <span class="ver-value" id="verFilesystem">—</span>
-    </div>
-    <div class="ver-status" id="verStatus">checking…</div>
-    <div class="ver-mismatch-warning" id="verMismatch" style="display:none;">
-      ⚠️ Firmware and filesystem versions do not match.
-      Please re-upload the correct filesystem image
-      (<code>pio run -t uploadfs</code>).
     </div>
   </div>
 
@@ -2631,42 +2594,35 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       refreshHomeStatusLabel(lat, lon);
     };
 
-    // V3.1.6: fetch both firmware AND filesystem versions, render the
-    // info panel under the WiFi banner, and show a loud warning on
-    // mismatch (common gotcha: user OTA'd firmware but skipped uploadfs).
+    // V3.1.8: fetch both firmware AND filesystem versions and display
+    // them side-by-side under the WiFi banner. No automatic mismatch
+    // warning — firmware-only releases are common (we ship a new .bin
+    // without changing data/), so a version delta isn't a problem
+    // signal. Just show the numbers; troubleshooters can read them
+    // and judge for themselves.
     async function loadFirmwareVersion() {
-      const fwBadge   = document.getElementById('firmwareVersionBadge');
-      const fwEl      = document.getElementById('verFirmware');
-      const fsEl      = document.getElementById('verFilesystem');
-      const statusEl  = document.getElementById('verStatus');
-      const warnEl    = document.getElementById('verMismatch');
+      const fwBadge = document.getElementById('firmwareVersionBadge');
+      const fwEl    = document.getElementById('verFirmware');
+      const fsEl    = document.getElementById('verFilesystem');
       try {
         const r = await fetch('/version');
         if (!r.ok) throw new Error('HTTP ' + r.status);
         const data = await r.json();
         const fw = data.firmware_version || data.version || '?';
         const fs = data.fs_version || '?';
-        const matches = (data.match === undefined) ? (fw === fs) : !!data.match;
 
-        if (fwEl)   fwEl.textContent = 'v' + fw;
-        if (fsEl)   fsEl.textContent = (fs === 'unknown') ? '(not uploaded)' : 'v' + fs;
-        if (statusEl) {
-          statusEl.textContent = matches ? '✓ Matching' : '✗ Mismatch detected';
-          statusEl.className = 'ver-status ' + (matches ? 'match' : 'mismatch');
-        }
-        if (warnEl) warnEl.style.display = matches ? 'none' : 'block';
+        if (fwEl) fwEl.textContent = 'v' + fw;
+        if (fsEl) fsEl.textContent = (fs === 'unknown') ? '(not uploaded)' : 'v' + fs;
 
-        // Keep the small title-bar badge in sync (backwards compat).
+        // Title-bar badge tracks firmware version (the headline number).
         if (fwBadge) {
           fwBadge.textContent = 'v' + fw;
           fwBadge.classList.remove('unknown');
-          fwBadge.title = 'Firmware v' + fw + ' / FS v' + fs +
-                          (matches ? ' (matching)' : ' (MISMATCH)');
+          fwBadge.title = 'Firmware v' + fw + ' / FS v' + fs;
         }
-        console.log('Receiver firmware v' + fw + ', filesystem v' + fs +
-                    (matches ? ' (matching)' : ' (MISMATCH)'));
+        console.log('Receiver firmware v' + fw + ', filesystem v' + fs);
       } catch (e) {
-        if (statusEl) statusEl.textContent = 'unreachable';
+        if (fwEl) fwEl.textContent = 'unreachable';
         console.warn('Could not fetch /version:', e);
       }
     }
