@@ -1003,11 +1003,27 @@
       background: #28a745;
       color: white;
     }
-    
+
     .node-btn-apply:hover {
       background: #218838;
     }
-    
+
+    /* V3.1.5: Cancel button — destructive action, red, but quieter than
+       Apply so it doesn't compete visually unless the user wants to abort. */
+    .node-btn-cancel {
+      background: #6c757d;
+      color: white;
+    }
+    .node-btn-cancel:hover {
+      background: #c82333;
+    }
+    .node-btn-cancel.has-pending {
+      background: #dc3545;   /* bright red when something is actually cancellable */
+    }
+    .node-btn-cancel.has-pending:hover {
+      background: #b21f2d;
+    }
+
     .node-btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
@@ -2320,11 +2336,53 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       }).join('');
     }
 
+    // V3.1.5: light up the per-card Cancel button red when there's at
+    // least one cancellable command targeted at that collar. Called on
+    // every command update so the indicator stays current.
+    function refreshCancelButtonHighlights() {
+      const pendingByDevice = new Map();
+      for (const c of commandsByMsgId.values()) {
+        if (c.status === 'queued' || c.status === 'sending' || c.status === 'awaiting_ack') {
+          pendingByDevice.set(c.device, true);
+        }
+      }
+      document.querySelectorAll('[id^="cancel-btn-"]').forEach(btn => {
+        const dev = btn.id.replace('cancel-btn-', '');
+        if (pendingByDevice.has(dev)) btn.classList.add('has-pending');
+        else                          btn.classList.remove('has-pending');
+      });
+    }
+
+    // V3.1.5: cancel every cancellable command currently targeted at one
+    // specific collar. Wired to the per-card ✗ Cancel button.
+    async function cancelPendingForDevice(deviceId) {
+      const toCancel = [];
+      for (const c of commandsByMsgId.values()) {
+        if (c.device !== deviceId) continue;
+        if (c.status === 'queued' || c.status === 'sending' || c.status === 'awaiting_ack') {
+          toCancel.push(c.msg_id);
+        }
+      }
+      if (toCancel.length === 0) {
+        // Nothing to cancel for this collar — tell the user gently.
+        console.log('No pending commands for ' + deviceId);
+        return;
+      }
+      if (!confirm(`Cancel ${toCancel.length} pending command(s) for ${deviceId}?`)) return;
+      for (const id of toCancel) {
+        try {
+          await fetch('/command?msg_id=' + encodeURIComponent(id), { method: 'DELETE' });
+        } catch (e) { console.error('Cancel error:', e); }
+      }
+      // WS pushes will update the UI; nothing else to do here.
+    }
+
     // Apply a command_status WS message OR a /commands GET item.
     function applyCommandUpdate(c) {
       // Status transitions: keep the latest. Don't downgrade.
       commandsByMsgId.set(c.msg_id, c);
       renderCommandPanel();
+      refreshCancelButtonHighlights();
       // Auto-remove DELIVERED entries after 5s for a tidy UI (the
       // server lingers them for 10s; we hide them sooner on the client).
       if (c.status === 'delivered') {
@@ -2333,6 +2391,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           if (cur && cur.status === 'delivered') {
             commandsByMsgId.delete(c.msg_id);
             renderCommandPanel();
+            refreshCancelButtonHighlights();
           }
         }, 5000);
       }
@@ -2343,6 +2402,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           if (cur && (cur.status === 'failed' || cur.status === 'cancelled')) {
             commandsByMsgId.delete(c.msg_id);
             renderCommandPanel();
+            refreshCancelButtonHighlights();
           }
         }, 30000);
       }
@@ -2357,6 +2417,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         commandsByMsgId.clear();
         for (const c of arr) commandsByMsgId.set(c.msg_id, c);
         renderCommandPanel();
+        refreshCancelButtonHighlights();
       } catch (e) { /* ignore — WS will fill in */ }
     }
 
@@ -2762,17 +2823,28 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
                     <option value="powersave" ${node.mode === 'powersave' ? 'selected' : ''}>Powersave</option>
                     <option value="lost" ${node.mode === 'lost' ? 'selected' : ''}>Lost</option>
                   </select>
-                  <button class="node-btn node-btn-apply" 
-                          onclick="sendModeChange('${node.device}')" 
+                  <button class="node-btn node-btn-apply"
+                          onclick="sendModeChange('${node.device}')"
                           id="apply-btn-${node.device}"
                           ${commandPending[node.device] ? 'disabled' : ''}
                           title="Apply Mode Change
 Sends command to tracker via LoRa
 Wait for acknowledgment (⏳ shows pending)">
-                    ${commandPending[node.device] ? '⏳' : '✓'}
+                    ${commandPending[node.device] ? '⏳' : '✓ Apply'}
+                  </button>
+                  <!-- V3.1.5: per-card Cancel button. Cancels any pending
+                       commands targeted at this specific collar. Greys out
+                       when nothing is pending for this device. -->
+                  <button class="node-btn node-btn-cancel"
+                          onclick="cancelPendingForDevice('${node.device}')"
+                          id="cancel-btn-${node.device}"
+                          title="Cancel pending commands for this collar
+Cancels every queued/in-flight command targeting this device.
+Greyed out when nothing's pending.">
+                    ✗ Cancel
                   </button>
                   <button class="node-btn node-btn-status"
-                          onclick="requestNodeStatus('${node.device}'"
+                          onclick="requestNodeStatus('${node.device}')"
                           ${commandPending[node.device] ? 'disabled' : ''}
                           title="Query Status
 Requests battery level, GPS lock, and uptime
@@ -2813,10 +2885,17 @@ if the current name is just the default Device-N.">
     
     // Send mode change command
     function sendModeChange(deviceId) {
-      const select = document.getElementById(`mode-select-${deviceId}`) || 
+      console.log('[CMD] sendModeChange clicked for', deviceId);
+      const select = document.getElementById(`mode-select-${deviceId}`) ||
                      document.getElementById(`card-mode-select-${deviceId}`);
+      if (!select) {
+        console.error('[CMD] No mode select element found for', deviceId);
+        alert('Internal error: no mode selector found for ' + deviceId);
+        return;
+      }
       const newMode = select.value;
       const currentMode = nodeStates[deviceId]?.mode;
+      console.log('[CMD] mode change:', deviceId, currentMode, '→', newMode);
       
       // Confirm if switching to lost mode
       if (newMode === 'lost' && currentMode !== 'lost') {
