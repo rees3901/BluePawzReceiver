@@ -82,6 +82,53 @@ let followedMarkerId = null;
 window.breadcrumbs = window.breadcrumbs || {};
 window.breadcrumbLines = window.breadcrumbLines || {};
 
+// V3.1.7: HTML-escape user-derived strings before injecting them into
+// innerHTML. The `id` and `status` fields originate from incoming LoRa
+// packets — the collar firmware sanitises names via saveSenderName(),
+// but the receiver also accepts any well-formed JSON on the air, so an
+// attacker transmitting on the right freq/SF/sync word could in
+// principle put <script> in an id. Cheap to defend against, no reason
+// not to.
+function escHtml(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+// V3.1.7: status → CSS colour mapping for the unknown-device fallback dot.
+// Mirrors the four normalised statuses produced by the receiver's JSON
+// handler. Used by both getMarkerIcon() and createMarkerCard() so the
+// fallback look is consistent everywhere.
+function statusColour(status) {
+  switch (status) {
+    case "Home":    return "#28a745"; // green
+    case "Out":     return "#007bff"; // blue
+    case "Offline": return "#6c757d"; // grey
+    case "Error":   return "#dc3545"; // red
+    default:        return "#6c757d";
+  }
+}
+
+// V3.1.7: build a Leaflet divIcon for unknown collars. Pure HTML + CSS,
+// no image file needed — solves the 'broken image link' issue when a
+// device name doesn't match the KNOWN_CATS list (Podge/Macy/Gizmo/
+// Simba/Carrie). The dot inherits the same four-status colour scheme
+// as the labelled icons.
+function unknownDeviceDivIcon(status) {
+  const colour = statusColour(status);
+  return L.divIcon({
+    html: `<div style="width:22px;height:22px;background:${colour};border:2px solid #fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.6);"></div>`,
+    iconSize: [26, 26],
+    iconAnchor: [13, 13],
+    popupAnchor: [0, -13],
+    className: 'unknown-device-marker' // empty class — overrides Leaflet's default
+  });
+}
+
 // Basic marker icon function
 function getMarkerIcon(id, status) {
   // Special handling for MyDevice - use Device_Marker.avif
@@ -94,9 +141,15 @@ function getMarkerIcon(id, status) {
     });
   }
 
-  const baseId = KNOWN_CATS.includes(id) ? id : "generic";
-  let iconStatus;
+  // V3.1.7: unknown collars get a CSS-only coloured dot rather than
+  // pointing at a generic_Marker_*.avif file that doesn't exist. No
+  // 404, no broken image, and the colour still conveys the four
+  // normalised states (Home/Out/Offline/Error).
+  if (!KNOWN_CATS.includes(id)) {
+    return unknownDeviceDivIcon(status);
+  }
 
+  let iconStatus;
   // Map to simplified 4-state system
   switch (status) {
     case "Home":
@@ -116,7 +169,7 @@ function getMarkerIcon(id, status) {
   }
 
   return L.icon({
-    iconUrl: `/icons/${baseId}_Marker_${iconStatus}.avif`,
+    iconUrl: `/icons/${id}_Marker_${iconStatus}.avif`,
     iconSize: [32, 32],
     iconAnchor: [16, 32],
     popupAnchor: [0, -32],
@@ -138,11 +191,30 @@ function createMarkerCard(id, status) {
     markerHistory[id] = [];
   }
 
-  // Special handling for MyDevice card icon
-  const iconUrl =
-    id === "MyDevice"
-      ? `/icons/Device_Marker.avif`
-      : `/icons/${KNOWN_CATS.includes(id) ? id : "generic"}_Marker_Home.avif`;
+  // V3.1.7: card thumbnail. MyDevice uses Device_Marker.avif; known
+  // collars use their custom Home icon; UNKNOWN collars get an inline
+  // SVG coloured dot so we never link a missing file.
+  const isKnown = KNOWN_CATS.includes(id);
+  let iconUrl;
+  let iconIsInline = false;
+  if (id === "MyDevice") {
+    iconUrl = "/icons/Device_Marker.avif";
+  } else if (isKnown) {
+    iconUrl = `/icons/${id}_Marker_Home.avif`;
+  } else {
+    // Inline SVG dot, embedded as a data URI — no network round-trip,
+    // no 404 possible. Colour matches the unknown-device map marker.
+    const colour = statusColour(status);
+    const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>` +
+                `<circle cx='12' cy='12' r='10' fill='${colour}' stroke='white' stroke-width='2'/>` +
+                `</svg>`;
+    iconUrl = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+    iconIsInline = true;
+  }
+  // Display label: known collars get their friendly name; unknown
+  // collars get prefixed with 'Unknown device:' so the user knows
+  // straight away the receiver doesn't have a profile for it.
+  const displayId = isKnown || id === "MyDevice" ? id : ("Unknown device: " + id);
 
   const statusClass = status
     ? `status-${status.toLowerCase()}`
@@ -159,14 +231,28 @@ function createMarkerCard(id, status) {
   card.className = `marker-card ${statusClass}${myDeviceClass}`;
   card.id = `marker-card-${id}`;
 
+  // V3.1.7: HTML-escape user-derived text content before injecting into
+  // innerHTML. This is the primary XSS defence in this function.
+  //
+  // ASSUMPTION: device `id` is from the collar firmware path which
+  // sanitises names via saveSenderName() — no quotes, no commas, no
+  // backslashes, no control characters. That means raw `${id}` is safe
+  // to interpolate into HTML attributes and onclick handler strings,
+  // since the dangerous metacharacters (`"` `'` `\\`) can never appear.
+  // We still escape for innerHTML *text content* so that:
+  //   (a) future widening of the allowed char set doesn't open an XSS,
+  //   (b) an attacker injecting raw LoRa JSON (bypassing the collar
+  //       firmware) can't slip <script> into a name field — it would
+  //       just render as literal text.
+  const idEsc      = escHtml(id);
+  const displayEsc = escHtml(displayId);
+  const statusEsc  = escHtml(status || "Unknown");
   card.innerHTML = `
     <div class="marker-card-header">
-      <img src="${iconUrl}" alt="${id}" class="marker-card-icon" id="card-icon-${id}">
+      <img src="${iconUrl}" alt="${idEsc}" class="marker-card-icon" id="card-icon-${id}">
       <div class="marker-card-title">
-        <h3 class="marker-card-name">${id}${deviceLabel}</h3>
-        <p class="marker-card-status" id="card-status-${id}">${
-    status || "Unknown"
-  }</p>
+        <h3 class="marker-card-name">${displayEsc}${deviceLabel}</h3>
+        <p class="marker-card-status" id="card-status-${id}">${statusEsc}</p>
       </div>
     </div>
     <div class="marker-card-actions">
@@ -314,39 +400,40 @@ function updateMarkerCard(id, status, data) {
     card.classList.remove("card-sheen");
   }, 800);
 
-  // Update status class
-  card.className = `marker-card status-${status.toLowerCase()}`;
+  // Update status class. Sanitise status to a known token so a malicious
+  // status from the wire can't break our class names either.
+  const safeStatus = String(status).toLowerCase().replace(/[^a-z]/g, '');
+  card.className = `marker-card status-${safeStatus}`;
   // Re-add sheen class (since we just overwrote className)
   card.classList.add("card-sheen");
 
-  // Update status text
+  // Update status text — textContent is safe (no HTML parsing)
   const statusEl = document.getElementById(`card-status-${id}`);
   if (statusEl) {
     statusEl.textContent = status;
   }
 
   // Update icon
-  const baseId = KNOWN_CATS.includes(id) ? id : "generic";
-  let iconStatus;
-  switch (status) {
-    case "Home":
-      iconStatus = "Home";
-      break;
-    case "Out":
-      iconStatus = "Outanabout";
-      break;
-    case "Offline":
-      iconStatus = "Offline";
-      break;
-    case "Error":
-      iconStatus = "Error";
-      break;
-    default:
-      iconStatus = "Error";
-  }
   const iconEl = document.getElementById(`card-icon-${id}`);
   if (iconEl) {
-    iconEl.src = `/icons/${baseId}_Marker_${iconStatus}.avif`;
+    if (KNOWN_CATS.includes(id)) {
+      let iconStatus;
+      switch (status) {
+        case "Home":    iconStatus = "Home"; break;
+        case "Out":     iconStatus = "Outanabout"; break;
+        case "Offline": iconStatus = "Offline"; break;
+        case "Error":   iconStatus = "Error"; break;
+        default:        iconStatus = "Error";
+      }
+      iconEl.src = `/icons/${id}_Marker_${iconStatus}.avif`;
+    } else {
+      // V3.1.7: unknown collar — inline SVG dot, no broken-image link
+      const colour = statusColour(status);
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>` +
+                  `<circle cx='12' cy='12' r='10' fill='${colour}' stroke='white' stroke-width='2'/>` +
+                  `</svg>`;
+      iconEl.src = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+    }
   }
 
   // Add message to history (keep last 5)

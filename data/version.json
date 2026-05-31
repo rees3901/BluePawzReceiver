@@ -1,4 +1,4 @@
 {
-  "fs_version": "3.1.6",
+  "fs_version": "3.1.7",
   "_comment": "Filesystem version stamp. Bumped in lockstep with include/version.h's BLUEPAWZ_VERSION. The /version HTTP endpoint serves both side-by-side so the web UI can detect firmware<>filesystem mismatch (e.g. user OTA'd firmware but skipped uploadfs)."
 }
