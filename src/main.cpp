@@ -1808,14 +1808,51 @@ void handleGetNetMode()
   server.send(200, "application/json", out);
 }
 
-// HTTP handler: GET /version — return the receiver firmware version.
-// The web UI fetches this on page load so the user can see at a glance
-// which firmware their browser is talking to. Useful right after an OTA
-// push to confirm the new image actually booted.
+// HTTP handler: GET /version — returns BOTH firmware and filesystem
+// versions plus a 'match' flag. The web UI displays them side-by-side
+// in the top-right info panel.
+//
+// Why two versions:
+//   - firmware_version comes from include/version.h compiled into the
+//     binary that lives in app0/app1
+//   - fs_version comes from data/version.json which is stored in the
+//     LittleFS partition (uploaded via `pio run -t uploadfs`)
+// These get out of sync when the user uploads firmware but skips
+// uploadfs (common gotcha with OTA flows — ArduinoOTA only writes
+// the app partition, not the filesystem partition). When they
+// disagree the UI shows a loud warning so the user knows to run
+// uploadfs.
+//
+// The 'unknown' fallback for fs_version covers the case where
+// /version.json doesn't exist on the LittleFS partition at all —
+// usually means the filesystem hasn't ever been uploaded.
 void handleGetVersion()
 {
   JsonDocument doc;
+  doc["firmware_version"] = BLUEPAWZ_VERSION;
+
+  // Read filesystem version from /version.json on LittleFS.
+  String fsVer = "unknown";
+  if (LittleFS.exists("/version.json"))
+  {
+    File f = LittleFS.open("/version.json", "r");
+    if (f)
+    {
+      JsonDocument fsDoc;
+      if (deserializeJson(fsDoc, f) == DeserializationError::Ok &&
+          fsDoc["fs_version"].is<const char *>())
+      {
+        fsVer = fsDoc["fs_version"].as<const char *>();
+      }
+      f.close();
+    }
+  }
+  doc["fs_version"] = fsVer;
+  doc["match"]      = (fsVer == String(BLUEPAWZ_VERSION));
+
+  // Backwards compat for any older UI that still reads "version":
   doc["version"] = BLUEPAWZ_VERSION;
+
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
