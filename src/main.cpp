@@ -2929,14 +2929,20 @@ void checkWiFiConnection()
 //    inside the house, not on the pavement out front. The collar enforces
 //    a stricter RSSI threshold on top, but cutting TX power keeps things
 //    sane even if a collar's RSSI drift moves the threshold around.
-//  - ESP_PWR_LVL_N12 == -12 dBm. Range typically ~3-8 m through walls.
-//    If you need more reach, bump to N9 (-9), N6 (-6), N3 (-3), or N0 (0 dBm).
-//    Each step roughly doubles the line-of-sight range.
+//  - V3.2.1: bumped from N12 (-12 dBm) to N3 (-3 dBm) — field-reported
+//    reach at -12 was too short to cover a typical house. -3 dBm is
+//    ~3x the range without flaring out to the neighbour's yard. The
+//    collar's HOME_RSSI_THRESHOLD_DBM = -65 still defines the real
+//    geofence boundary; TX power just shifts where that boundary sits.
+//    If still patchy, step up to N0 (0 dBm). Available levels:
+//    N24,N21,N18,N15,N12,N9,N6,N3,N0,P3,P6,P9 — P9 (+9 dBm) is the
+//    ESP32-S3 ceiling, but don't go above N0 without re-evaluating the
+//    "am I actually inside the house?" guarantee.
 void setupBLE()
 {
   BLEDevice::init(BLE_DEVICE_NAME);
   // Low TX power on the advertising channel only (default applies to all roles).
-  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N12);
+  esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_ADV, ESP_PWR_LVL_N3);
 
   pAdvertising = BLEDevice::getAdvertising();
 
