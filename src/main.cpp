@@ -2298,7 +2298,7 @@ static void handleLoRaPacketJSON(const String &incoming)
                lowerStatus.indexOf("normal") != -1 ||
                lowerStatus.indexOf("outanabout") != -1)
       {
-        doc["status"] = "Out";
+        doc["status"] = "Roaming"; // V3.1.9: was 'Out' — 'Roaming' is more descriptive for a cat outdoors. Wire-format inputs ('outanabout', 'out', etc.) unchanged for backward compat with existing collars.
       }
       else if (lowerStatus.indexOf("offline") != -1)
       {
@@ -2313,7 +2313,7 @@ static void handleLoRaPacketJSON(const String &incoming)
       }
       else
       {
-        doc["status"] = "Out";
+        doc["status"] = "Roaming"; // V3.1.9: was 'Out' — 'Roaming' is more descriptive for a cat outdoors. Wire-format inputs ('outanabout', 'out', etc.) unchanged for backward compat with existing collars.
       }
     }
     else

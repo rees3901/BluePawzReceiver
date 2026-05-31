@@ -106,7 +106,7 @@ function escHtml(s) {
 function statusColour(status) {
   switch (status) {
     case "Home":    return "#28a745"; // green
-    case "Out":     return "#007bff"; // blue
+    case "Roaming": return "#007bff"; // blue (V3.1.9: was "Out")
     case "Offline": return "#6c757d"; // grey
     case "Error":   return "#dc3545"; // red
     default:        return "#6c757d";
@@ -155,8 +155,8 @@ function getMarkerIcon(id, status) {
     case "Home":
       iconStatus = "Home";
       break;
-    case "Out":
-      iconStatus = "Outanabout"; // Keep existing icon filename
+    case "Roaming":
+      iconStatus = "Outanabout"; // V3.1.9: status renamed to Roaming, icon filenames kept as Outanabout for asset stability
       break;
     case "Offline":
       iconStatus = "Offline";
@@ -420,7 +420,7 @@ function updateMarkerCard(id, status, data) {
       let iconStatus;
       switch (status) {
         case "Home":    iconStatus = "Home"; break;
-        case "Out":     iconStatus = "Outanabout"; break;
+        case "Roaming": iconStatus = "Outanabout"; break; // V3.1.9: rename
         case "Offline": iconStatus = "Offline"; break;
         case "Error":   iconStatus = "Error"; break;
         default:        iconStatus = "Error";

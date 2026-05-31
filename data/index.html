@@ -257,33 +257,18 @@
       vertical-align: middle;
       margin-left: 17.5px; /* Keep margin for now */
     }
-    /* V3.1.6: version info panel — top-right, directly under the
-       WiFi status banner. Two-line layout (firmware / filesystem) with
-       a status line below and a loud warning when they don't match. */
-    #versionInfoPanel {
-      position: fixed;
-      top: 56px;      /* sits just below the #statusBanner which is at top:10 + ~40px tall */
-      right: 10px;
-      background: rgba(255, 255, 255, 0.92);
-      color: #222;
-      border: 1px solid #ccc;
-      border-radius: 6px;
-      padding: 6px 10px;
-      font-size: 0.75em;
-      font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
-      z-index: 999;
-      max-width: 260px;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    body:not(.light-mode) #versionInfoPanel {
-      background: rgba(30,30,30,0.9); color: #e8e8e8; border-color: #444;
-    }
-    #versionInfoPanel .ver-row {
+    /* V3.1.9: version info now lives inside the hamburger side menu
+       (.menu-section.build-info), so the floating top-right panel is
+       gone. Kept this comment block as a tombstone in case a future
+       refactor wants to bring it back to the foreground. */
+    .menu-section.build-info .ver-row {
       display: flex; justify-content: space-between; gap: 12px;
+      font-family: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, monospace;
+      font-size: 0.9em;
     }
-    #versionInfoPanel .ver-label { color: #888; font-weight: 600; }
-    body:not(.light-mode) #versionInfoPanel .ver-label { color: #999; }
-    #versionInfoPanel .ver-value { font-weight: 700; }
+    .menu-section.build-info .ver-label { color: #888; font-weight: 600; }
+    body:not(.light-mode) .menu-section.build-info .ver-label { color: #aaa; }
+    .menu-section.build-info .ver-value { font-weight: 700; }
 
     /* V3.1.4: floating command-status panel — bottom-right corner.
        Shows live state of every in-flight command (one row per command)
@@ -1148,7 +1133,9 @@
       border-color: #dc3545;
     }
     
-    .marker-card.status-out {
+    /* V3.1.9: renamed .status-out → .status-roaming. Same visual style;
+       just a clearer label for 'cat is outside, currently roaming'. */
+    .marker-card.status-roaming {
       border-color: #007bff;
     }
     
@@ -1452,6 +1439,21 @@
     </div>
     
     <div class="menu-content">
+      <!-- V3.1.9: Build info — firmware and filesystem versions. Moved
+           here from the floating top-right panel; this is developer /
+           troubleshooting info, not foreground UI. -->
+      <div class="menu-section build-info">
+        <h3>ℹ️ Build Info</h3>
+        <div class="ver-row">
+          <span class="ver-label">Firmware:</span>
+          <span class="ver-value" id="verFirmware">—</span>
+        </div>
+        <div class="ver-row">
+          <span class="ver-label">Filesystem:</span>
+          <span class="ver-value" id="verFilesystem">—</span>
+        </div>
+      </div>
+
       <!-- Theme -->
       <div class="menu-section">
         <h3>🎨 Theme</h3>
@@ -1609,21 +1611,11 @@ Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
   </div>
   <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</div>
 
-  <!-- V3.1.8: version-info panel — sits directly under the WiFi banner in
-       the top-right corner. Displays firmware and filesystem versions
-       side-by-side for at-a-glance troubleshooting. No automatic
-       mismatch warning — firmware-only releases are common and don't
-       imply a problem, so flagging every mismatch creates noise. -->
-  <div id="versionInfoPanel">
-    <div class="ver-row">
-      <span class="ver-label">Firmware:</span>
-      <span class="ver-value" id="verFirmware">—</span>
-    </div>
-    <div class="ver-row">
-      <span class="ver-label">Filesystem:</span>
-      <span class="ver-value" id="verFilesystem">—</span>
-    </div>
-  </div>
+  <!-- V3.1.9: version info moved from a floating top-right panel into
+       the hamburger side menu (see 'Build info' section near the top
+       of .menu-content). It's developer/troubleshooting info and
+       doesn't need to take valuable foreground real estate. -->
+
 
   <!-- V3.1.4: live command status panel. Populated by the WS push-on-status-change
        handler in the JS below. Auto-hidden when empty. -->
@@ -1944,17 +1936,21 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           dropdownIcon.src = iconUrl;
         }
         
-        // Remove all status classes first
-        dropdownButton.classList.remove('status-home', 'status-error', 'status-offline', 'status-outanabout');
-        
+        // Remove all status classes first. V3.1.9: include both
+        // status-outanabout (legacy) and status-roaming (new name)
+        // so the dropdown doesn't carry a stale class across status
+        // changes during the rollout window.
+        dropdownButton.classList.remove('status-home', 'status-error', 'status-offline', 'status-outanabout', 'status-roaming');
+
         // Add appropriate status class based on the status
         if (status) {
           const statusLower = status.toLowerCase();
           const statusMap = {
-            'home': 'status-home',
-            'error': 'status-error',
-            'offline': 'status-offline',
-            'outanabout': 'status-outanabout'
+            'home':       'status-home',
+            'error':      'status-error',
+            'offline':    'status-offline',
+            'roaming':    'status-roaming',   // V3.1.9: new name
+            'outanabout': 'status-roaming'    //         old wire token also maps here
           };
           
           if (statusMap[statusLower]) {

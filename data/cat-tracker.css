@@ -20,8 +20,11 @@
   opacity: 0.8; /* Slightly dimmed appearance */
 }
 
+/* V3.1.9: renamed .status-outanabout → .status-roaming. Old class kept as
+   an alias so any in-flight HTML still styles correctly during rollout. */
+.marker-dropdown .btn.status-roaming,
 .marker-dropdown .btn.status-outanabout {
-  background-color: #007bff !important; /* Blue color for moving status */
+  background-color: #007bff !important; /* Blue for cat outdoors / roaming */
   border-color: #007bff !important;
   color: white !important;
 }
