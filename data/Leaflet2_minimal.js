@@ -37,12 +37,36 @@ const topoLayer = L.tileLayer(
   }
 );
 
+// V3.2.0: Vector-tile layer via MapLibre GL JS, wrapped as a Leaflet
+// layer by the maplibre-gl-leaflet plugin (L.maplibreGL). Uses the
+// OpenFreeMap "Liberty" style — no API key, no documented rate limits,
+// hosted by openfreemap.org. The plugin renders MapLibre's GL canvas
+// underneath Leaflet's marker/overlay panes, so all our existing
+// markers, popups, drag handlers etc. keep working unchanged.
+// Guarded with typeof check: if the CDN-hosted maplibre-gl-leaflet
+// plugin fails to load (SRI mismatch or offline) we silently skip
+// adding the layer rather than crashing the whole map.
+let vectorLayer = null;
+if (typeof L.maplibreGL === "function") {
+  vectorLayer = L.maplibreGL({
+    style: "https://tiles.openfreemap.org/styles/liberty",
+    attribution:
+      '&copy; <a href="https://openfreemap.org">OpenFreeMap</a> | ' +
+      '&copy; <a href="https://www.openmaptiles.org/">OpenMapTiles</a> | ' +
+      "&copy; OpenStreetMap contributors",
+  });
+}
+
 // Create layer control with all map options
 const baseMaps = {
   "Street Map": osmLayer,
   Satellite: satelliteLayer,
   Topographic: topoLayer,
 };
+// Only expose the vector option if the plugin actually loaded.
+if (vectorLayer) {
+  baseMaps["Vector (OpenFreeMap)"] = vectorLayer;
+}
 
 // Add layer control to map (top-right corner)
 L.control

@@ -33,6 +33,19 @@
   <!-- Leaflet CSS - Local -->
   <link rel="stylesheet" href="leaflet.css" />
   <link rel="stylesheet" href="cat-tracker.css" />
+
+  <!-- V3.2.0: MapLibre GL CSS for the vector-tile layer. The matching
+       JS is included near the bottom of the file, AFTER leaflet.js
+       (the maplibre-gl-leaflet plugin requires Leaflet to already be
+       defined when it loads). Vector tiles need an internet
+       connection — degrades to 'no layer' silently if the tile
+       server is unreachable, the other raster layers still work.
+       SRI integrity hashes added per security review — block a
+       compromised CDN from silently serving altered JS/CSS. -->
+  <link rel="stylesheet"
+        href="https://unpkg.com/maplibre-gl@2.2.1/dist/maplibre-gl.css"
+        integrity="sha384-g0Ap4cGP18FAKniFM6i06oyjTpBYleD9hZcGyVnlsc1JFbfedDo1Oqb9qxrxVB3a"
+        crossorigin="anonymous" />
     <style>
     /* V3: dark mode theme.
        Default to dark — applied immediately by the inline script in <head>
@@ -1666,9 +1679,27 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     </div>
   </div>
 
-  <!-- Temporarily use CDN for Leaflet core - will work for testing -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  
+  <!-- Temporarily use CDN for Leaflet core - will work for testing.
+       SRI hash pins this exact build of leaflet@1.9.4 — if unpkg
+       ever serves altered content the browser refuses to execute it. -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha384-cxOPjt7s7Iz04uaHJceBmS+qpjv2JkIHNVcuOrM+YHwZOmJGBXI00mdUXEq65HTH"
+          crossorigin="anonymous"></script>
+
+  <!-- V3.2.0: MapLibre GL JS + Leaflet bridge plugin. Order matters:
+       leaflet.js → maplibre-gl.js → maplibre-gl-leaflet plugin.
+       The plugin (~5 KB) exposes L.maplibreGL() which wraps a MapLibre
+       map as a Leaflet layer, so we keep all our existing Leaflet
+       markers/controls/event handlers and just swap the underlying
+       tile renderer for the vector-tile path. SRI integrity hashes
+       pin the exact CDN bytes — defence against a compromised CDN. -->
+  <script src="https://unpkg.com/maplibre-gl@2.2.1/dist/maplibre-gl.js"
+          integrity="sha384-kxz8S0bdZg9QnMdJAQEmXqm0tf6dcmBJHCl9FYrZRuRSsGUm7F7x2yyCIAFIHki9"
+          crossorigin="anonymous"></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet@0.0.20/leaflet-maplibre-gl.js"
+          integrity="sha384-9fwNQRJPT6L1x49HAfKyw8GVB2Mk5nMTugqwaVgpJbJC/JObdUDN6uqDIW6jGYpG"
+          crossorigin="anonymous"></script>
+
   <!-- Our minimal cat tracker script -->
   <script src="Leaflet2_minimal.js"></script>
 
