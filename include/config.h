@@ -15,10 +15,21 @@
 // These must match between ALL devices to maintain communication
 // Changing these requires physical reprogramming of all nodes
 
-#define LORA_FREQ_MHZ 915.0 // US 915MHz (EU: 868.0)
-#define LORA_SF 8           // Spreading Factor (7-12)
-#define LORA_BW_KHZ 250.0   // Bandwidth (kHz)
-#define LORA_CR 5           // Coding Rate 4/5
+// V3.3.0 range-tuning — MUST stay byte-identical to the transmitter's
+// config.h (BluePawzTransmitter/include/config.h). SF8/BW250 → SF9/BW125
+// trades data-rate for ~+5.5 dB link budget (≈1.5–2× range) at ~4× airtime.
+// Freq 868.0 = EU/UK ISM (was 915 = US). The base station transmits its
+// downlink commands at +22 dBm (mains-powered, see setOutputPower(22) in
+// main.cpp); on the 868.0–868.6 sub-band the legal limit is +14 dBm ERP,
+// so retune to the 869.4–869.65 high-power sub-band if full compliance
+// at max power matters. See the transmitter config.h for the full note.
+//
+// These MUST match on ALL nodes (freq, SF, BW, sync word, CRC, header
+// mode, preamble). CR is auto-detected by RX via the explicit header.
+#define LORA_FREQ_MHZ 868.0 // EU/UK 868MHz ISM (was 915 = US)
+#define LORA_SF 9           // Spreading Factor (7-12). 9 = range/airtime balance
+#define LORA_BW_KHZ 125.0   // Bandwidth (kHz). 125 narrows noise floor for +3dB
+#define LORA_CR 5           // Coding Rate 4/5 (auto-detected by RX via header)
 #define LORA_PREAMBLE 16    // Preamble length
 #define LORA_USE_CRC 1      // Enable CRC
 #define LORA_SYNC_WORD 0x12 // Private network sync word
