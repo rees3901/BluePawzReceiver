@@ -2701,9 +2701,36 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     }
     
     function updateTrailLength(value) {
-      document.getElementById('trailValue').textContent = value;
-      // TODO: Apply trail length change to breadcrumb system
+      const n = parseInt(value, 10) || 4;
+      document.getElementById('trailValue').textContent = n;
+      // V3.4.0: apply + persist. Affects the breadcrumb cap in handleTelemetry.
+      window.MAX_TRAIL_POINTS = n;
+      if (window.Prefs) window.Prefs.set('trailLength', n);
+      // Re-trim existing trails and redraw any that are currently shown.
+      if (window.breadcrumbs) {
+        Object.keys(window.breadcrumbs).forEach(id => {
+          const arr = window.breadcrumbs[id];
+          while (arr.length > n) arr.shift();
+          const btn = document.getElementById(`breadcrumb-btn-${id}`);
+          if (btn && btn.classList.contains('active') && typeof showBreadcrumbs === 'function') {
+            showBreadcrumbs(id);
+          }
+        });
+      }
     }
+
+    // V3.4.0: initialise the trail-length slider from the saved pref so the
+    // control reflects the persisted value on load.
+    document.addEventListener('DOMContentLoaded', () => {
+      try {
+        const saved = (window.Prefs && window.Prefs.get('trailLength', 4)) || 4;
+        const slider = document.getElementById('trailLength');
+        const label = document.getElementById('trailValue');
+        if (slider) slider.value = saved;
+        if (label) label.textContent = saved;
+        window.MAX_TRAIL_POINTS = saved;
+      } catch (e) {}
+    });
     
     function resetMapView() {
       if (typeof map !== 'undefined') {

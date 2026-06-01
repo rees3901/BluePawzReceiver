@@ -10,6 +10,40 @@ const map = L.map("map", {
   maxZoom: 23,
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// V3.4.0 client-side UI preferences (per-browser, localStorage).
+// Cat DATA comes from the server (shared truth across all clients); these
+// are personal VIEW prefs, so they live in localStorage and never go stale
+// or leak between clients. Stored as one JSON object under 'bluepaws.prefs'.
+// (Theme has its own pre-existing key in index.html, left as-is.)
+// ─────────────────────────────────────────────────────────────────────
+window.Prefs = {
+  _key: "bluepaws.prefs",
+  data: {},
+  load() {
+    try {
+      this.data = JSON.parse(localStorage.getItem(this._key)) || {};
+    } catch (e) {
+      this.data = {};
+    }
+    return this.data;
+  },
+  get(k, d) {
+    return k in this.data ? this.data[k] : d;
+  },
+  set(k, v) {
+    this.data[k] = v;
+    try {
+      localStorage.setItem(this._key, JSON.stringify(this.data));
+    } catch (e) {}
+  },
+};
+window.Prefs.load();
+
+// Trail length (points kept per cat). Honoured by the breadcrumb cap in
+// handleTelemetry. Default 4.
+window.MAX_TRAIL_POINTS = window.Prefs.get("trailLength", 4);
+
 // Define multiple map layers
 const osmLayer = L.tileLayer(
   "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
@@ -75,6 +109,20 @@ L.control
     collapsed: false, // Set to true to collapse the control
   })
   .addTo(map);
+
+// V3.4.0: restore the user's last-selected base layer (osmLayer is the
+// default-on layer above) and remember any future change. Leaflet fires
+// 'baselayerchange' with the human-readable layer name from baseMaps.
+(function () {
+  const savedLayer = window.Prefs.get("baseLayer", null);
+  if (savedLayer && baseMaps[savedLayer]) {
+    Object.values(baseMaps).forEach((l) => {
+      if (map.hasLayer(l)) map.removeLayer(l);
+    });
+    map.addLayer(baseMaps[savedLayer]);
+  }
+  map.on("baselayerchange", (e) => window.Prefs.set("baseLayer", e.name));
+})();
 
 // Define KNOWN_CATS
 const KNOWN_CATS = ["Podge", "Macy", "Gizmo", "Simba", "MyDevice"];
@@ -362,10 +410,52 @@ window.toggleBreadcrumbsCard = function (id) {
     hideBreadcrumbs(id);
     btn.classList.remove("active");
     btn.innerHTML = "📍 Trail: OFF";
+    setTrailPref(id, false);
   } else {
     showBreadcrumbs(id);
     btn.classList.add("active");
     btn.innerHTML = "✅ Trail: ON";
+    setTrailPref(id, true);
+  }
+};
+
+// V3.4.0: persist which cats have their trail shown, so the choice
+// survives a reload. Stored as an array of ids under prefs key 'trails'.
+function setTrailPref(id, on) {
+  if (!window.Prefs) return;
+  const set = new Set(window.Prefs.get("trails", []));
+  if (on) set.add(id);
+  else set.delete(id);
+  window.Prefs.set("trails", Array.from(set));
+}
+
+// V3.4.0: re-apply view prefs that need markers/cards to already exist.
+// Called from hydrateFromServer() once /data has rendered the cats.
+window.applyMarkerDependentPrefs = function () {
+  if (!window.Prefs) return;
+
+  // Re-enable trails the user had switched on.
+  const trails = window.Prefs.get("trails", []);
+  if (Array.isArray(trails)) {
+    trails.forEach((id) => {
+      const btn = document.getElementById(`breadcrumb-btn-${id}`);
+      if (btn && !btn.classList.contains("active")) {
+        showBreadcrumbs(id);
+        btn.classList.add("active");
+        btn.innerHTML = "✅ Trail: ON";
+      }
+    });
+  }
+
+  // Re-apply the follow target.
+  const follow = window.Prefs.get("follow", null);
+  if (follow && markers[follow]) {
+    followedMarkerId = follow;
+    const btn = document.getElementById(`follow-btn-${follow}`);
+    if (btn) {
+      btn.classList.add("active");
+      btn.innerHTML = "✅ Following";
+    }
   }
 };
 
@@ -406,6 +496,8 @@ window.toggleFollowMarker = function (id) {
       map.setView(latlng, 16);
     }
   }
+  // V3.4.0: remember the follow target across reloads.
+  if (window.Prefs) window.Prefs.set("follow", followedMarkerId);
 }; // Update marker card with new data
 function updateMarkerCard(id, status, data) {
   const card = document.getElementById(`marker-card-${id}`);
@@ -576,6 +668,10 @@ function connectWebSocket() {
     }
 
     requestBleStatus();
+
+    // V3.4.0: rebuild the map from the receiver's stored state on every
+    // (re)connect — covers initial page load, refresh, and reconnect.
+    if (window.hydrateFromServer) window.hydrateFromServer();
   };
 
   window.ws.onerror = (error) => {
@@ -629,8 +725,20 @@ function connectWebSocket() {
 
     try {
       const data = JSON.parse(event.data);
-      console.log("Parsed data:", data);
+      window.handleTelemetry(data, false);
+    } catch (error) {
+      console.error("Error processing WebSocket message:", error);
+    }
+  };
+}
 
+// V3.4.0: shared telemetry/message handler. Called LIVE from ws.onmessage
+// (isHydrate=false) and once per cat from hydrateFromServer() on page load
+// / WS reconnect (isHydrate=true). Centralising the render path is what
+// lets a reloaded page (or a brand-new client) rebuild the entire map from
+// the receiver's RAM via /data, instead of waiting for the next live packet.
+window.handleTelemetry = function (data, isHydrate) {
+    try {
       // Handle BLE state response
       if (data.type === "ble_state") {
         console.log("BLE state update received:", data);
@@ -715,12 +823,22 @@ function connectWebSocket() {
           // Force map to recalculate marker positions
           markers[id]._updateZIndex();
 
-          // Update breadcrumbs trail (keep last 4 positions)
-          if (!window.breadcrumbs[id]) {
-            window.breadcrumbs[id] = [];
+          // Update breadcrumbs trail. V3.4.0: on hydrate, seed the whole
+          // trail from the server's history (data.trail = [[lat,lon],…]) so
+          // the line redraws complete after a reload. Live packets append a
+          // single point. Cap honours the user's trail-length pref.
+          const maxPts = window.MAX_TRAIL_POINTS || 4;
+          if (isHydrate && Array.isArray(data.trail) && data.trail.length) {
+            window.breadcrumbs[id] = data.trail
+              .filter((p) => Array.isArray(p) && p.length >= 2)
+              .map((p) => [p[0], p[1]]);
+          } else {
+            if (!window.breadcrumbs[id]) {
+              window.breadcrumbs[id] = [];
+            }
+            window.breadcrumbs[id].push(newPos);
           }
-          window.breadcrumbs[id].push(newPos);
-          if (window.breadcrumbs[id].length > 4) {
+          while (window.breadcrumbs[id].length > maxPts) {
             window.breadcrumbs[id].shift();
           }
 
@@ -768,10 +886,39 @@ function connectWebSocket() {
         updateMarkerCard(id, status, data);
       }
     } catch (error) {
-      console.error("Error processing WebSocket message:", error);
+      console.error("[handleTelemetry] error:", error);
     }
-  };
-}
+};
+
+// V3.4.0: pull the receiver's last-known state on load / reconnect and
+// render it immediately, so a refresh or a new client never starts blank.
+// /data → array of cat payloads (each may carry a `trail` history array);
+// /node-states → array of node modes for the C&C panel + marker cards.
+window.hydrateFromServer = function () {
+  fetch("/data", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : []))
+    .then((arr) => {
+      if (Array.isArray(arr)) {
+        arr.forEach((item) => {
+          if (item && item.id) window.handleTelemetry(item, true);
+        });
+        console.log(`[hydrate] restored ${arr.length} cat(s) from /data`);
+        // Re-apply persisted view prefs that depend on markers existing.
+        if (window.applyMarkerDependentPrefs) window.applyMarkerDependentPrefs();
+      }
+    })
+    .catch((e) => console.warn("[hydrate] /data fetch failed:", e));
+
+  fetch("/node-states", { cache: "no-store" })
+    .then((r) => (r.ok ? r.json() : null))
+    .then((nodes) => {
+      if (Array.isArray(nodes) && window.handleNodeStateUpdate) {
+        window.handleNodeStateUpdate({ type: "node_states", nodes: nodes });
+        console.log(`[hydrate] restored ${nodes.length} node(s) from /node-states`);
+      }
+    })
+    .catch((e) => console.warn("[hydrate] /node-states fetch failed:", e));
+};
 
 // Old updateGlobalConsole function removed - now handled in index.html
 

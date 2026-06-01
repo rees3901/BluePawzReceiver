@@ -89,6 +89,32 @@ WebSocketsServer webSocket(81);
 std::map<String, String> catPayloads;
 
 // ─────────────────────────────────────────────────────────────────────
+// V3.4.0 WEB-UI STATE PERSISTENCE
+//
+// Problem this solves: previously catPayloads/nodeStates lived only in
+// RAM and the web client only populated markers from LIVE WebSocket
+// pushes — so a page refresh, a new client, or a receiver reboot showed
+// a blank map until each collar next reported (up to 5 min away).
+//
+// Two persistence mechanisms:
+//   1. Trail ring buffer — last N positions per cat, served via /data so
+//      the breadcrumb trail (not just the single latest dot) redraws on
+//      reload.
+//   2. LittleFS snapshot (/state.json) — catPayloads + trails + node
+//      modes are written (debounced) so state survives a power-cut, and
+//      reloaded on boot. Debounce keeps flash wear negligible.
+// ─────────────────────────────────────────────────────────────────────
+#define TRAIL_MAX_POINTS 10           // positions kept per cat for trails
+#define STATE_FILE "/state.json"      // LittleFS snapshot path
+#define STATE_SAVE_DEBOUNCE_MS 30000UL // ≤1 write / 30 s (flash-wear guard)
+
+struct TrailPoint { float lat; float lon; };
+std::map<String, std::vector<TrailPoint>> catTrails;
+
+static bool g_stateDirty = false;       // set on any state change
+static uint32_t g_lastStateSaveMs = 0;  // last LittleFS write time
+
+// ─────────────────────────────────────────────────────────────────────
 // Heltec Wireless Tracker V2 (HTIT-Tracker_V2.3) pin map
 // Source: espressif/arduino-esp32 variants/heltec_wireless_tracker/pins_arduino.h
 //         + Heltec_ESP32 HT_st7735 driver
@@ -783,6 +809,12 @@ void flushMessageLog();
 void handleMessagesExport();
 void handleClearLog();
 
+// V3.4.0 state-persistence helpers (defined later, used across the file)
+void saveState();
+void loadState();
+void maybeSaveState();
+void recordTrailPoint(const String &id, float lat, float lon);
+
 // Node state and command functions
 void updateNodeState(const JsonDocument &doc);
 void processCommandQueue();
@@ -1116,6 +1148,7 @@ void updateNodeState(const JsonDocument &doc)
   state.deviceId = deviceId;
   state.lastSeen = millis();
   if (incomingDevIdNum != 0) state.deviceIdNum = incomingDevIdNum;
+  g_stateDirty = true; // V3.4.0: node state changed → schedule a snapshot
 
   // V3.2.5: every telemetry packet now carries the collar's current
   // mode (transmitter doc["mode"] = g_currentMode). Pick it up here so
@@ -2462,6 +2495,15 @@ static void handleLoRaPacketJSON(const String &incoming)
     serializeJson(doc, payload);
     catPayloads[doc["id"].as<String>()] = payload;
 
+    // V3.4.0: append to the per-cat trail ring buffer + flag state dirty
+    // so the LittleFS snapshot + reload-survivable breadcrumbs stay current.
+    if (doc["lat"].is<float>() && doc["lon"].is<float>())
+    {
+      recordTrailPoint(doc["id"].as<String>(),
+                       doc["lat"].as<float>(), doc["lon"].as<float>());
+    }
+    g_stateDirty = true;
+
     serializeJsonPretty(doc, Serial);
     Serial.println();
 
@@ -2867,12 +2909,173 @@ void handleData()
   {
     JsonDocument singleDoc;
     DeserializationError error = deserializeJson(singleDoc, pair.second);
-    if (!error)
-      array.add(singleDoc);
+    if (error)
+      continue;
+
+    // V3.4.0: attach the per-cat trail history so a reloading client can
+    // redraw the full breadcrumb line, not just the latest dot. Shape:
+    // "trail": [[lat,lon],[lat,lon],...] oldest→newest.
+    auto it = catTrails.find(pair.first);
+    if (it != catTrails.end() && !it->second.empty())
+    {
+      JsonArray tr = singleDoc["trail"].to<JsonArray>();
+      for (auto &p : it->second)
+      {
+        JsonArray pt = tr.add<JsonArray>();
+        pt.add(p.lat);
+        pt.add(p.lon);
+      }
+    }
+    array.add(singleDoc);
   }
   String output;
   serializeJson(doc, output);
   server.send(200, "application/json", output);
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// V3.4.0 STATE PERSISTENCE (LittleFS)
+// ─────────────────────────────────────────────────────────────────────
+
+// Append one fix to a cat's trail ring buffer, capped at TRAIL_MAX_POINTS.
+void recordTrailPoint(const String &id, float lat, float lon)
+{
+  auto &tr = catTrails[id];
+  tr.push_back({lat, lon});
+  while (tr.size() > TRAIL_MAX_POINTS)
+    tr.erase(tr.begin());
+}
+
+// Serialize catPayloads (+ trails) and the persistent NodeState fields to
+// /state.json. Called debounced from loop() via maybeSaveState(). Note:
+// per-packet timestamps (received_at/last_seen) are millis()-relative and
+// therefore meaningless after a reboot — we persist POSITION + MODE, which
+// is what makes the map useful on restart; "last seen" simply shows stale
+// until the collar's next packet. That's an acceptable trade.
+void saveState()
+{
+  JsonDocument doc;
+
+  JsonArray cats = doc["cats"].to<JsonArray>();
+  for (auto &pair : catPayloads)
+  {
+    JsonDocument cd;
+    if (deserializeJson(cd, pair.second))
+      continue;
+    auto it = catTrails.find(pair.first);
+    if (it != catTrails.end() && !it->second.empty())
+    {
+      JsonArray tr = cd["trail"].to<JsonArray>();
+      for (auto &p : it->second)
+      {
+        JsonArray pt = tr.add<JsonArray>();
+        pt.add(p.lat);
+        pt.add(p.lon);
+      }
+    }
+    cats.add(cd);
+  }
+
+  JsonArray nodes = doc["nodes"].to<JsonArray>();
+  for (auto &pair : nodeStates)
+  {
+    NodeState &s = pair.second;
+    JsonObject n = nodes.add<JsonObject>();
+    n["device"] = s.deviceId;
+    n["device_id"] = s.deviceIdNum;
+    n["mode"] = s.currentMode;
+    n["power"] = s.txPower;
+    n["sleep"] = s.sleepInterval;
+    n["mode_known"] = s.modeKnown;
+  }
+
+  File f = LittleFS.open(STATE_FILE, "w");
+  if (!f)
+  {
+    Serial.println("[STATE] save failed: could not open " STATE_FILE);
+    return;
+  }
+  serializeJson(doc, f);
+  f.close();
+  Serial.printf("[STATE] saved %u cats, %u nodes → %s\n",
+                (unsigned)catPayloads.size(), (unsigned)nodeStates.size(), STATE_FILE);
+}
+
+// Restore catPayloads (+ trails) and node modes from /state.json on boot.
+// Best-effort: a missing or corrupt file just means we start empty.
+void loadState()
+{
+  if (!LittleFS.exists(STATE_FILE))
+  {
+    Serial.println("[STATE] no saved state to restore");
+    return;
+  }
+  File f = LittleFS.open(STATE_FILE, "r");
+  if (!f)
+    return;
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err)
+  {
+    Serial.printf("[STATE] restore parse error: %s — ignoring\n", err.c_str());
+    return;
+  }
+
+  for (JsonObject cd : doc["cats"].as<JsonArray>())
+  {
+    if (!cd["id"].is<const char *>())
+      continue;
+    String id = cd["id"].as<const char *>();
+
+    if (cd["trail"].is<JsonArray>())
+    {
+      std::vector<TrailPoint> tr;
+      for (JsonArray pt : cd["trail"].as<JsonArray>())
+      {
+        if (pt.size() >= 2)
+          tr.push_back({pt[0].as<float>(), pt[1].as<float>()});
+      }
+      if (!tr.empty())
+        catTrails[id] = tr;
+    }
+    cd.remove("trail"); // keep the stored payload clean; /data re-adds trail
+    String payload;
+    serializeJson(cd, payload);
+    catPayloads[id] = payload;
+  }
+
+  for (JsonObject n : doc["nodes"].as<JsonArray>())
+  {
+    if (!n["device"].is<const char *>())
+      continue;
+    String dev = n["device"].as<const char *>();
+    NodeState &s = nodeStates[dev];
+    s.deviceId = dev;
+    s.deviceIdNum = n["device_id"] | 0;
+    s.currentMode = (const char *)(n["mode"] | "unknown");
+    s.txPower = n["power"] | 0;
+    s.sleepInterval = n["sleep"] | 0;
+    s.modeKnown = n["mode_known"] | false;
+    s.lastSeen = 0; // unknown across reboot (millis reset)
+  }
+
+  Serial.printf("[STATE] restored %u cats, %u nodes from %s\n",
+                (unsigned)catPayloads.size(), (unsigned)nodeStates.size(), STATE_FILE);
+}
+
+// Debounced write: only touches flash when state changed AND at least
+// STATE_SAVE_DEBOUNCE_MS has elapsed since the last write. Bounds flash
+// wear to ≤1 write per debounce window regardless of telemetry rate.
+void maybeSaveState()
+{
+  if (!g_stateDirty)
+    return;
+  if (millis() - g_lastStateSaveMs < STATE_SAVE_DEBOUNCE_MS)
+    return;
+  g_stateDirty = false;
+  g_lastStateSaveMs = millis();
+  saveState();
 }
 
 // V3.1: Switch from home/STA mode to roaming/AP mode. Tears down the
@@ -3591,6 +3794,12 @@ void setup()
 
   Serial.printf("[FS] LittleFS Capacity: %.2fMB used out of %.2fMB total, %.2fMB free\n",
                 usedMB, totalMB, freeMB);
+
+  // V3.4.0: restore last-known cat positions / trails / node modes from the
+  // previous session so the web UI + map are populated immediately on boot,
+  // before any collar has re-reported.
+  loadState();
+
   delay(1000); // Give time for the filesystem to settle and view the setup messages
 
   Serial.println("[FS] Listing LittleFS root directory:");
@@ -3765,6 +3974,10 @@ void loop()
   {
     flushMessageLog();
   }
+
+  // V3.4.0: debounced snapshot of cat positions / trails / node modes so
+  // the web UI survives a receiver reboot, not just a page refresh.
+  maybeSaveState();
 
   // No periodic re-advertising; BLE continues advertising until explicitly stopped/started
 }

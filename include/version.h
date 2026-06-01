@@ -31,4 +31,4 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
-#define BLUEPAWZ_VERSION "3.3.0"
+#define BLUEPAWZ_VERSION "3.4.0"
