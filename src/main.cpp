@@ -1117,6 +1117,22 @@ void updateNodeState(const JsonDocument &doc)
   state.lastSeen = millis();
   if (incomingDevIdNum != 0) state.deviceIdNum = incomingDevIdNum;
 
+  // V3.2.5: every telemetry packet now carries the collar's current
+  // mode (transmitter doc["mode"] = g_currentMode). Pick it up here so
+  // the C&C panel reflects reality without needing an explicit
+  // get_status round-trip. Only updates when the field exists AND we
+  // weren't going to set it more authoritatively in the ACK branch
+  // below (the ACK branch checks `ack:"mode"` and reads `profile`).
+  if (doc["mode"].is<String>() && !doc["ack"].is<String>())
+  {
+    String reportedMode = doc["mode"].as<String>();
+    if (reportedMode.length() > 0 && reportedMode != "unknown")
+    {
+      state.currentMode = reportedMode;
+      state.modeKnown = true;
+    }
+  }
+
   // Check if this is an ACK response
   if (doc["ack"].is<String>())
   {
@@ -1477,6 +1493,28 @@ void processCommandQueue()
   }
 }
 
+// V3.2.4: resolve a friendly cat name → its MAC-derived numeric device_id
+// by consulting the live nodeStates registry first, then falling back to
+// the legacy hardcoded DEVICE_REGISTRY in protocol.h.
+//
+// Why: collars now derive a 3-digit device_id from their factory MAC
+// (e.g. "Podge" → 742), so the static {1:"Macy",2:"Gizmo",…} registry
+// is just a historical seed — useless for any collar that's been
+// flashed with V3.2.x transmitter firmware. The runtime nodeStates map
+// (populated from every inbound telemetry packet's `device_id` field)
+// is the source of truth. We still fall back to the static registry so
+// the first user-initiated command before any telemetry has been seen
+// can target a known legacy collar; returns 0 if completely unknown.
+static uint16_t resolveDeviceIdNum(const String &name)
+{
+  auto it = nodeStates.find(name);
+  if (it != nodeStates.end() && it->second.deviceIdNum != 0)
+  {
+    return it->second.deviceIdNum;
+  }
+  return getDeviceIdByName(name.c_str());
+}
+
 // V3.1.4: enqueue a built LoRaCommand and immediately attempt one TX.
 // Used by sendModeCommand / sendStatusRequest / sendRenameCommand so
 // the user's click translates to a radio transmission within ~50 ms
@@ -1525,10 +1563,14 @@ void sendModeCommand(const String &deviceId, const String &profile)
   }
   else
   {
-    targetId = getDeviceIdByName(deviceId.c_str());
+    // V3.2.4: prefer live-discovered MAC-derived id; legacy registry
+    // is a fallback for first-boot scenarios where no telemetry has
+    // arrived yet.
+    targetId = resolveDeviceIdNum(deviceId);
     if (targetId == 0)
     {
-      Serial.printf("[CMD] Unknown device: %s\n", deviceId.c_str());
+      Serial.printf("[CMD] Unknown device: %s (not in nodeStates or legacy registry)\n",
+                    deviceId.c_str());
       return;
     }
   }
@@ -1567,10 +1609,14 @@ void sendStatusRequest(const String &deviceId)
   }
   else
   {
-    targetId = getDeviceIdByName(deviceId.c_str());
+    // V3.2.4: prefer live-discovered MAC-derived id; legacy registry
+    // is a fallback for first-boot scenarios where no telemetry has
+    // arrived yet.
+    targetId = resolveDeviceIdNum(deviceId);
     if (targetId == 0)
     {
-      Serial.printf("[CMD] Unknown device: %s\n", deviceId.c_str());
+      Serial.printf("[CMD] Unknown device: %s (not in nodeStates or legacy registry)\n",
+                    deviceId.c_str());
       return;
     }
   }
@@ -2302,6 +2348,45 @@ static void handleLoRaPacketJSON(const String &incoming)
     return;
   }
 
+  // V3.2.5: response packets (mode ACK, status response, pong, set_name
+  // ACK, set_geofence ACK) come back with `device` instead of `id`, so
+  // the old outer gate that required `id`/`sender_name` was silently
+  // discarding every ACK except set_name's (which uniquely also carries
+  // `id`). That's why queued commands hung in AWAITING_ACK forever even
+  // when the collar genuinely ACKed.
+  //
+  // Detect responses by their explicit markers:
+  //   - "ack":<type>      mode / set_name / set_geofence
+  //   - "pong":true       ping response
+  //   - "status":"ok" + "mode" + no "lat"   get_status response
+  //
+  // Route responses to updateNodeState() (which handles the ACK branch
+  // and runs markCommandDelivered) and bail out before the telemetry
+  // path so we don't broadcast ACKs as position updates to web clients.
+  bool isResponse = doc["ack"].is<const char *>() ||
+                    doc["pong"].is<bool>() ||
+                    (doc["status"].is<const char *>() &&
+                     doc["mode"].is<const char *>() &&
+                     !doc["lat"].is<float>() &&
+                     !doc["latitude"].is<float>());
+
+  if (isResponse)
+  {
+    // Patch `id` from `device` if missing, so updateNodeState's
+    // `doc["id"] || doc["device"]` lookup picks the right key and any
+    // rename-housekeeping logic that reads doc["id"] still works.
+    if (!doc["id"].is<String>() && doc["device"].is<String>())
+    {
+      doc["id"] = doc["device"];
+    }
+    Serial.print("[LORA] response packet received: ");
+    serializeJson(doc, Serial);
+    Serial.println();
+    logMessage(doc, "lora-ack");
+    updateNodeState(doc);
+    return;
+  }
+
   if (!error && (doc["id"].is<String>() || doc["sender_name"].is<String>()))
   {
     // Map new field names to expected format
@@ -2384,9 +2469,13 @@ static void handleLoRaPacketJSON(const String &incoming)
     updateNodeState(doc);
     notifyPosition(doc);
 
-    // V3: collar just transmitted — we have ~5s of post-TX RX window on the
-    // collar side. If there's a queued command for it, push it now so it
-    // lands inside that window instead of waiting on the 3s safety-net poll.
+    // V3: collar just transmitted — we have a ~20 s post-TX RX window on
+    // the collar side (POST_TX_LISTEN_MS in the transmitter's main.cpp,
+    // each received command extending it by POST_TX_EXTEND_MS=3 s). If
+    // there's a queued command for it, push it now so it lands inside
+    // that window instead of waiting on the 3 s safety-net poll. The
+    // 20 s headroom is generous enough that the round-trip ACK also
+    // makes it back inside the same window.
     String reporting = doc["id"].as<String>();
     if (reporting.length() > 0)
     {

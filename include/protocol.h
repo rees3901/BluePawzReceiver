@@ -92,6 +92,21 @@ enum bp_tlv_type_t : uint8_t
 // ═══════════════════════════════════════════════
 // Device Registry
 // ═══════════════════════════════════════════════
+// V3.2.4: as of the MAC-derived ID rollout on the transmitter, collars
+// now auto-assign their device_id (3 digits, 100–999) from a hash of
+// their factory MAC. Same firmware binary → different IDs per device,
+// no manual programming. This static table is therefore LEGACY — kept
+// only as a fallback for any old collar still running pre-3.2.x
+// transmitter firmware that hardcoded DEVICE_ID_INT = 1..5.
+//
+// The source of truth at runtime is `nodeStates[name].deviceIdNum`,
+// populated from each inbound telemetry packet's `device_id` field.
+// See resolveDeviceIdNum() in src/main.cpp — that helper consults
+// nodeStates first and only falls back to this table for first-boot
+// scenarios where no telemetry has been seen yet.
+//
+// Do not add new entries here. Rename collars via the web UI's ✏️
+// button (sendRenameCommand → set_name) instead.
 #define DEVICE_ID_BASE 0x0000      // Base station (RX)
 #define DEVICE_ID_BROADCAST 0xFFFF // Broadcast to all collars
 
