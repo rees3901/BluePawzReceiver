@@ -86,7 +86,10 @@
 
 WebServer server(80);
 WebSocketsServer webSocket(81);
-std::map<String, String> catPayloads;
+// V3.6.0: keyed by device_id (immutable UID), NOT friendly name. The
+// friendly name is a mutable display label carried inside each payload's
+// "name" field. Two collars could share a name with zero collisions.
+std::map<uint16_t, String> catPayloads;
 
 // ─────────────────────────────────────────────────────────────────────
 // V3.4.0 WEB-UI STATE PERSISTENCE
@@ -109,7 +112,7 @@ std::map<String, String> catPayloads;
 #define STATE_SAVE_DEBOUNCE_MS 30000UL // ≤1 write / 30 s (flash-wear guard)
 
 struct TrailPoint { float lat; float lon; };
-std::map<String, std::vector<TrailPoint>> catTrails;
+std::map<uint16_t, std::vector<TrailPoint>> catTrails; // keyed by device_id (UID)
 
 static bool g_stateDirty = false;       // set on any state change
 static uint32_t g_lastStateSaveMs = 0;  // last LittleFS write time
@@ -616,10 +619,12 @@ static void tftRenderDevice(uint8_t devIdx)
   char buf[32];
   tft.setTextSize(1);
 
-  // Title: cat name + page indicator
+  // Title: cat name (label) + page indicator. it->first is the UID key.
   tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
   tft.setCursor(2, 2);
-  snprintf(buf, sizeof(buf), "%-10.10s %u/%u", it->first.c_str(),
+  const char *nm = doc["name"] | "";
+  snprintf(buf, sizeof(buf), "%-10.10s %u/%u",
+           (nm && nm[0]) ? nm : (String("Dev-") + it->first).c_str(),
            (unsigned)(g_tftPage + 1), (unsigned)tftTotalPages());
   tft.print(buf);
 
@@ -869,7 +874,7 @@ struct NodeState
   bool modeKnown = false;
 };
 
-std::map<String, NodeState> nodeStates; // Track state of each TX node
+std::map<uint16_t, NodeState> nodeStates; // keyed by device_id (UID); NodeState.deviceId holds the name label
 
 // ───────────── LoRa Command Queue ─────────────
 // V3 rollout: stays on JSON. Buffer sized for JSON command payloads.
@@ -977,13 +982,13 @@ void handleClearLog();
 void saveState();
 void loadState();
 void maybeSaveState();
-void recordTrailPoint(const String &id, float lat, float lon);
+void recordTrailPoint(uint16_t deviceId, float lat, float lon);
 
 // Node state and command functions
 void updateNodeState(const JsonDocument &doc);
 void processCommandQueue();
-void sendModeCommand(const String &deviceId, const String &profile);
-void sendStatusRequest(const String &deviceId);
+void sendModeCommand(uint16_t targetId, const String &profile);
+void sendStatusRequest(uint16_t targetId);
 void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
 // V3.1.4: forward-decl so handleLoRaPacketJSON (defined earlier in file)
 // can call the command-status helpers defined after the transmit code.
@@ -1263,55 +1268,33 @@ void handleClearLog()
 // rename happened, so the stale name is removed from the C&C list.
 void updateNodeState(const JsonDocument &doc)
 {
-  String deviceId = "";
-
-  // Extract device ID from various possible fields
-  if (doc["id"].is<String>())
-  {
-    deviceId = doc["id"].as<String>();
-  }
-  else if (doc["device"].is<String>())
-  {
-    deviceId = doc["device"].as<String>();
-  }
-
-  if (deviceId.isEmpty() || deviceId == "MyDevice")
-  {
-    return; // Don't track base station's own device
-  }
-
-  // Capture numeric device_id up-front so we can detect renames.
+  // V3.6.0: nodes are keyed by the immutable device_id (UID). A packet
+  // with no device_id can't be tracked. Renames are now free — the UID
+  // entry stays put and only its name label updates, so the old
+  // "drop the stale-named entry" housekeeping is gone entirely.
   uint16_t incomingDevIdNum = 0;
   if (doc["device_id"].is<int>())
   {
     incomingDevIdNum = (uint16_t)doc["device_id"].as<int>();
   }
-
-  // Rename housekeeping: if a different node entry already holds this
-  // numeric device_id under a stale name (e.g. "Device-4" before rename),
-  // drop it so the C&C UI doesn't show a ghost card.
-  if (incomingDevIdNum != 0)
+  if (incomingDevIdNum == 0)
   {
-    for (auto it = nodeStates.begin(); it != nodeStates.end(); )
-    {
-      if (it->second.deviceIdNum == incomingDevIdNum && it->first != deviceId)
-      {
-        Serial.printf("[RENAME] device_id=%u changed name '%s' -> '%s' — dropping stale entry\n",
-                      incomingDevIdNum, it->first.c_str(), deviceId.c_str());
-        it = nodeStates.erase(it);
-      }
-      else
-      {
-        ++it;
-      }
-    }
+    return; // no UID → can't identify this node
   }
 
-  // Get or create node state
-  NodeState &state = nodeStates[deviceId];
-  state.deviceId = deviceId;
+  // Friendly label (mutable). Falls back to "Device-<uid>" if absent.
+  String deviceName = doc["name"].is<String>() ? doc["name"].as<String>()
+                                                : (String("Device-") + incomingDevIdNum);
+  if (deviceName == "MyDevice")
+  {
+    return; // Don't track base station's own device
+  }
+
+  // Get or create node state, keyed by UID.
+  NodeState &state = nodeStates[incomingDevIdNum];
+  state.deviceId = deviceName;        // the editable label
+  state.deviceIdNum = incomingDevIdNum; // the immutable UID
   state.lastSeen = millis();
-  if (incomingDevIdNum != 0) state.deviceIdNum = incomingDevIdNum;
   g_stateDirty = true; // V3.4.0: node state changed → schedule a snapshot
 
   // V3.2.5: every telemetry packet now carries the collar's current
@@ -1341,12 +1324,12 @@ void updateNodeState(const JsonDocument &doc)
     {
       msgId = doc["msg_id"].as<uint32_t>();
       Serial.printf("[ACK] %s acknowledged command (msg_id=%lu) ✅\n",
-                    deviceId.c_str(), msgId);
+                    deviceName.c_str(), msgId);
     }
     else
     {
       Serial.printf("[ACK] %s acknowledged (WARNING: no msg_id)\n",
-                    deviceId.c_str());
+                    deviceName.c_str());
     }
 
     // V3.1.4: mark the matching queued command DELIVERED. The status
@@ -1358,7 +1341,7 @@ void updateNodeState(const JsonDocument &doc)
     else
     {
       Serial.printf("[ACK] WARNING: no matching queued command for msg_id=%lu device=%s\n",
-                    msgId, deviceId.c_str());
+                    msgId, deviceName.c_str());
     }
 
     // Handle mode ACK: extract profile, power, sleep
@@ -1389,7 +1372,7 @@ void updateNodeState(const JsonDocument &doc)
       }
 
       Serial.printf("[NODE] %s confirmed mode: %s (Power: %ddBm, Sleep: %ds)\n",
-                    deviceId.c_str(), state.currentMode.c_str(),
+                    deviceName.c_str(), state.currentMode.c_str(),
                     state.txPower, state.sleepInterval);
     }
 
@@ -1424,7 +1407,7 @@ void updateNodeState(const JsonDocument &doc)
     }
 
     Serial.printf("[NODE] %s status: mode=%s, power=%ddBm, sleep=%ds\n",
-                  deviceId.c_str(), state.currentMode.c_str(),
+                  deviceName.c_str(), state.currentMode.c_str(),
                   state.txPower, state.sleepInterval);
 
     // V3.2.3: status responses are ACKs to get_status commands but don't
@@ -1446,7 +1429,7 @@ void updateNodeState(const JsonDocument &doc)
   else if (doc["alert"].is<String>() && doc["alert"].as<String>() == "lost_mode_timeout")
   {
     Serial.printf("[NODE] ⚠️ %s lost mode timed out - auto-reverted to %s\n",
-                  deviceId.c_str(), doc["new_mode"].as<String>().c_str());
+                  deviceName.c_str(), doc["new_mode"].as<String>().c_str());
 
     state.currentMode = doc["new_mode"].as<String>();
     state.lostModeStartTime = 0;
@@ -1455,7 +1438,8 @@ void updateNodeState(const JsonDocument &doc)
     // Broadcast alert via WebSocket
     JsonDocument alertDoc;
     alertDoc["type"] = "node_alert";
-    alertDoc["device"] = deviceId;
+    alertDoc["device_id"] = incomingDevIdNum;
+    alertDoc["name"] = deviceName;
     alertDoc["alert"] = "lost_mode_timeout";
     alertDoc["new_mode"] = doc["new_mode"].as<String>();
     alertDoc["duration_s"] = doc["duration_s"].as<int>();
@@ -1714,14 +1698,17 @@ void processCommandQueue()
 // is the source of truth. We still fall back to the static registry so
 // the first user-initiated command before any telemetry has been seen
 // can target a known legacy collar; returns 0 if completely unknown.
-static uint16_t resolveDeviceIdNum(const String &name)
+// V3.6.0: look up a collar's current friendly label by its UID — for
+// display/logging only (commands route by UID). Falls back to the legacy
+// static registry, then to "Device-<uid>".
+static String nodeNameForId(uint16_t id)
 {
-  auto it = nodeStates.find(name);
-  if (it != nodeStates.end() && it->second.deviceIdNum != 0)
-  {
-    return it->second.deviceIdNum;
-  }
-  return getDeviceIdByName(name.c_str());
+  auto it = nodeStates.find(id);
+  if (it != nodeStates.end() && it->second.deviceId.length() > 0)
+    return it->second.deviceId;
+  const char *reg = getDeviceName(id);
+  if (reg && strlen(reg) > 0 && strcmp(reg, "Unknown") != 0) return String(reg);
+  return String("Device-") + id;
 }
 
 // V3.1.4: enqueue a built LoRaCommand and immediately attempt one TX.
@@ -1751,102 +1738,72 @@ static void enqueueAndSendNow(LoRaCommand &cmd, const String &humanLabel)
   transmitCommandAt(idx);
 }
 
-// Send mode change command to a specific node (JSON protocol for V3 rollout)
-// Wire format: {"cmd":"mode","profile":"<name>","device":"<name>","msg_id":N}
-// Transmitter expects this shape — see handleModeCommand() in BluePawzTransmitter.
-void sendModeCommand(const String &deviceId, const String &profile)
+// V3.6.0: send a mode-change command, targeted by UID. targetId==65535
+// (DEVICE_ID_BROADCAST) addresses every collar. Wire format:
+//   {"cmd":"mode","profile":"<name>","device_id":N,"msg_id":N}
+void sendModeCommand(uint16_t targetId, const String &profile)
 {
-  // Validate profile name
   const OperatingMode *mode = getModeByName(profile.c_str());
   if (mode == nullptr)
   {
     Serial.printf("[CMD] Invalid profile: %s\n", profile.c_str());
     return;
   }
-
-  // Resolve target ID (informational/logging only — JSON uses the device name string)
-  uint16_t targetId;
-  if (deviceId == "broadcast")
+  if (targetId == 0)
   {
-    targetId = DEVICE_ID_BROADCAST;
-  }
-  else
-  {
-    // V3.2.4: prefer live-discovered MAC-derived id; legacy registry
-    // is a fallback for first-boot scenarios where no telemetry has
-    // arrived yet.
-    targetId = resolveDeviceIdNum(deviceId);
-    if (targetId == 0)
-    {
-      Serial.printf("[CMD] Unknown device: %s (not in nodeStates or legacy registry)\n",
-                    deviceId.c_str());
-      return;
-    }
+    Serial.println("[CMD] mode: missing/zero target device_id — rejecting");
+    return;
   }
 
-  // Build JSON command packet
+  String name = nodeNameForId(targetId);
   LoRaCommand cmd;
   memset(&cmd, 0, sizeof(cmd));
-  cmd.targetDevice = deviceId;
-  cmd.targetDeviceId = targetId;
+  cmd.targetDevice = name;       // display label only
+  cmd.targetDeviceId = targetId; // the routing key (UID)
   cmd.timestamp = millis();
   cmd.messageId = nextMessageId++;
 
   JsonDocument doc;
   doc["cmd"] = "mode";
   doc["profile"] = profile;
-  doc["device"] = deviceId; // collar matches against SENDER_ID or "broadcast"
+  doc["device_id"] = targetId;   // route STRICTLY by UID
   doc["msg_id"] = cmd.messageId;
   size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
   cmd.len = (uint8_t)written;
 
   String label = "mode→" + profile;
-  Serial.printf("[CMD] Mode change queued: %s -> %s (%u bytes JSON)\n",
-                deviceId.c_str(), profile.c_str(), (unsigned)written);
+  Serial.printf("[CMD] Mode queued: UID %u (%s) -> %s\n",
+                (unsigned)targetId, name.c_str(), profile.c_str());
   enqueueAndSendNow(cmd, label);
 }
 
-// Send status request to a specific node (JSON protocol for V3 rollout)
-// Wire format: {"cmd":"get_status","device":"<name>","msg_id":N}
-void sendStatusRequest(const String &deviceId)
+// V3.6.0: send a status request, targeted by UID. Wire format:
+//   {"cmd":"get_status","device_id":N,"msg_id":N}
+void sendStatusRequest(uint16_t targetId)
 {
-  // Resolve target ID (informational/logging only)
-  uint16_t targetId;
-  if (deviceId == "broadcast")
+  if (targetId == 0)
   {
-    targetId = DEVICE_ID_BROADCAST;
-  }
-  else
-  {
-    // V3.2.4: prefer live-discovered MAC-derived id; legacy registry
-    // is a fallback for first-boot scenarios where no telemetry has
-    // arrived yet.
-    targetId = resolveDeviceIdNum(deviceId);
-    if (targetId == 0)
-    {
-      Serial.printf("[CMD] Unknown device: %s (not in nodeStates or legacy registry)\n",
-                    deviceId.c_str());
-      return;
-    }
+    Serial.println("[CMD] get_status: missing/zero target device_id — rejecting");
+    return;
   }
 
-  // Build JSON status request packet
+  String name = nodeNameForId(targetId);
   LoRaCommand cmd;
   memset(&cmd, 0, sizeof(cmd));
-  cmd.targetDevice = deviceId;
+  cmd.targetDevice = name;
   cmd.targetDeviceId = targetId;
   cmd.timestamp = millis();
   cmd.messageId = nextMessageId++;
 
   JsonDocument doc;
   doc["cmd"] = "get_status";
-  doc["device"] = deviceId;
+  doc["device_id"] = targetId;   // route STRICTLY by UID
   doc["msg_id"] = cmd.messageId;
   size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
   cmd.len = (uint8_t)written;
 
-  Serial.printf("[CMD] Status request queued for: %s (%u bytes JSON)\n",
-                deviceId.c_str(), (unsigned)written);
+  Serial.printf("[CMD] Status request queued: UID %u (%s)\n",
+                (unsigned)targetId, name.c_str());
   enqueueAndSendNow(cmd, "get_status");
 }
 
@@ -1915,8 +1872,8 @@ void handleNodeStates()
     NodeState &state = pair.second;
 
     JsonObject node = nodes.add<JsonObject>();
-    node["device"] = state.deviceId;
-    node["device_id"] = state.deviceIdNum;
+    node["device_id"] = state.deviceIdNum; // UID (identity / key)
+    node["name"] = state.deviceId;          // editable label
     node["mode"] = state.currentMode;
     node["power"] = state.txPower;
     node["sleep"] = state.sleepInterval;
@@ -1976,17 +1933,33 @@ void handleSendCommand()
     return;
   }
 
-  // All other actions take a device name
-  if (!server.hasArg("device"))
+  // V3.6.0: all other actions target by the unique device_id (UID).
+  // The web UI sends device_id directly; "broadcast" maps to 65535.
+  if (!server.hasArg("device_id"))
   {
-    server.send(400, "text/plain", "Missing parameter: device");
+    server.send(400, "text/plain", "Missing parameter: device_id");
     return;
   }
-  String deviceId = server.arg("device");
+  uint16_t targetId;
+  {
+    String d = server.arg("device_id");
+    if (d == "broadcast")
+      targetId = DEVICE_ID_BROADCAST;
+    else
+    {
+      long n = d.toInt();
+      if (n <= 0 || n > 0xFFFF)
+      {
+        server.send(400, "text/plain", "device_id out of range");
+        return;
+      }
+      targetId = (uint16_t)n;
+    }
+  }
 
   if (action == "status")
   {
-    sendStatusRequest(deviceId);
+    sendStatusRequest(targetId);
     server.send(200, "text/plain", "Status request queued");
   }
   else if (action == "mode")
@@ -1998,7 +1971,7 @@ void handleSendCommand()
     }
 
     String profile = server.arg("profile");
-    sendModeCommand(deviceId, profile);
+    sendModeCommand(targetId, profile);
     server.send(200, "text/plain", "Mode change command queued");
   }
   else
@@ -2283,8 +2256,8 @@ void broadcastNodeStates()
     NodeState &state = pair.second;
 
     JsonObject node = nodes.add<JsonObject>();
-    node["device"] = state.deviceId;
-    node["device_id"] = state.deviceIdNum;
+    node["device_id"] = state.deviceIdNum; // UID (identity / key)
+    node["name"] = state.deviceId;          // editable label
     node["mode"] = state.currentMode;
     node["power"] = state.txPower;
     node["sleep"] = state.sleepInterval;
@@ -2581,13 +2554,8 @@ static void handleLoRaPacketJSON(const String &incoming)
 
   if (isResponse)
   {
-    // Patch `id` from `device` if missing, so updateNodeState's
-    // `doc["id"] || doc["device"]` lookup picks the right key and any
-    // rename-housekeeping logic that reads doc["id"] still works.
-    if (!doc["id"].is<String>() && doc["device"].is<String>())
-    {
-      doc["id"] = doc["device"];
-    }
+    // V3.6.0: responses carry device_id (UID) + name; updateNodeState keys
+    // by device_id and reads the name label. No field patching needed.
     Serial.print("[LORA] response packet received: ");
     serializeJson(doc, Serial);
     Serial.println();
@@ -2596,21 +2564,11 @@ static void handleLoRaPacketJSON(const String &incoming)
     return;
   }
 
-  if (!error && (doc["id"].is<String>() || doc["sender_name"].is<String>()))
+  // V3.6.0: telemetry is identified by device_id (the immutable UID). The
+  // legacy id/sender_name fields are gone; name is just a display label.
+  if (!error && doc["device_id"].is<int>())
   {
-    // Map new field names to expected format
-    if (doc["sender_name"].is<String>() && !doc["id"].is<String>())
-    {
-      doc["id"] = doc["sender_name"];
-    }
-    if (doc["latitude"].is<float>() && !doc["lat"].is<float>())
-    {
-      doc["lat"] = doc["latitude"];
-    }
-    if (doc["longitude"].is<float>() && !doc["lon"].is<float>())
-    {
-      doc["lon"] = doc["longitude"];
-    }
+    uint16_t devId = (uint16_t)doc["device_id"].as<int>();
 
     // Add receiver timestamp before storing and notifying
     doc["received_at"] = millis();
@@ -2669,14 +2627,13 @@ static void handleLoRaPacketJSON(const String &incoming)
 
     String payload;
     serializeJson(doc, payload);
-    catPayloads[doc["id"].as<String>()] = payload;
+    catPayloads[devId] = payload; // keyed by UID
 
     // V3.4.0: append to the per-cat trail ring buffer + flag state dirty
     // so the LittleFS snapshot + reload-survivable breadcrumbs stay current.
     if (doc["lat"].is<float>() && doc["lon"].is<float>())
     {
-      recordTrailPoint(doc["id"].as<String>(),
-                       doc["lat"].as<float>(), doc["lon"].as<float>());
+      recordTrailPoint(devId, doc["lat"].as<float>(), doc["lon"].as<float>());
     }
     g_stateDirty = true;
 
@@ -2694,22 +2651,17 @@ static void handleLoRaPacketJSON(const String &incoming)
     // that window instead of waiting on the 3 s safety-net poll. The
     // 20 s headroom is generous enough that the round-trip ACK also
     // makes it back inside the same window.
-    String reporting = doc["id"].as<String>();
-    if (reporting.length() > 0)
-    {
-      tftLastCatName = reporting;     // V3: surface on the V2 onboard TFT
-      // V3.5.1: route queued commands STRICTLY by the reporting collar's
-      // numeric UID (device_id), not its friendly name. 0 if absent → no
-      // targeted command will match (broadcasts still go to any reporter).
-      uint16_t reportingId = doc["device_id"].is<int>()
-                                 ? (uint16_t)doc["device_id"].as<int>()
-                                 : 0;
-      transmitCommandForDevice(reportingId, reporting);
-    }
+    // Friendly label for the TFT + command logging (may be empty).
+    String reporting = doc["name"].is<String>() ? doc["name"].as<String>()
+                                                 : (String("Device-") + devId);
+    tftLastCatName = reporting; // V3: surface on the V2 onboard TFT
+    // V3.5.1: route queued commands STRICTLY by the reporting collar's
+    // numeric UID. Broadcasts still match any reporter.
+    transmitCommandForDevice(devId, reporting);
   }
   else
   {
-    Serial.println("[LORA] Invalid JSON or missing ID");
+    Serial.println("[LORA] Invalid JSON or missing device_id");
   }
 }
 
@@ -3120,9 +3072,9 @@ void handleData()
 // ─────────────────────────────────────────────────────────────────────
 
 // Append one fix to a cat's trail ring buffer, capped at TRAIL_MAX_POINTS.
-void recordTrailPoint(const String &id, float lat, float lon)
+void recordTrailPoint(uint16_t deviceId, float lat, float lon)
 {
-  auto &tr = catTrails[id];
+  auto &tr = catTrails[deviceId];
   tr.push_back({lat, lon});
   while (tr.size() > TRAIL_MAX_POINTS)
     tr.erase(tr.begin());
@@ -3163,8 +3115,8 @@ void saveState()
   {
     NodeState &s = pair.second;
     JsonObject n = nodes.add<JsonObject>();
-    n["device"] = s.deviceId;
-    n["device_id"] = s.deviceIdNum;
+    n["device_id"] = s.deviceIdNum; // UID (key)
+    n["name"] = s.deviceId;          // editable label
     n["mode"] = s.currentMode;
     n["power"] = s.txPower;
     n["sleep"] = s.sleepInterval;
@@ -3206,9 +3158,9 @@ void loadState()
 
   for (JsonObject cd : doc["cats"].as<JsonArray>())
   {
-    if (!cd["id"].is<const char *>())
+    if (!cd["device_id"].is<int>())
       continue;
-    String id = cd["id"].as<const char *>();
+    uint16_t id = (uint16_t)cd["device_id"].as<int>();
 
     if (cd["trail"].is<JsonArray>())
     {
@@ -3229,12 +3181,12 @@ void loadState()
 
   for (JsonObject n : doc["nodes"].as<JsonArray>())
   {
-    if (!n["device"].is<const char *>())
+    if (!n["device_id"].is<int>())
       continue;
-    String dev = n["device"].as<const char *>();
-    NodeState &s = nodeStates[dev];
-    s.deviceId = dev;
-    s.deviceIdNum = n["device_id"] | 0;
+    uint16_t id = (uint16_t)n["device_id"].as<int>();
+    NodeState &s = nodeStates[id];
+    s.deviceIdNum = id;
+    s.deviceId = (const char *)(n["name"] | "");
     s.currentMode = (const char *)(n["mode"] | "unknown");
     s.txPower = n["power"] | 0;
     s.sleepInterval = n["sleep"] | 0;

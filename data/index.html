@@ -2549,14 +2549,15 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // least one cancellable command targeted at that collar. Called on
     // every command update so the indicator stays current.
     function refreshCancelButtonHighlights() {
+      // V3.6.0: key by UID (target_id). Cancel-button DOM ids end in the UID.
       const pendingByDevice = new Map();
       for (const c of commandsByMsgId.values()) {
         if (c.status === 'queued' || c.status === 'sending' || c.status === 'awaiting_ack') {
-          pendingByDevice.set(c.device, true);
+          pendingByDevice.set(String(c.target_id), true);
         }
       }
-      document.querySelectorAll('[id^="cancel-btn-"]').forEach(btn => {
-        const dev = btn.id.replace('cancel-btn-', '');
+      document.querySelectorAll('[id^="cancel-btn-"], [id^="card-cancel-btn-"]').forEach(btn => {
+        const dev = btn.id.replace('card-cancel-btn-', '').replace('cancel-btn-', '');
         if (pendingByDevice.has(dev)) btn.classList.add('has-pending');
         else                          btn.classList.remove('has-pending');
       });
@@ -2565,19 +2566,21 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // V3.1.5: cancel every cancellable command currently targeted at one
     // specific collar. Wired to the per-card ✗ Cancel button.
     async function cancelPendingForDevice(deviceId) {
+      // V3.6.0: deviceId is the UID. Match queued commands by target_id.
       const toCancel = [];
       for (const c of commandsByMsgId.values()) {
-        if (c.device !== deviceId) continue;
+        if (String(c.target_id) !== String(deviceId)) continue;
         if (c.status === 'queued' || c.status === 'sending' || c.status === 'awaiting_ack') {
           toCancel.push(c.msg_id);
         }
       }
       if (toCancel.length === 0) {
         // Nothing to cancel for this collar — tell the user gently.
-        console.log('No pending commands for ' + deviceId);
+        console.log('No pending commands for UID ' + deviceId);
         return;
       }
-      if (!confirm(`Cancel ${toCancel.length} pending command(s) for ${deviceId}?`)) return;
+      const nm = (nodeStates[deviceId] && nodeStates[deviceId].name) || ('Device-' + deviceId);
+      if (!confirm(`Cancel ${toCancel.length} pending command(s) for ${nm} (ID ${deviceId})?`)) return;
       for (const id of toCancel) {
         try {
           await fetch('/command?msg_id=' + encodeURIComponent(id), { method: 'DELETE' });
@@ -3022,13 +3025,14 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     let nodeStates = {};
     let commandPending = {};
     
-    // Helper: Get cat-specific icon URL based on device ID
-    function getIconForNode(deviceId) {
+    // Helper: cat-specific icon URL. V3.6.0: icon files are named by the
+    // friendly NAME (label), not the UID — so this takes the name.
+    function getIconForNode(name) {
       const knownCats = ['Podge', 'Macy', 'Gizmo', 'Simba'];
-      if (deviceId === 'MyDevice') {
+      if (name === 'MyDevice') {
         return '/icons/Device_Marker.avif';
       }
-      const baseId = knownCats.includes(deviceId) ? deviceId : 'generic';
+      const baseId = knownCats.includes(name) ? name : 'generic';
       return `/icons/${baseId}_Marker_Home.avif`;
     }
     
@@ -3044,30 +3048,32 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
             return;
           }
           
-          // Store node states
+          // V3.6.0: key node state by device_id (UID); display node.name.
           nodes.forEach(node => {
-            nodeStates[node.device] = node;
+            nodeStates[node.device_id] = node;
           });
-          
+
           // Build node control UI
           container.innerHTML = nodes.map(node => {
             const modeClass = `mode-${node.mode_known ? node.mode : 'unknown'}`;
             const lastSeenMs = Date.now() - node.last_seen;
             const lastSeenText = formatTimeSince(lastSeenMs);
-            const iconUrl = getIconForNode(node.device);
-            
+            const iconUrl = getIconForNode(node.name);
+            const label = node.name || ('Device-' + node.device_id);
+
             let warningText = '';
             if (node.mode === 'lost' && node.lost_mode_remaining_s !== undefined) {
               const remainingMin = Math.floor(node.lost_mode_remaining_s / 60);
               const remainingSec = node.lost_mode_remaining_s % 60;
               warningText = `<div class="node-warning">⚠️ Lost mode: ${remainingMin}m ${remainingSec}s remaining</div>`;
             }
-            
+
             return `
-              <div class="node-control-item ${modeClass}" id="node-${node.device}">
+              <div class="node-control-item ${modeClass}" id="node-${node.device_id}">
                 <div class="node-control-header">
-                  <img src="${iconUrl}" alt="${node.device}" style="width: 24px; height: 24px; margin-right: 8px; border-radius: 50%;">
-                  <span class="node-name">${node.device}</span>
+                  <img src="${iconUrl}" alt="${label}" style="width: 24px; height: 24px; margin-right: 8px; border-radius: 50%;">
+                  <span class="node-name">${label}</span>
+                  <span class="node-id-chip" style="font-size:0.75em;opacity:0.7;margin-left:6px;">ID ${node.device_id}</span>
                   <span class="node-mode-badge ${modeClass}">${node.mode_known ? node.mode : 'unknown'}</span>
                 </div>
                 <div class="node-info">
@@ -3111,8 +3117,10 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // lost-mode confirm lives in sendModeChange itself, shared by both).
     window.buildRemoteControlsHTML = function (node, prefix) {
       prefix = prefix || '';
-      const dev = node.device;
-      const devEsc = String(dev).replace(/'/g, "\\'");
+      // V3.6.0: DOM keys + command routing use the device_id (UID).
+      const dev = node.device_id;
+      const devEsc = String(dev);
+      const nameEsc = String(node.name || '').replace(/'/g, "\\'");
       const cur = node.mode_known ? node.mode : '';
       const isPending = !!window.commandPending && !!window.commandPending[dev];
       const devIdNum = node.device_id || 0;
@@ -3148,7 +3156,7 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
           🔄
         </button>
         <button class="node-btn node-btn-rename"
-                onclick="window.renameCollar(${devIdNum}, '${devEsc}')"
+                onclick="window.renameCollar(${devIdNum}, '${nameEsc}')"
                 id="${prefix}rename-btn-${dev}"
                 ${devIdNum ? '' : 'disabled'}
                 title="Rename Collar&#10;Sets a new friendly name for this collar.&#10;Targets the immutable numeric device_id, so it works even&#10;if the current name is just the default Device-N.">
@@ -3161,13 +3169,13 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
     // controls. Called from handleNodeStateUpdate so every WS push
     // refreshes the card in lockstep with the C&C panel.
     window.refreshCardControls = function (node) {
-      const slot = document.getElementById(`card-controls-${node.device}`);
+      const slot = document.getElementById(`card-controls-${node.device_id}`);
       if (slot) slot.innerHTML = window.buildRemoteControlsHTML(node, 'card-');
     };
 
-    // Send mode change command
+    // Send mode change command. V3.6.0: deviceId IS the device_id (UID).
     function sendModeChange(deviceId) {
-      console.log('[CMD] sendModeChange clicked for', deviceId);
+      console.log('[CMD] sendModeChange clicked for UID', deviceId);
       const select = document.getElementById(`mode-select-${deviceId}`) ||
                      document.getElementById(`card-mode-select-${deviceId}`);
       if (!select) {
@@ -3177,28 +3185,29 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
       }
       const newMode = select.value;
       const currentMode = nodeStates[deviceId]?.mode;
-      console.log('[CMD] mode change:', deviceId, currentMode, '→', newMode);
-      
+      const nm = (nodeStates[deviceId] && nodeStates[deviceId].name) || ('Device-' + deviceId);
+      console.log('[CMD] mode change: UID', deviceId, currentMode, '→', newMode);
+
       // Confirm if switching to lost mode
       if (newMode === 'lost' && currentMode !== 'lost') {
-        if (!confirm(`⚠️ Switch ${deviceId} to LOST mode?\n\nThis will:\n• Set TX power to maximum (22dBm)\n• Update every 30 seconds\n• Enable LED beacon\n• Drain battery quickly\n\nAuto-reverts to Active mode after 2 hours.\n\nContinue?`)) {
+        if (!confirm(`⚠️ Switch ${nm} (ID ${deviceId}) to LOST mode?\n\nThis will:\n• Set TX power to maximum (22dBm)\n• Update every 30 seconds\n• Enable LED beacon\n• Drain battery quickly\n\nAuto-reverts to Active mode after 2 hours.\n\nContinue?`)) {
           select.value = currentMode; // Revert selection
           return;
         }
       }
-      
+
       // Send command
       commandPending[deviceId] = true;
       updateNodeControlUI(deviceId);
-      
-      fetch(`/send-command?device=${deviceId}&action=mode&profile=${newMode}`, {
+
+      fetch(`/send-command?device_id=${deviceId}&action=mode&profile=${newMode}`, {
         method: 'POST'
       })
         .then(response => {
           if (!response.ok) {
             throw new Error('Command failed');
           }
-          console.log(`[CMD] Mode change queued: ${deviceId} -> ${newMode}`);
+          console.log(`[CMD] Mode change queued: UID ${deviceId} -> ${newMode}`);
           
           // Update card status if it exists
           const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
@@ -3270,14 +3279,14 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
         cardModeText.innerHTML = '<span style="color: #17a2b8;">🔄 Querying status...</span>';
       }
       
-      fetch(`/send-command?device=${deviceId}&action=status`, {
+      fetch(`/send-command?device_id=${deviceId}&action=status`, {
         method: 'POST'
       })
         .then(response => {
           if (!response.ok) {
             throw new Error('Command failed');
           }
-          console.log(`[CMD] Status request sent to ${deviceId}`);
+          console.log(`[CMD] Status request sent to UID ${deviceId}`);
           
           setTimeout(() => {
             if (commandPending[deviceId]) {
@@ -3347,13 +3356,14 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
     function handleNodeStateUpdate(data) {
       if (data.type === 'node_states' && data.nodes) {
         data.nodes.forEach(node => {
-          nodeStates[node.device] = node;
-          
+          // V3.6.0: key by device_id (UID); name is a display label.
+          nodeStates[node.device_id] = node;
+
           // Clear pending state if we got an update
-          if (commandPending[node.device]) {
-            commandPending[node.device] = false;
+          if (commandPending[node.device_id]) {
+            commandPending[node.device_id] = false;
           }
-          
+
           // V3.2.3: re-render the marker-tile controls slot from the same
           // shared helper used by the C&C panel. The two surfaces stay
           // identical and in lockstep after every WS state push.
@@ -3364,14 +3374,14 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
           // Update marker card mode selector if it exists (kept as a
           // belt-and-braces sync — refreshCardControls above already
           // bakes the current mode in via `selected`).
-          const cardSelect = document.getElementById(`card-mode-select-${node.device}`);
+          const cardSelect = document.getElementById(`card-mode-select-${node.device_id}`);
           if (cardSelect && node.mode_known) {
             cardSelect.value = node.mode;
           }
 
           // Update card mode status text
-          const cardStatus = document.getElementById(`card-mode-status-${node.device}`);
-          const cardModeText = document.getElementById(`card-mode-text-${node.device}`);
+          const cardStatus = document.getElementById(`card-mode-status-${node.device_id}`);
+          const cardModeText = document.getElementById(`card-mode-text-${node.device_id}`);
           if (cardModeText && node.mode_known) {
             const modeColors = {
               'normal': '#007bff',
@@ -3390,7 +3400,7 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
       // Handle alerts
       if (data.type === 'node_alert') {
         if (data.alert === 'lost_mode_timeout') {
-          alert(`⚠️ ${data.device} lost mode timed out!\n\nAuto-reverted to ${data.new_mode} mode after ${Math.floor(data.duration_s / 60)} minutes.`);
+          alert(`⚠️ ${data.name || ('Device-' + data.device_id)} lost mode timed out!\n\nAuto-reverted to ${data.new_mode} mode after ${Math.floor(data.duration_s / 60)} minutes.`);
         }
       }
     }

@@ -213,11 +213,15 @@ function getMarkerIcon(id, status) {
     });
   }
 
+  // V3.6.0: `id` is the device_id (UID) key. Icon files are named by the
+  // friendly NAME (e.g. Podge_Marker_Home.avif), so resolve the label.
+  const name = (window.deviceNames && window.deviceNames[id]) || id;
+
   // V3.1.7: unknown collars get a CSS-only coloured dot rather than
   // pointing at a generic_Marker_*.avif file that doesn't exist. No
   // 404, no broken image, and the colour still conveys the four
   // normalised states (Home/Out/Offline/Error).
-  if (!KNOWN_CATS.includes(id)) {
+  if (!KNOWN_CATS.includes(name)) {
     return unknownDeviceDivIcon(status);
   }
 
@@ -241,7 +245,7 @@ function getMarkerIcon(id, status) {
   }
 
   return L.icon({
-    iconUrl: `/icons/${id}_Marker_${iconStatus}.avif`,
+    iconUrl: `/icons/${name}_Marker_${iconStatus}.avif`,
     iconSize: [32, 32],
     iconAnchor: [16, 32],
     popupAnchor: [0, -32],
@@ -263,16 +267,16 @@ function createMarkerCard(id, status) {
     markerHistory[id] = [];
   }
 
-  // V3.1.7: card thumbnail. MyDevice uses Device_Marker.avif; known
-  // collars use their custom Home icon; UNKNOWN collars get an inline
-  // SVG coloured dot so we never link a missing file.
-  const isKnown = KNOWN_CATS.includes(id);
+  // V3.6.0: `id` is the device_id (UID) key. Resolve the friendly NAME for
+  // the thumbnail filename + the display label.
+  const name = (window.deviceNames && window.deviceNames[id]) || id;
+  const isKnown = KNOWN_CATS.includes(name);
   let iconUrl;
   let iconIsInline = false;
   if (id === "MyDevice") {
     iconUrl = "/icons/Device_Marker.avif";
   } else if (isKnown) {
-    iconUrl = `/icons/${id}_Marker_Home.avif`;
+    iconUrl = `/icons/${name}_Marker_Home.avif`;
   } else {
     // Inline SVG dot, embedded as a data URI — no network round-trip,
     // no 404 possible. Colour matches the unknown-device map marker.
@@ -283,10 +287,9 @@ function createMarkerCard(id, status) {
     iconUrl = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
     iconIsInline = true;
   }
-  // Display label: known collars get their friendly name; unknown
-  // collars get prefixed with 'Unknown device:' so the user knows
-  // straight away the receiver doesn't have a profile for it.
-  const displayId = isKnown || id === "MyDevice" ? id : ("Unknown device: " + id);
+  // Display label: known collars show their friendly name; unknown collars
+  // show the name (or "Device-<uid>") so the user can still identify them.
+  const displayId = (isKnown || id === "MyDevice") ? name : (name + " (ID " + id + ")");
 
   const statusClass = status
     ? `status-${status.toLowerCase()}`
@@ -528,10 +531,12 @@ function updateMarkerCard(id, status, data) {
     statusEl.textContent = status;
   }
 
-  // Update icon
+  // Update icon. V3.6.0: `id` is the device_id (UID) key; icon files are
+  // named by the friendly NAME, so resolve the label first.
+  const name = (window.deviceNames && window.deviceNames[id]) || id;
   const iconEl = document.getElementById(`card-icon-${id}`);
   if (iconEl) {
-    if (KNOWN_CATS.includes(id)) {
+    if (KNOWN_CATS.includes(name)) {
       let iconStatus;
       switch (status) {
         case "Home":    iconStatus = "Home"; break;
@@ -540,7 +545,7 @@ function updateMarkerCard(id, status, data) {
         case "Error":   iconStatus = "Error"; break;
         default:        iconStatus = "Error";
       }
-      iconEl.src = `/icons/${id}_Marker_${iconStatus}.avif`;
+      iconEl.src = `/icons/${name}_Marker_${iconStatus}.avif`;
     } else {
       // V3.1.7: unknown collar — inline SVG dot, no broken-image link
       const colour = statusColour(status);
@@ -772,8 +777,18 @@ window.handleTelemetry = function (data, isHydrate) {
         // Don't return - position data may also be present
       }
 
-      if (data.id) {
-        const id = data.id;
+      // V3.6.0: the marker / state / DOM KEY is the immutable device_id
+      // (UID). The friendly name is a mutable display label, kept in
+      // window.deviceNames[key] and used for popups, card titles, and
+      // icon-file selection. MyDevice (the receiver's own GPS) has no
+      // device_id, so it keeps the literal "MyDevice" key.
+      const hasUid = (data.device_id !== undefined && data.device_id !== null);
+      const isMyDevice = (data.id === "MyDevice");
+      if (hasUid || isMyDevice) {
+        const id = hasUid ? String(data.device_id) : "MyDevice";
+        const name = hasUid ? (data.name || ("Device-" + data.device_id)) : "MyDevice";
+        window.deviceNames = window.deviceNames || {};
+        window.deviceNames[id] = name;
         const status = data.status || "Unknown";
 
         // Update last received time for this marker
@@ -858,7 +873,8 @@ window.handleTelemetry = function (data, isHydrate) {
           );
           markers[id].unbindPopup(); // Remove any existing popup
           markers[id].bindPopup(`
-            <h5>${id}</h5>
+            <h5>${name}</h5>
+            ${id !== "MyDevice" ? `<p><strong>Device ID:</strong> ${id}</p>` : ""}
             <p><strong>Status:</strong> ${status}</p>
             <p><strong>Coordinates:</strong> ${data.lat.toFixed(
               6
