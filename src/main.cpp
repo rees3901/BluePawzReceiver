@@ -177,6 +177,19 @@ HardwareSerial gpsSerial1(1);
 // refresh rate (~1 Hz status panel) doesn't justify hardware SPI complexity.
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCK, TFT_RST);
 static uint32_t tftLastRefresh = 0;
+
+// ───────────── User button + TFT page navigation (V3.5.0) ─────────────
+// The boot/PRG button (GPIO0) doubles as a runtime UI control. Held during
+// RESET it still enters the ESP32-S3 bootloader (that's a hardware strap we
+// can't and shouldn't change); during NORMAL operation it's a free input.
+//   • single press → cycle to the next TFT page
+//   • quick double press → jump straight back to the summary page
+// Pages: 0 = summary (home), 1 = LoRa settings, 2.. = latest packet from
+// each distinct device, one page per cat. Device pages appear/disappear as
+// collars are heard, so the page count is computed live from catPayloads.
+#define USER_BTN 0
+static uint8_t g_tftPage = 0;            // current page index
+static bool    g_tftPageChanged = true;  // true → full clear+redraw next refresh
 static uint32_t tftMsgCount = 0;             // total inbound LoRa packets seen since boot
 static String   tftLastCatName = "";          // last cat that reported in
 static int16_t  tftLastCatRssi = 0;
@@ -292,11 +305,11 @@ static void tftBegin()
 // in place. No clear, no flicker. Every value is padded to a fixed width
 // (snprintf with "%-Ns") so a shorter new value (e.g. RSSI=-90 → -8) wipes
 // out the trailing characters of the previous longer value.
-static void tftRefresh()
+// V3.5.0: this is now the PAGE-0 (summary) renderer, dispatched by
+// tftRefresh() below. Timing + screen-clear-on-page-change are handled by
+// the dispatcher, so this just paints the summary in place (no flicker).
+static void tftRenderSummary()
 {
-  if (millis() - tftLastRefresh < 1000) return; // 1 Hz max
-  tftLastRefresh = millis();
-
   char buf[32];
   tft.setTextSize(1);
 
@@ -542,6 +555,178 @@ static void tftRefresh()
   tft.setTextColor(ST77XX_BLACK, gpsColour);
   tft.setCursor(63, 70);
   tft.print(gpsText);
+}
+
+// V3.5.0: PAGE 1 — LoRa PHY settings, so you can confirm the radio config
+// on the device without a serial console. All values come from config.h
+// (shared with the collar) except TX power, which the base station fixes
+// at 22 dBm (see setOutputPower(22) in setup).
+static uint8_t tftTotalPages()
+{
+  return (uint8_t)(2 + catPayloads.size()); // summary + LoRa + one per cat
+}
+
+static void tftRenderLoRa()
+{
+  char buf[32];
+  tft.setTextSize(1);
+
+  tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
+  tft.setCursor(2, 2);
+  snprintf(buf, sizeof(buf), "LoRa Cfg     %u/%u", (unsigned)(g_tftPage + 1), (unsigned)tftTotalPages());
+  tft.print(buf);
+
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setCursor(2, 16);
+  snprintf(buf, sizeof(buf), "Freq %.1f MHz   ", (double)LORA_FREQ_MHZ);
+  tft.print(buf);
+
+  tft.setCursor(2, 28);
+  snprintf(buf, sizeof(buf), "SF%-2d  BW %.0fkHz ", (int)LORA_SF, (double)LORA_BW_KHZ);
+  tft.print(buf);
+
+  tft.setCursor(2, 40);
+  snprintf(buf, sizeof(buf), "CR 4/%d  CRC %s ", (int)LORA_CR, LORA_USE_CRC ? "on" : "off");
+  tft.print(buf);
+
+  tft.setCursor(2, 52);
+  snprintf(buf, sizeof(buf), "Sync 0x%02X Pre %d ", (unsigned)LORA_SYNC_WORD, (int)LORA_PREAMBLE);
+  tft.print(buf);
+
+  tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+  tft.setCursor(2, 64);
+  snprintf(buf, sizeof(buf), "TX pwr 22 dBm   ");
+  tft.print(buf);
+}
+
+// V3.5.0: PAGE 2+ — latest packet from the devIdx-th distinct device in
+// catPayloads (ordered map, so the index is stable per device set).
+static void tftRenderDevice(uint8_t devIdx)
+{
+  auto it = catPayloads.begin();
+  for (uint8_t i = 0; i < devIdx && it != catPayloads.end(); ++i)
+    ++it;
+  if (it == catPayloads.end())
+    return; // device vanished between page-calc and render
+
+  JsonDocument doc;
+  if (deserializeJson(doc, it->second))
+    return;
+
+  char buf[32];
+  tft.setTextSize(1);
+
+  // Title: cat name + page indicator
+  tft.setTextColor(ST77XX_CYAN, ST77XX_BLACK);
+  tft.setCursor(2, 2);
+  snprintf(buf, sizeof(buf), "%-10.10s %u/%u", it->first.c_str(),
+           (unsigned)(g_tftPage + 1), (unsigned)tftTotalPages());
+  tft.print(buf);
+
+  tft.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+  tft.setCursor(2, 16);
+  snprintf(buf, sizeof(buf), "ID %u  %-8s", (unsigned)(doc["device_id"] | 0),
+           (const char *)(doc["mode"] | "?"));
+  tft.print(buf);
+
+  tft.setCursor(2, 28);
+  snprintf(buf, sizeof(buf), "Stat %-11s", (const char *)(doc["status"] | "?"));
+  tft.print(buf);
+
+  tft.setCursor(2, 40);
+  snprintf(buf, sizeof(buf), "Lat %.5f  ", (double)(doc["lat"] | 0.0));
+  tft.print(buf);
+
+  tft.setCursor(2, 52);
+  snprintf(buf, sizeof(buf), "Lon %.5f  ", (double)(doc["lon"] | 0.0));
+  tft.print(buf);
+
+  // Distance + age of this fix (received_at is millis()-relative).
+  tft.setTextColor(ST77XX_GREEN, ST77XX_BLACK);
+  tft.setCursor(2, 64);
+  double distM = doc["dist_m"] | 0.0;
+  uint32_t rxAt = doc["received_at"] | (uint32_t)0;
+  uint32_t ageS = (rxAt && millis() >= rxAt) ? (millis() - rxAt) / 1000 : 0;
+  snprintf(buf, sizeof(buf), "%.0fm  %lus ago   ", distM, (unsigned long)ageS);
+  tft.print(buf);
+}
+
+// V3.5.0: TFT dispatcher. Owns the 1 Hz rate limit and the clear-on-switch
+// behaviour, then paints whichever page is active.
+static void tftRefresh()
+{
+  // Force an immediate redraw on a page switch; otherwise cap at 1 Hz.
+  if (!g_tftPageChanged && (millis() - tftLastRefresh < 1000))
+    return;
+  tftLastRefresh = millis();
+
+  // Clamp the page in case a device disappeared since the last press.
+  uint8_t total = tftTotalPages();
+  if (g_tftPage >= total)
+  {
+    g_tftPage = 0;
+    g_tftPageChanged = true;
+  }
+
+  if (g_tftPageChanged)
+  {
+    tft.fillScreen(ST77XX_BLACK); // one clean wipe on entry to a page
+    g_tftPageChanged = false;
+  }
+
+  if (g_tftPage == 0)
+    tftRenderSummary();
+  else if (g_tftPage == 1)
+    tftRenderLoRa();
+  else
+    tftRenderDevice(g_tftPage - 2);
+}
+
+// V3.5.0: poll the boot/PRG button (GPIO0, active-LOW via INPUT_PULLUP).
+// Single press → next page; quick double press → summary. The single-press
+// action is deferred by DOUBLE_MS so we can distinguish it from the first
+// half of a double press. Fully debounced; safe to call every loop().
+static void pollUserButton()
+{
+  static bool     lastLevel = HIGH;
+  static uint32_t lastEdgeMs = 0;
+  static uint32_t lastPressMs = 0;
+  static bool     pendingSingle = false;
+
+  const uint32_t DEBOUNCE_MS = 40;
+  const uint32_t DOUBLE_MS = 350;
+
+  bool level = digitalRead(USER_BTN);
+  uint32_t now = millis();
+
+  // Debounced falling edge = a press.
+  if (lastLevel == HIGH && level == LOW && (now - lastEdgeMs) > DEBOUNCE_MS)
+  {
+    lastEdgeMs = now;
+    if (pendingSingle && (now - lastPressMs) <= DOUBLE_MS)
+    {
+      // Second press inside the window → double press → jump to summary.
+      pendingSingle = false;
+      g_tftPage = 0;
+      g_tftPageChanged = true;
+    }
+    else
+    {
+      // First press → tentatively single; wait to see if a second arrives.
+      pendingSingle = true;
+      lastPressMs = now;
+    }
+  }
+  lastLevel = level;
+
+  // Commit a single press once the double-press window has lapsed.
+  if (pendingSingle && (now - lastPressMs) > DOUBLE_MS)
+  {
+    pendingSingle = false;
+    uint8_t total = tftTotalPages();
+    g_tftPage = (uint8_t)((g_tftPage + 1) % total);
+    g_tftPageChanged = true;
+  }
 }
 
 static bool loadHomeLocation()
@@ -3658,6 +3843,10 @@ void setup()
   Serial.flush();
   tftBegin();
 
+  // V3.5.0: boot/PRG button as runtime page-cycle control. INPUT_PULLUP →
+  // idle HIGH, pressed LOW. (Held at reset still enters the bootloader.)
+  pinMode(USER_BTN, INPUT_PULLUP);
+
   Serial.println("[BOOT] Step 3/13: LEDs");
   Serial.flush();
   // DO NOT touch LED_BUILTIN on this board. The arduino-esp32
@@ -3942,6 +4131,7 @@ void loop()
   // In HOME mode the server isn't running so this no-ops too.
   if (netModeRaw() == 1 /* NET_ROAMING */) dnsServer.processNextRequest();
   ArduinoOTA.handle(); // V3: service incoming OTA firmware uploads
+  pollUserButton();    // V3.5.0: boot button cycles TFT pages
   tftRefresh();        // V3: ~1Hz status panel on Heltec V2 onboard TFT
 
   // Check if the serial port is open
