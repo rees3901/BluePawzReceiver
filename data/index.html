@@ -1683,6 +1683,33 @@ Use for sharing logs or troubleshooting">📋 Copy All Messages</button>
         <button class="btn btn-outline-secondary" onclick="clearDebugConsole()" title="Clear Console
 Removes all messages from debug console display
 Does not affect stored data on ESP32">🗑️ Clear Console</button>
+        <button class="btn btn-outline-info" onclick="debugScrollLatest()" title="Jump to the newest message (top of list)">⤒ Latest</button>
+      </div>
+      <!-- V3.5.1: debug-console filters. The free-text search runs across the
+           whole raw message body, so it also covers msg_id, firmware version
+           and hash. Dedicated controls narrow by device, type, status, mode. -->
+      <div class="debug-console-filters" style="display:flex; flex-wrap:wrap; gap:6px; padding:6px 8px; align-items:center; font-size:0.85em;">
+        <input id="dbgSearch" type="text" placeholder="🔎 search raw text…" oninput="updateDebugConsole(true)" style="flex:1 1 150px; min-width:110px;">
+        <input id="dbgDevice" type="text" placeholder="device id / name" oninput="updateDebugConsole(true)" style="flex:0 1 120px;">
+        <select id="dbgType" onchange="updateDebugConsole(true)">
+          <option value="">type: all</option>
+          <option value="telemetry">telemetry</option>
+          <option value="command">command</option>
+          <option value="ack">ack</option>
+          <option value="error">error / alert</option>
+          <option value="other">other</option>
+        </select>
+        <select id="dbgStatus" onchange="updateDebugConsole(true)">
+          <option value="">status: all</option>
+          <option value="Home">Home</option>
+          <option value="Roaming">Roaming</option>
+          <option value="Lost">Lost</option>
+          <option value="Offline">Offline</option>
+          <option value="Error">Error</option>
+          <option value="Unknown">Unknown</option>
+        </select>
+        <input id="dbgMode" type="text" placeholder="mode" oninput="updateDebugConsole(true)" style="flex:0 1 70px;">
+        <button class="btn btn-outline-secondary" onclick="clearDebugFilters()" title="Reset all debug filters">✕ Filters</button>
       </div>
       <div class="debug-console-body" id="debugConsoleBody">
         <div class="debug-console-messages" id="debugConsoleMessages">
@@ -2326,21 +2353,87 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       }
     }
     
-    function updateDebugConsole() {
+    // V3.5.1: classify a parsed WS message into a coarse type for filtering.
+    function classifyDebugMsg(d) {
+      if (!d || typeof d !== 'object') return 'other';
+      if (d.ack !== undefined) return 'ack';
+      if (d.type === 'command_status' || d.cmd !== undefined) return 'command';
+      if (d.alert !== undefined || d.type === 'node_alert') return 'error';
+      if (String(d.status || '').toLowerCase() === 'error') return 'error';
+      if (d.id !== undefined || d.lat !== undefined || d.status !== undefined) return 'telemetry';
+      return 'other';
+    }
+
+    // V3.5.1: does a log entry pass the current filter set?
+    function debugEntryMatches(entry, f) {
+      const d = entry.data;
+      const raw = (typeof d === 'string') ? d : JSON.stringify(d);
+      if (f.search && !raw.toLowerCase().includes(f.search)) return false;
+      if (f.type && classifyDebugMsg(d) !== f.type) return false;
+      if (f.status) {
+        const s = (d && d.status != null) ? String(d.status).toLowerCase() : '';
+        if (s !== f.status.toLowerCase()) return false;
+      }
+      if (f.device) {
+        const hay = [
+          d && d.id, d && d.device, d && d.device_id,
+          d && d.target_id, d && d.sender_name
+        ].map(x => (x == null ? '' : String(x))).join(' ').toLowerCase();
+        if (!hay.includes(f.device)) return false;
+      }
+      if (f.mode) {
+        const m = (d && d.mode != null) ? String(d.mode).toLowerCase() : '';
+        if (!m.includes(f.mode)) return false;
+      }
+      return true;
+    }
+
+    function readDebugFilters() {
+      return {
+        search: (document.getElementById('dbgSearch')?.value || '').trim().toLowerCase(),
+        device: (document.getElementById('dbgDevice')?.value || '').trim().toLowerCase(),
+        type:   (document.getElementById('dbgType')?.value || ''),
+        status: (document.getElementById('dbgStatus')?.value || ''),
+        mode:   (document.getElementById('dbgMode')?.value || '').trim().toLowerCase(),
+      };
+    }
+
+    // V3.5.1: rewritten so incoming messages NEVER yank the user's scroll
+    // position. Newest entries are prepended at the top; we only pin to the
+    // top (newest) if the user was already there. Otherwise we keep the same
+    // messages under the viewport by compensating for the height added above.
+    // Pass fromFilter=true (filter controls) to deliberately jump to newest.
+    function updateDebugConsole(fromFilter) {
       const messagesDiv = document.getElementById('debugConsoleMessages');
       const countSpan = document.getElementById('debug-message-count');
-      
       if (!messagesDiv || !countSpan) return;
-      
-      if (!window.globalMessageLog || window.globalMessageLog.length === 0) {
+
+      const all = window.globalMessageLog || [];
+      if (all.length === 0) {
         messagesDiv.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">No messages yet. Waiting for WebSocket data...</div>';
         countSpan.textContent = '(0 messages)';
         return;
       }
-      
-      countSpan.textContent = `(${window.globalMessageLog.length} messages)`;
-      
-      messagesDiv.innerHTML = window.globalMessageLog
+
+      const f = readDebugFilters();
+      const hasFilter = !!(f.search || f.device || f.type || f.status || f.mode);
+      const filtered = hasFilter ? all.filter(e => debugEntryMatches(e, f)) : all;
+
+      countSpan.textContent = hasFilter
+        ? `(${filtered.length} / ${all.length} messages)`
+        : `(${all.length} messages)`;
+
+      // Capture scroll state BEFORE we re-render (newest at top → scrollTop 0).
+      const wasAtTop = messagesDiv.scrollTop <= 4;
+      const prevHeight = messagesDiv.scrollHeight;
+      const prevTop = messagesDiv.scrollTop;
+
+      if (filtered.length === 0) {
+        messagesDiv.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">No messages match the current filters.</div>';
+        return;
+      }
+
+      messagesDiv.innerHTML = filtered
         .map(entry => `
           <div class="debug-message-entry">
             <div class="debug-message-time">${entry.timestamp}</div>
@@ -2348,13 +2441,31 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           </div>
         `)
         .join('');
-      
-      // Auto-scroll to top to show latest
-      messagesDiv.scrollTop = 0;
+
+      // Restore scroll. Filter changes jump to newest; live updates preserve.
+      if (fromFilter || wasAtTop) {
+        messagesDiv.scrollTop = 0; // pinned to newest
+      } else {
+        const delta = messagesDiv.scrollHeight - prevHeight;
+        messagesDiv.scrollTop = prevTop + delta; // keep same messages in view
+      }
     }
-    
+
+    function clearDebugFilters() {
+      ['dbgSearch', 'dbgDevice', 'dbgMode'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      ['dbgType', 'dbgStatus'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+      updateDebugConsole(true);
+    }
+
+    function debugScrollLatest() {
+      const messagesDiv = document.getElementById('debugConsoleMessages');
+      if (messagesDiv) messagesDiv.scrollTop = 0; // newest is at the top
+    }
+
     // Expose globally
     window.updateDebugConsole = updateDebugConsole;
+    window.clearDebugFilters = clearDebugFilters;
+    window.debugScrollLatest = debugScrollLatest;
 
     // ═══════════════════════════════════════════════════════════
     // HAMBURGER MENU FUNCTIONS
@@ -2409,9 +2520,23 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           ? `<button class="cmd-cancel-btn" onclick="cancelCommand(${c.msg_id})">Cancel</button>`
           : '';
         const statusLabel = c.status === 'awaiting_ack' ? 'waiting' : c.status;
+        // V3.5.1: the routing key is the unique device ID. Show it as
+        // "ID N (FriendlyName)" — the name is a readability hint only,
+        // never the identifier. WS pushes carry target_id; the /commands
+        // REST list carries device_id — accept either.
+        const uid = (c.target_id !== undefined && c.target_id !== null) ? c.target_id
+                  : (c.device_id !== undefined ? c.device_id : undefined);
+        let targetText;
+        if (uid === 65535) {
+          targetText = 'broadcast';
+        } else if (uid === undefined) {
+          targetText = c.device || '(unknown)';
+        } else {
+          targetText = `ID ${uid}` + (c.device ? ` (${c.device})` : '');
+        }
         return `
           <div class="cmd-item s-${c.status}">
-            <span class="cmd-target">${c.device}</span>
+            <span class="cmd-target">${targetText}</span>
             <span class="cmd-label">${c.label || ''}</span>
             <span class="cmd-status-pill">${statusLabel}</span>
             ${cancelBtn}

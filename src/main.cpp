@@ -682,51 +682,30 @@ static void tftRefresh()
     tftRenderDevice(g_tftPage - 2);
 }
 
-// V3.5.0: poll the boot/PRG button (GPIO0, active-LOW via INPUT_PULLUP).
-// Single press → next page; quick double press → summary. The single-press
-// action is deferred by DOUBLE_MS so we can distinguish it from the first
-// half of a double press. Fully debounced; safe to call every loop().
+// V3.5.1: poll the boot/PRG button (GPIO0, active-LOW via INPUT_PULLUP).
+// SINGLE PRESS ONLY — each press advances to the next page; from the last
+// page it wraps back to the summary. No double/long-press actions: a plain
+// page-index loop, kept deliberately simple and predictable. Debounced.
+//   summary → LoRa → dev1 → … → devN → summary → …
 static void pollUserButton()
 {
   static bool     lastLevel = HIGH;
   static uint32_t lastEdgeMs = 0;
-  static uint32_t lastPressMs = 0;
-  static bool     pendingSingle = false;
 
   const uint32_t DEBOUNCE_MS = 40;
-  const uint32_t DOUBLE_MS = 350;
 
   bool level = digitalRead(USER_BTN);
   uint32_t now = millis();
 
-  // Debounced falling edge = a press.
+  // Debounced falling edge = a press → advance one page (wrap at the end).
   if (lastLevel == HIGH && level == LOW && (now - lastEdgeMs) > DEBOUNCE_MS)
   {
     lastEdgeMs = now;
-    if (pendingSingle && (now - lastPressMs) <= DOUBLE_MS)
-    {
-      // Second press inside the window → double press → jump to summary.
-      pendingSingle = false;
-      g_tftPage = 0;
-      g_tftPageChanged = true;
-    }
-    else
-    {
-      // First press → tentatively single; wait to see if a second arrives.
-      pendingSingle = true;
-      lastPressMs = now;
-    }
-  }
-  lastLevel = level;
-
-  // Commit a single press once the double-press window has lapsed.
-  if (pendingSingle && (now - lastPressMs) > DOUBLE_MS)
-  {
-    pendingSingle = false;
     uint8_t total = tftTotalPages();
     g_tftPage = (uint8_t)((g_tftPage + 1) % total);
     g_tftPageChanged = true;
   }
+  lastLevel = level;
 }
 
 static bool loadHomeLocation()
@@ -1008,7 +987,7 @@ void sendStatusRequest(const String &deviceId);
 void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
 // V3.1.4: forward-decl so handleLoRaPacketJSON (defined earlier in file)
 // can call the command-status helpers defined after the transmit code.
-static bool markCommandDelivered(const String &device, uint32_t ackMsgId);
+static bool markCommandDelivered(uint16_t deviceIdNum, uint32_t ackMsgId);
 void handleNodeResponse(const JsonDocument &doc);
 void handleNodeStates();    // HTTP handler for /node-states
 void handleSendCommand();   // HTTP handler for /send-command
@@ -1372,7 +1351,7 @@ void updateNodeState(const JsonDocument &doc)
 
     // V3.1.4: mark the matching queued command DELIVERED. The status
     // machine takes care of the WS push so the web UI updates live.
-    if (markCommandDelivered(deviceId, msgId))
+    if (markCommandDelivered(incomingDevIdNum, msgId))
     {
       Serial.printf("[ACK] matched + marked DELIVERED (msg_id=%lu)\n", msgId);
     }
@@ -1455,7 +1434,7 @@ void updateNodeState(const JsonDocument &doc)
     // Without this, status requests hung in AWAITING_ACK forever.
     uint32_t reqId = 0;
     if (doc["req_msg_id"].is<uint32_t>()) reqId = doc["req_msg_id"].as<uint32_t>();
-    if (markCommandDelivered(deviceId, reqId))
+    if (markCommandDelivered(incomingDevIdNum, reqId))
     {
       Serial.printf("[ACK] status response paired to queued command (req_msg_id=%lu)\n", reqId);
     }
@@ -1595,16 +1574,24 @@ static void transmitCommandAt(size_t idx)
 // to be awake" would sit forever in AWAITING_ACK. We retransmit
 // AWAITING_ACK opportunistically; transmitCommandAt() caps total
 // attempts so a permanently-deaf collar still resolves to FAILED.
-static bool transmitCommandForDevice(const String &reportingDevice)
+// V3.5.1: match STRICTLY by the immutable numeric device ID (UID), never
+// by friendly name. The reporting collar's UID comes from the telemetry
+// packet's device_id field. A queued command only goes out when its
+// targetDeviceId equals the reporting UID (or the command is a broadcast).
+// This prevents a command intended for one collar from being sent to
+// another that happens to share an unknown/duplicate friendly name.
+static bool transmitCommandForDevice(uint16_t reportingId, const String &reportingName)
 {
+  if (reportingId == 0) return false; // unknown UID → never match a targeted cmd
+
   for (size_t i = 0; i < commandQueue.size(); i++)
   {
     LoRaCommand &c = commandQueue[i];
     if (c.status != CMD_QUEUED && c.status != CMD_AWAITING_ACK) continue;
-    if (c.targetDevice == reportingDevice || c.targetDevice == "broadcast")
+    if (c.targetDeviceId == reportingId || c.targetDeviceId == DEVICE_ID_BROADCAST)
     {
-      Serial.printf("[LoRa] Opportunistic send for %s: dispatching msg_id=%lu (state=%s, attempt=%u)\n",
-                    reportingDevice.c_str(), c.messageId,
+      Serial.printf("[LoRa] Opportunistic send for UID %u (%s): dispatching msg_id=%lu (state=%s, attempt=%u)\n",
+                    (unsigned)reportingId, reportingName.c_str(), c.messageId,
                     commandStatusName(c.status), c.txAttempts);
       transmitCommandAt(i);
       return true;
@@ -1618,7 +1605,7 @@ static bool transmitCommandForDevice(const String &reportingDevice)
 // when a JSON ACK arrives. msg_id == 0 means "no msg_id in the ACK",
 // in which case we fall back to the oldest AWAITING_ACK command for
 // the same device (best-effort, for legacy ACKs that don't echo msg_id).
-static bool markCommandDelivered(const String &device, uint32_t ackMsgId)
+static bool markCommandDelivered(uint16_t deviceIdNum, uint32_t ackMsgId)
 {
   // Exact match by msg_id is the gold standard.
   if (ackMsgId != 0)
@@ -1633,13 +1620,17 @@ static bool markCommandDelivered(const String &device, uint32_t ackMsgId)
       }
     }
   }
-  // Fallback: oldest awaiting-ack for the same device.
-  for (auto &c : commandQueue)
+  // Fallback: oldest awaiting-ack for the same UID. V3.5.1: match by the
+  // immutable numeric device ID, never the friendly name.
+  if (deviceIdNum != 0)
   {
-    if (c.targetDevice == device && c.status == CMD_AWAITING_ACK)
+    for (auto &c : commandQueue)
     {
-      setCmdStatus(c, CMD_DELIVERED);
-      return true;
+      if (c.targetDeviceId == deviceIdNum && c.status == CMD_AWAITING_ACK)
+      {
+        setCmdStatus(c, CMD_DELIVERED);
+        return true;
+      }
     }
   }
   return false;
@@ -2707,7 +2698,13 @@ static void handleLoRaPacketJSON(const String &incoming)
     if (reporting.length() > 0)
     {
       tftLastCatName = reporting;     // V3: surface on the V2 onboard TFT
-      transmitCommandForDevice(reporting);
+      // V3.5.1: route queued commands STRICTLY by the reporting collar's
+      // numeric UID (device_id), not its friendly name. 0 if absent → no
+      // targeted command will match (broadcasts still go to any reporter).
+      uint16_t reportingId = doc["device_id"].is<int>()
+                                 ? (uint16_t)doc["device_id"].as<int>()
+                                 : 0;
+      transmitCommandForDevice(reportingId, reporting);
     }
   }
   else
@@ -3646,7 +3643,8 @@ void pushCommandStatusWS(const LoRaCommand &cmd)
   JsonDocument doc;
   doc["type"]      = "command_status";
   doc["msg_id"]    = cmd.messageId;
-  doc["device"]    = cmd.targetDevice;
+  doc["device"]    = cmd.targetDevice;     // friendly name — DISPLAY ONLY
+  doc["target_id"] = cmd.targetDeviceId;   // V3.5.1: UID = the routing key
   doc["status"]    = commandStatusName(cmd.status);
   doc["label"]     = cmd.cmdLabel;
   doc["attempts"]  = cmd.txAttempts;
