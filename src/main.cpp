@@ -1019,6 +1019,9 @@ void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
 // V3.1.4: forward-decl so handleLoRaPacketJSON (defined earlier in file)
 // can call the command-status helpers defined after the transmit code.
 static bool markCommandDelivered(uint16_t deviceIdNum, uint32_t ackMsgId);
+// V3.6.6: lost-ACK resilience — confirm a pending rename when later telemetry
+// reports the requested name (the set_name ACK may have been lost over RF).
+static bool confirmRenameByTelemetry(uint16_t deviceIdNum, const String &reportedName);
 void handleNodeResponse(const JsonDocument &doc);
 void handleNodeStates();    // HTTP handler for /node-states
 void handleSendCommand();   // HTTP handler for /send-command
@@ -1337,6 +1340,20 @@ void updateNodeState(const JsonDocument &doc)
       state.currentMode = reportedMode;
       state.modeKnown = true;
     }
+  }
+
+  // V3.6.6: lost-ACK resilience for renames. A set_name ACK is a single
+  // unacknowledged packet — if it's lost over RF (or collides, or the collar
+  // deep-sleeps as it transmits), the rename SUCCEEDED on the collar but the
+  // command would otherwise sit AWAITING_ACK forever ("hangs on waiting").
+  // Any later packet that reports the collar's CURRENT name — telemetry, a
+  // pong, or a get_status response, none of which carry an "ack" field — lets
+  // us confirm the rename implicitly when that name matches a pending
+  // set_name's requested name. The explicit ack:"set_name" path (msg_id match,
+  // below) remains the primary, fast confirmation when the ACK does arrive.
+  if (!doc["ack"].is<String>())
+  {
+    confirmRenameByTelemetry(incomingDevIdNum, deviceName);
   }
 
   // V3.6.4: pong (presence-check reply). The collar answers a ping with
@@ -1685,6 +1702,43 @@ static bool markCommandDelivered(uint16_t deviceIdNum, uint32_t ackMsgId)
     }
   }
   return false;
+}
+
+// V3.6.6: lost-ACK resilience for renames. The set_name ACK is a single
+// unacknowledged packet; if it's lost over RF the rename still SUCCEEDED on
+// the collar, but the command would sit AWAITING_ACK until it ages out. When
+// a subsequent packet reports the collar's current name, this confirms any
+// pending set_name to that UID whose requested name matches — treating the
+// reported name as implicit proof of delivery. Returns true if it confirmed
+// at least one command. Requested name is read straight from the command's
+// own JSON payload (cmd.buf), so no extra bookkeeping field is needed.
+static bool confirmRenameByTelemetry(uint16_t deviceIdNum, const String &reportedName)
+{
+  if (deviceIdNum == 0 || reportedName.length() == 0) return false;
+
+  bool confirmedAny = false;
+  for (auto &c : commandQueue)
+  {
+    if (c.targetDeviceId != deviceIdNum) continue;
+    if (c.status != CMD_QUEUED && c.status != CMD_SENDING && c.status != CMD_AWAITING_ACK)
+      continue;
+
+    // Is this command a set_name, and for what name? Parse its payload.
+    JsonDocument cd;
+    if (deserializeJson(cd, c.buf, c.len) != DeserializationError::Ok) continue;
+    if (!cd["cmd"].is<const char *>() || strcmp(cd["cmd"], "set_name") != 0) continue;
+
+    const char *want = cd["name"] | "";
+    if (want[0] != '\0' && reportedName == want)
+    {
+      Serial.printf("[CMD] msg_id=%lu rename→'%s' confirmed by reported name "
+                    "(implicit DELIVERED — ACK was lost)\n",
+                    c.messageId, want);
+      setCmdStatus(c, CMD_DELIVERED);
+      confirmedAny = true;
+    }
+  }
+  return confirmedAny;
 }
 
 // V3.1.4: lazy cleanup of terminal-state commands. Called from
