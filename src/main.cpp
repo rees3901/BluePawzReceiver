@@ -935,6 +935,7 @@ struct LoRaCommand
   uint32_t      statusChangedMs;   // millis() of last status transition
   uint8_t       txAttempts;        // total lora.transmit() calls (logging/UI)
   uint8_t       wakeAttempts;      // V3.6.2: sends made when collar CONFIRMED awake
+  bool          ephemeral;         // V3.6.4: presence-check ping — fail fast, don't queue-for-wake
   String        cmdLabel;          // human-readable summary for the UI ("mode→lost")
 };
 
@@ -965,6 +966,13 @@ uint32_t nextMessageId = 1;                     // Global message ID counter
 #define COMMAND_MAX_AGE_MS        1800000UL    // 30 min: give up on an unreachable collar
 #define COMMAND_DELIVERED_LINGER_MS  10000UL   // keep DELIVERED visible for 10 s
 #define COMMAND_FAILED_LINGER_MS     60000UL   // keep FAILED visible for 60 s
+
+// V3.6.4: a presence-check PING is EPHEMERAL — it answers "is this collar
+// awake RIGHT NOW?", so it must fail fast rather than queue-until-wake for
+// 30 min like a durable command. If no pong comes back within this window
+// (a couple of speculative sends + any wake that happens to fall inside it)
+// the ping resolves to FAILED, which the UI shows as "No response".
+#define COMMAND_PING_TIMEOUT_MS   8000UL       // ping presence-check window
 
 // Function declarations
 void notifyClients();
@@ -1006,6 +1014,7 @@ void updateNodeState(const JsonDocument &doc);
 void processCommandQueue();
 void sendModeCommand(uint16_t targetId, const String &profile);
 void sendStatusRequest(uint16_t targetId);
+void sendPingCommand(uint16_t targetId);
 void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
 // V3.1.4: forward-decl so handleLoRaPacketJSON (defined earlier in file)
 // can call the command-status helpers defined after the transmit code.
@@ -1330,6 +1339,22 @@ void updateNodeState(const JsonDocument &doc)
     }
   }
 
+  // V3.6.4: pong (presence-check reply). The collar answers a ping with
+  // {"pong":true, device_id, name, rssi, snr, msg_id}. It carries no "ack"
+  // field, so handle it here: mark the matching ephemeral ping DELIVERED
+  // (UI shows "Collar awake"). lastSeen was already bumped above.
+  if (doc["pong"].is<bool>() && doc["pong"].as<bool>())
+  {
+    uint32_t pongMsgId = doc["msg_id"].is<uint32_t>() ? doc["msg_id"].as<uint32_t>() : 0;
+    int16_t pr = doc["rssi"].is<int>() ? doc["rssi"].as<int>() : 0;
+    Serial.printf("[PONG] UID %u (%s) is AWAKE (rssi=%d, msg_id=%lu)\n",
+                  incomingDevIdNum, deviceName.c_str(), pr, pongMsgId);
+    if (markCommandDelivered(incomingDevIdNum, pongMsgId))
+      Serial.printf("[PONG] matched ping msg_id=%lu → DELIVERED\n", pongMsgId);
+    broadcastNodeStates();
+    return;
+  }
+
   // Check if this is an ACK response
   if (doc["ack"].is<String>())
   {
@@ -1506,10 +1531,13 @@ static void transmitCommandAt(size_t idx, bool collarAwake)
   LoRaCommand &cmd = commandQueue[idx];
 
   // Backstop: give up on a command that's been undeliverable for too long.
-  if (millis() - cmd.timestamp > COMMAND_MAX_AGE_MS)
+  // Ephemeral pings use a short window (presence check), durable commands
+  // get the full 30-minute queue-until-wake window.
+  uint32_t maxAge = cmd.ephemeral ? COMMAND_PING_TIMEOUT_MS : COMMAND_MAX_AGE_MS;
+  if (millis() - cmd.timestamp > maxAge)
   {
-    Serial.printf("[CMD] msg_id=%lu exceeded max age (%lu ms) — FAILED\n",
-                  cmd.messageId, (unsigned long)COMMAND_MAX_AGE_MS);
+    Serial.printf("[CMD] msg_id=%lu exceeded max age (%lu ms%s) — FAILED\n",
+                  cmd.messageId, (unsigned long)maxAge, cmd.ephemeral ? ", ping" : "");
     setCmdStatus(cmd, CMD_FAILED);
     return;
   }
@@ -1672,11 +1700,12 @@ static void reapTerminalCommands()
     // target collar is dead/out of range and never reports in — is failed
     // here, even though no transmit attempt fired to trigger the check
     // inside transmitCommandAt().
+    uint32_t maxAge = it->ephemeral ? COMMAND_PING_TIMEOUT_MS : COMMAND_MAX_AGE_MS;
     if ((it->status == CMD_QUEUED || it->status == CMD_AWAITING_ACK || it->status == CMD_SENDING) &&
-        (now - it->timestamp > COMMAND_MAX_AGE_MS))
+        (now - it->timestamp > maxAge))
     {
-      Serial.printf("[CMD] msg_id=%lu unreachable for >%lu ms — FAILED (backstop)\n",
-                    it->messageId, (unsigned long)COMMAND_MAX_AGE_MS);
+      Serial.printf("[CMD] msg_id=%lu unreachable for >%lu ms%s — FAILED (backstop)\n",
+                    it->messageId, (unsigned long)maxAge, it->ephemeral ? ", ping" : "");
       setCmdStatus(*it, CMD_FAILED);
     }
 
@@ -1865,6 +1894,43 @@ void sendStatusRequest(uint16_t targetId)
   enqueueAndSendNow(cmd, "get_status");
 }
 
+// V3.6.4: presence-check PING. Asks "is this collar awake & reachable NOW?".
+// Unlike durable commands it's EPHEMERAL — it does not queue-until-wake for
+// 30 min; if no pong arrives within COMMAND_PING_TIMEOUT_MS the ping FAILS
+// (UI: "No response"). On a pong it resolves DELIVERED (UI: "Collar awake").
+// Changes nothing on the collar. Wire format:
+//   {"cmd":"ping","device_id":N,"msg_id":N}
+// The collar replies with {"pong":true,"device_id":N,"name":...,"rssi":...,
+// "msg_id":N} — handled in updateNodeState's pong branch.
+void sendPingCommand(uint16_t targetId)
+{
+  if (targetId == 0)
+  {
+    Serial.println("[CMD] ping: missing/zero target device_id — rejecting");
+    return;
+  }
+
+  String name = nodeNameForId(targetId);
+  LoRaCommand cmd;
+  memset(&cmd, 0, sizeof(cmd));
+  cmd.targetDevice = name;
+  cmd.targetDeviceId = targetId;
+  cmd.timestamp = millis();
+  cmd.messageId = nextMessageId++;
+  cmd.ephemeral = true; // fail-fast presence check, not a durable command
+
+  JsonDocument doc;
+  doc["cmd"] = "ping";
+  doc["device_id"] = targetId;   // route STRICTLY by UID
+  doc["msg_id"] = cmd.messageId;
+  size_t written = serializeJson(doc, cmd.buf, sizeof(cmd.buf));
+  cmd.len = (uint8_t)written;
+
+  Serial.printf("[CMD] Ping queued: UID %u (%s) — %lu ms window\n",
+                (unsigned)targetId, name.c_str(), (unsigned long)COMMAND_PING_TIMEOUT_MS);
+  enqueueAndSendNow(cmd, "ping");
+}
+
 // V3: rename a collar (set_name). Targets by numeric device_id because the
 // current name may be unknown (e.g. a freshly-flashed collar reporting in as
 // "Device-4"). The collar saves the new name to NVS and ACKs with the new id,
@@ -2019,6 +2085,12 @@ void handleSendCommand()
   {
     sendStatusRequest(targetId);
     server.send(200, "text/plain", "Status request queued");
+  }
+  else if (action == "ping")
+  {
+    // V3.6.4: presence check — ephemeral, fail-fast.
+    sendPingCommand(targetId);
+    server.send(200, "text/plain", "Ping queued");
   }
   else if (action == "mode")
   {

@@ -2588,7 +2588,24 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         const cancelBtn = cancellable
           ? `<button class="cmd-cancel-btn" onclick="cancelCommand(${c.msg_id})">Cancel</button>`
           : '';
-        const statusLabel = c.status === 'awaiting_ack' ? 'waiting' : c.status;
+        // V3.6.4: presence-check pings get plain-English result text per the
+        // spec (Ping sent / Collar awake / No response), distinct from the
+        // generic command states.
+        const isPing = (c.label === 'ping');
+        let statusLabel;
+        if (isPing) {
+          statusLabel = ({
+            queued: 'ping sent',
+            sending: 'ping sent',
+            awaiting_ack: 'pinging…',
+            delivered: '✓ collar awake',
+            failed: '✗ no response',
+            cancelled: 'cancelled'
+          })[c.status] || c.status;
+        } else {
+          statusLabel = c.status === 'awaiting_ack' ? 'waiting' : c.status;
+        }
+        const labelText = isPing ? 'presence check' : (c.label || '');
         // V3.5.1: the routing key is the unique device ID. Show it as
         // "ID N (FriendlyName)" — the name is a readability hint only,
         // never the identifier. WS pushes carry target_id; the /commands
@@ -2604,9 +2621,9 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           targetText = `ID ${uid}` + (c.device ? ` (${c.device})` : '');
         }
         return `
-          <div class="cmd-item s-${c.status}">
+          <div class="cmd-item s-${c.status}${isPing ? ' cmd-ping' : ''}">
             <span class="cmd-target">${targetText}</span>
-            <span class="cmd-label">${c.label || ''}</span>
+            <span class="cmd-label">${labelText}</span>
             <span class="cmd-status-pill">${statusLabel}</span>
             ${cancelBtn}
           </div>
@@ -3230,6 +3247,12 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
                 title="Query Status&#10;Requests battery level, GPS lock, and uptime&#10;Response updates the info display above">
           🔄
         </button>
+        <button class="node-btn node-btn-ping"
+                onclick="window.pingCollar('${devEsc}')"
+                id="${prefix}ping-btn-${dev}"
+                title="Presence Check (Ping)&#10;Quick LoRa ping to check if this collar is awake &amp; reachable right now.&#10;Changes nothing — use it before a rename / mode change.">
+          📡 Ping
+        </button>
         <button class="node-btn node-btn-rename"
                 onclick="window.renameCollar(${devIdNum}, '${nameEsc}')"
                 id="${prefix}rename-btn-${dev}"
@@ -3323,6 +3346,16 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
         });
     }
 
+    // V3.6.4: presence-check ping. Fire-and-forget — the server queues an
+    // ephemeral ping (8 s window) and pushes command_status over WS; the
+    // command panel shows it as "Ping sent → Collar awake / No response".
+    // Available even while another command is pending (it's a quick check).
+    function pingCollar(deviceId) {
+      fetch(`/send-command?device_id=${deviceId}&action=ping`, { method: 'POST' })
+        .then(r => { if (!r.ok) throw new Error('Ping failed'); console.log(`[CMD] Ping queued for UID ${deviceId}`); })
+        .catch(err => { console.error('Ping failed:', err); alert(`❌ Ping failed for ID ${deviceId}`); });
+    }
+
     // Request node status. V3.6.2: fire-and-forget — server queue + WS
     // command_status drive the pending/disabled state on both surfaces.
     function requestNodeStatus(deviceId) {
@@ -3345,6 +3378,7 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
     // intent clear and survives any future refactor to ES modules.
     window.sendModeChange = sendModeChange;
     window.requestNodeStatus = requestNodeStatus;
+    window.pingCollar = pingCollar;
     window.cancelPendingForDevice = cancelPendingForDevice;
     window.renameCollar = renameCollar;
     window.commandPending = commandPending;
