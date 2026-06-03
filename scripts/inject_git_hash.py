@@ -2,7 +2,8 @@
 PlatformIO PRE-build hook. Three responsibilities:
 
   1. Resolve the current git commit hash (and dirty flag).
-  2. Stamp data/version.json with that hash so the LittleFS image carries it.
+  2. Write it to the GIT-IGNORED data/build_info.json so the LittleFS image
+     carries it WITHOUT dirtying any tracked file (see the long note below).
   3. Prune RadioLib's source list so PIO doesn't compile every radio
      driver + digital-mode encoder in the library every build.
 
@@ -72,28 +73,24 @@ print(f"[inject_git_hash] BLUEPAWZ_GIT_HASH = {git_hash}")
 # Stash for the post-script so it doesn't re-run git rev-parse.
 env["BLUEPAWZ_GIT_HASH"] = git_hash  # noqa: F821
 
-# Stamp data/version.json so the FS image carries the same hash.
-version_json = PROJECT_DIR / "data" / "version.json"
-if version_json.exists():
-    try:
-        current = json.loads(version_json.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        current = {}
-    if current.get("fs_git_hash") != git_hash:
-        current["fs_git_hash"] = git_hash
-        # Preserve human-friendly key ordering by writing fs_version first,
-        # then fs_git_hash, then everything else.
-        ordered = {}
-        for key in ("fs_version", "fs_git_hash"):
-            if key in current:
-                ordered[key] = current[key]
-        for key, value in current.items():
-            if key not in ordered:
-                ordered[key] = value
-        version_json.write_text(
-            json.dumps(ordered, indent=2) + "\n", encoding="utf-8"
-        )
-        print(f"[inject_git_hash] wrote fs_git_hash={git_hash} -> {version_json}")
+# V3.6.3: write the FS git hash to data/build_info.json, NOT version.json.
+#
+# build_info.json is GIT-IGNORED (see .gitignore). It still gets packed into
+# the LittleFS image (PIO images the whole data/ dir), so /build_info.json is
+# readable at runtime by the /version handler. Because it's never committed,
+# regenerating it every build no longer leaves a tracked file "dirty after
+# every build", which was the perpetual re-commit loop we're killing here.
+#
+# (Previously we stamped fs_git_hash INTO the tracked data/version.json. A
+# tracked file can never hold its own commit's hash — the hash isn't known
+# until after the commit — so every build re-dirtied it and demanded another
+# commit, forever. version.json is now hand-edited ONLY when bumping the
+# semver, in lockstep with include/version.h.)
+build_info = PROJECT_DIR / "data" / "build_info.json"
+build_info.write_text(
+    json.dumps({"fs_git_hash": git_hash}, indent=2) + "\n", encoding="utf-8"
+)
+print(f"[inject_git_hash] wrote fs_git_hash={git_hash} -> {build_info} (git-ignored)")
 
 
 # Rename unused RadioLib .cpp files to .cpp.skip so PIO doesn't see them.

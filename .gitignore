@@ -6,3 +6,9 @@
 
 # Claude Code temp files
 tmpclaude-*-cwd
+
+# V3.6.3: build-time git-hash stamp for the LittleFS image. Regenerated on
+# every build by scripts/inject_git_hash.py and packed into the FS image,
+# but never committed — keeping it out of git is what stops the "version
+# file dirty after every build" re-commit loop.
+data/build_info.json

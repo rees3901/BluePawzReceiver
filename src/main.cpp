@@ -2163,25 +2163,38 @@ void handleGetVersion()
   doc["firmware_git_hash"] = "unknown";
 #endif
 
-  // Read filesystem version + git hash from /version.json on LittleFS.
-  // Both are stamped at FS-image build time, so a mismatch between
-  // firmware_git_hash and fs_git_hash means firmware was OTA'd from
-  // a different commit than the FS image (or one of them is "dirty").
+  // Filesystem version (the human semver) comes from /version.json, which
+  // is hand-edited + committed in lockstep with include/version.h.
   String fsVer = "unknown";
-  String fsHash = "unknown";
   if (LittleFS.exists("/version.json"))
   {
     File f = LittleFS.open("/version.json", "r");
     if (f)
     {
       JsonDocument fsDoc;
-      if (deserializeJson(fsDoc, f) == DeserializationError::Ok)
-      {
-        if (fsDoc["fs_version"].is<const char *>())
-          fsVer = fsDoc["fs_version"].as<const char *>();
-        if (fsDoc["fs_git_hash"].is<const char *>())
-          fsHash = fsDoc["fs_git_hash"].as<const char *>();
-      }
+      if (deserializeJson(fsDoc, f) == DeserializationError::Ok &&
+          fsDoc["fs_version"].is<const char *>())
+        fsVer = fsDoc["fs_version"].as<const char *>();
+      f.close();
+    }
+  }
+
+  // V3.6.3: the FS git hash now lives in /build_info.json, a build-time-
+  // generated file that is GIT-IGNORED. It used to be stamped into the
+  // tracked version.json, which created a perpetual "dirty after every
+  // build" loop (a file can't hold its own commit's hash). build_info.json
+  // is regenerated on every build and never committed, so it never shows
+  // up as a pending change. See scripts/inject_git_hash.py.
+  String fsHash = "unknown";
+  if (LittleFS.exists("/build_info.json"))
+  {
+    File f = LittleFS.open("/build_info.json", "r");
+    if (f)
+    {
+      JsonDocument biDoc;
+      if (deserializeJson(biDoc, f) == DeserializationError::Ok &&
+          biDoc["fs_git_hash"].is<const char *>())
+        fsHash = biDoc["fs_git_hash"].as<const char *>();
       f.close();
     }
   }
