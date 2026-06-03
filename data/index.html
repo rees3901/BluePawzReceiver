@@ -1711,9 +1711,19 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         <input id="dbgMode" type="text" placeholder="mode" oninput="updateDebugConsole(true)" style="flex:0 1 70px;">
         <button class="btn btn-outline-secondary" onclick="clearDebugFilters()" title="Reset all debug filters">✕ Filters</button>
       </div>
-      <div class="debug-console-body" id="debugConsoleBody">
+      <div class="debug-console-body" id="debugConsoleBody" style="position: relative;">
         <div class="debug-console-messages" id="debugConsoleMessages">
           <div style="color: #999; text-align: center; padding: 20px;">No messages yet. Waiting for WebSocket data...</div>
+        </div>
+        <!-- V3.6.2: serial-monitor-style PAUSED overlay. Shown while the user
+             has scrolled away from the live end (top). Clicking it jumps back
+             to newest and resumes the live feed. -->
+        <div id="debugPausedBadge" onclick="debugScrollLatest()"
+             style="display:none; position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
+                    background:#dc3545; color:#fff; padding:5px 12px; border-radius:14px;
+                    font-size:0.8em; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.3);
+                    cursor:pointer; z-index:20; white-space:nowrap; user-select:none;">
+          ⏸ Paused — <span id="debugPausedCount">live feed paused</span> · click to resume
         </div>
       </div>
     </div>
@@ -2398,12 +2408,62 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       };
     }
 
-    // V3.5.1: rewritten so incoming messages NEVER yank the user's scroll
-    // position. Newest entries are prepended at the top; we only pin to the
-    // top (newest) if the user was already there. Otherwise we keep the same
-    // messages under the viewport by compensating for the height added above.
-    // Pass fromFilter=true (filter controls) to deliberately jump to newest.
-    function updateDebugConsole(fromFilter) {
+    // V3.6.2: serial-monitor-style PAUSE model. The old delta-scroll trick
+    // was fragile (innerHTML replacement + variable row heights kept yanking
+    // the view). Now: newest is at the TOP, so the "live end" is scrollTop≈0.
+    // If the user scrolls down (>24px) we PAUSE — incoming messages are still
+    // buffered in globalMessageLog but we DON'T re-render the list, so the
+    // user's view never moves. A badge shows how many arrived while paused.
+    // Scrolling back to the top (or clicking the badge) RESUMES and flushes.
+    const DEBUG_PAUSE_THRESHOLD_PX = 24;
+    let debugNewSincePause = 0;
+    let debugWasPaused = false;
+    let debugScrollWired = false;
+
+    function debugIsPaused() {
+      const el = document.getElementById('debugConsoleMessages');
+      return !!el && el.scrollTop > DEBUG_PAUSE_THRESHOLD_PX;
+    }
+
+    function updateDebugPausedIndicator() {
+      const badge = document.getElementById('debugPausedBadge');
+      if (!badge) return;
+      if (debugIsPaused()) {
+        const cnt = document.getElementById('debugPausedCount');
+        if (cnt) cnt.textContent = debugNewSincePause > 0
+          ? `${debugNewSincePause} new message${debugNewSincePause === 1 ? '' : 's'}`
+          : 'live feed paused';
+        badge.style.display = 'block';
+      } else {
+        badge.style.display = 'none';
+      }
+    }
+
+    function wireDebugScrollListener() {
+      if (debugScrollWired) return;
+      const el = document.getElementById('debugConsoleMessages');
+      if (!el) return;
+      el.addEventListener('scroll', () => {
+        const paused = debugIsPaused();
+        if (!paused && debugWasPaused) {
+          // Just returned to the live end → resume + flush buffered messages.
+          debugWasPaused = false;
+          debugNewSincePause = 0;
+          updateDebugConsole(true); // re-render, pin to top
+        } else if (paused && !debugWasPaused) {
+          debugWasPaused = true;
+        }
+        updateDebugPausedIndicator();
+      });
+      debugScrollWired = true;
+    }
+
+    // force=true → an explicit user action (filter change / resume / clear):
+    //   always re-render and pin to the newest (top). force=false → a live
+    //   incoming message: re-render ONLY if not paused; if paused, just bump
+    //   the counter and leave the user's scroll position untouched.
+    function updateDebugConsole(force) {
+      wireDebugScrollListener();
       const messagesDiv = document.getElementById('debugConsoleMessages');
       const countSpan = document.getElementById('debug-message-count');
       if (!messagesDiv || !countSpan) return;
@@ -2415,6 +2475,20 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         return;
       }
 
+      // PAUSED + this is a live update (not a user action): don't disturb the
+      // view. Buffer the new message (already in globalMessageLog) and show it
+      // in the badge count.
+      if (!force && debugIsPaused()) {
+        debugNewSincePause++;
+        updateDebugPausedIndicator();
+        const f0 = readDebugFilters();
+        const hasF0 = !!(f0.search || f0.device || f0.type || f0.status || f0.mode);
+        countSpan.textContent = hasF0
+          ? `(${all.filter(e => debugEntryMatches(e, f0)).length} / ${all.length} messages)`
+          : `(${all.length} messages)`;
+        return;
+      }
+
       const f = readDebugFilters();
       const hasFilter = !!(f.search || f.device || f.type || f.status || f.mode);
       const filtered = hasFilter ? all.filter(e => debugEntryMatches(e, f)) : all;
@@ -2423,32 +2497,24 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         ? `(${filtered.length} / ${all.length} messages)`
         : `(${all.length} messages)`;
 
-      // Capture scroll state BEFORE we re-render (newest at top → scrollTop 0).
-      const wasAtTop = messagesDiv.scrollTop <= 4;
-      const prevHeight = messagesDiv.scrollHeight;
-      const prevTop = messagesDiv.scrollTop;
-
       if (filtered.length === 0) {
         messagesDiv.innerHTML = '<div style="color: #999; text-align: center; padding: 20px;">No messages match the current filters.</div>';
-        return;
-      }
-
-      messagesDiv.innerHTML = filtered
-        .map(entry => `
-          <div class="debug-message-entry">
-            <div class="debug-message-time">${entry.timestamp}</div>
-            <div class="debug-message-content">${JSON.stringify(entry.data, null, 2)}</div>
-          </div>
-        `)
-        .join('');
-
-      // Restore scroll. Filter changes jump to newest; live updates preserve.
-      if (fromFilter || wasAtTop) {
-        messagesDiv.scrollTop = 0; // pinned to newest
       } else {
-        const delta = messagesDiv.scrollHeight - prevHeight;
-        messagesDiv.scrollTop = prevTop + delta; // keep same messages in view
+        messagesDiv.innerHTML = filtered
+          .map(entry => `
+            <div class="debug-message-entry">
+              <div class="debug-message-time">${entry.timestamp}</div>
+              <div class="debug-message-content">${JSON.stringify(entry.data, null, 2)}</div>
+            </div>
+          `)
+          .join('');
       }
+
+      // We're at (or returning to) the live end → pin to newest.
+      messagesDiv.scrollTop = 0;
+      debugNewSincePause = 0;
+      debugWasPaused = false;
+      updateDebugPausedIndicator();
     }
 
     function clearDebugFilters() {
@@ -2460,6 +2526,9 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     function debugScrollLatest() {
       const messagesDiv = document.getElementById('debugConsoleMessages');
       if (messagesDiv) messagesDiv.scrollTop = 0; // newest is at the top
+      debugWasPaused = false;
+      debugNewSincePause = 0;
+      updateDebugConsole(true); // flush anything buffered while paused
     }
 
     // Expose globally
@@ -2595,6 +2664,9 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       commandsByMsgId.set(c.msg_id, c);
       renderCommandPanel();
       refreshCancelButtonHighlights();
+      // V3.6.2: reflect the new pending/disabled state on BOTH the C&C panel
+      // and the marker-tile controls immediately — one shared state model.
+      if (window.refreshAllNodeControlUI) window.refreshAllNodeControlUI();
       // Auto-remove DELIVERED entries after 5s for a tidy UI (the
       // server lingers them for 10s; we hide them sooner on the client).
       if (c.status === 'delivered') {
@@ -3122,7 +3194,10 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       const devEsc = String(dev);
       const nameEsc = String(node.name || '').replace(/'/g, "\\'");
       const cur = node.mode_known ? node.mode : '';
-      const isPending = !!window.commandPending && !!window.commandPending[dev];
+      // V3.6.2: pending state comes from the shared server command queue,
+      // never a per-surface guess — so the marker tile and C&C panel always
+      // agree on whether this collar is busy.
+      const isPending = window.deviceHasPendingCommand ? window.deviceHasPendingCommand(dev) : false;
       const devIdNum = node.device_id || 0;
       const opts = ['normal', 'active', 'powersave', 'lost']
         .map(m => `<option value="${m}" ${cur === m ? 'selected' : ''}>${m.charAt(0).toUpperCase() + m.slice(1)}</option>`)
@@ -3196,42 +3271,22 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
         }
       }
 
-      // Send command
-      commandPending[deviceId] = true;
-      updateNodeControlUI(deviceId);
-
+      // V3.6.2: fire-and-forget. The server enqueues the command and pushes
+      // command_status over WS; deviceHasPendingCommand()/applyCommandUpdate()
+      // drive the pending/disabled state on BOTH surfaces. No client-side
+      // timeout faking "no response" — the server queue is the source of truth
+      // (a command may legitimately sit scheduled for minutes until the collar
+      // wakes). The command-status panel shows queued → waiting → delivered.
       fetch(`/send-command?device_id=${deviceId}&action=mode&profile=${newMode}`, {
         method: 'POST'
       })
         .then(response => {
-          if (!response.ok) {
-            throw new Error('Command failed');
-          }
+          if (!response.ok) throw new Error('Command failed');
           console.log(`[CMD] Mode change queued: UID ${deviceId} -> ${newMode}`);
-          
-          // Update card status if it exists
-          const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
-          if (cardModeText) {
-            cardModeText.innerHTML = '<span style="color: #ffc107;">⏳ Sending command...</span>';
-          }
-          
-          // Command will be sent, wait for ACK via WebSocket
-          setTimeout(() => {
-            if (commandPending[deviceId]) {
-              commandPending[deviceId] = false;
-              updateNodeControlUI(deviceId);
-              const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
-              if (cardModeText) {
-                cardModeText.innerHTML = '<span style="color: #999;">No response received</span>';
-              }
-            }
-          }, 10000); // Clear pending state after 10s if no ACK
         })
         .catch(err => {
           console.error('Failed to send mode command:', err);
-          alert(`❌ Failed to send command to ${deviceId}`);
-          commandPending[deviceId] = false;
-          updateNodeControlUI(deviceId);
+          alert(`❌ Failed to queue command for ID ${deviceId}`);
         });
     }
     
@@ -3268,44 +3323,19 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
         });
     }
 
-    // Request node status
+    // Request node status. V3.6.2: fire-and-forget — server queue + WS
+    // command_status drive the pending/disabled state on both surfaces.
     function requestNodeStatus(deviceId) {
-      commandPending[deviceId] = true;
-      updateNodeControlUI(deviceId);
-      
-      // Update card status if it exists
-      const cardModeText = document.getElementById(`card-mode-text-${deviceId}`);
-      if (cardModeText) {
-        cardModeText.innerHTML = '<span style="color: #17a2b8;">🔄 Querying status...</span>';
-      }
-      
       fetch(`/send-command?device_id=${deviceId}&action=status`, {
         method: 'POST'
       })
         .then(response => {
-          if (!response.ok) {
-            throw new Error('Command failed');
-          }
-          console.log(`[CMD] Status request sent to UID ${deviceId}`);
-          
-          setTimeout(() => {
-            if (commandPending[deviceId]) {
-              commandPending[deviceId] = false;
-              updateNodeControlUI(deviceId);
-              if (cardModeText) {
-                cardModeText.innerHTML = '<span style="color: #999;">No response received</span>';
-              }
-            }
-          }, 10000);
+          if (!response.ok) throw new Error('Command failed');
+          console.log(`[CMD] Status request queued for UID ${deviceId}`);
         })
         .catch(err => {
           console.error('Failed to request status:', err);
-          alert(`❌ Failed to query ${deviceId}`);
-          commandPending[deviceId] = false;
-          updateNodeControlUI(deviceId);
-          if (cardModeText) {
-            cardModeText.innerHTML = '<span style="color: #dc3545;">❌ Error</span>';
-          }
+          alert(`❌ Failed to queue status query for ID ${deviceId}`);
         });
     }
     
@@ -3322,35 +3352,48 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
     // node state immediately, rather than waiting for the next WS push.
     window.nodeStates = nodeStates;
 
-    // Update UI for a specific node
+    // V3.6.2: SINGLE SOURCE OF TRUTH for "is this collar busy?". A device is
+    // pending iff the server's command queue (mirrored in commandsByMsgId via
+    // command_status WS pushes) holds a non-terminal command for its UID.
+    // No client-side guessing, no timeouts — the firmware queue drives the UI.
+    function deviceHasPendingCommand(deviceId) {
+      for (const c of commandsByMsgId.values()) {
+        if (String(c.target_id) !== String(deviceId)) continue;
+        if (c.status === 'queued' || c.status === 'sending' || c.status === 'awaiting_ack') {
+          return true;
+        }
+      }
+      return false;
+    }
+    window.deviceHasPendingCommand = deviceHasPendingCommand;
+
+    // Update the Apply/Status button state for a node on BOTH surfaces
+    // (C&C panel prefix '' and marker-tile prefix 'card-'). Driven purely
+    // by the shared server state so the two surfaces can never diverge.
     function updateNodeControlUI(deviceId) {
-      // V3.2.3: update BOTH the C&C panel buttons AND the marker-tile
-      // card buttons. The two surfaces share the same shape, just with
-      // different ID prefixes.
+      const pending = deviceHasPendingCommand(deviceId);
       ['', 'card-'].forEach(prefix => {
         const applyBtn  = document.getElementById(`${prefix}apply-btn-${deviceId}`);
         const statusBtn = document.getElementById(`${prefix}status-btn-${deviceId}`);
         if (applyBtn) {
-          applyBtn.disabled = commandPending[deviceId];
-          applyBtn.textContent = commandPending[deviceId] ? '⏳' : (prefix ? '✓' : '✓ Apply');
+          applyBtn.disabled = pending;
+          applyBtn.textContent = pending ? '⏳' : (prefix ? '✓' : '✓ Apply');
         }
-        if (statusBtn) {
-          statusBtn.disabled = commandPending[deviceId];
-        }
+        if (statusBtn) statusBtn.disabled = pending;
       });
-      // Legacy lookup kept for any panel-only fallback (no-op when the
-      // device isn't rendered in the C&C list).
-      const applyBtn = document.getElementById(`apply-btn-${deviceId}`);
-      const statusBtn = document.querySelector(`#node-${deviceId} .node-btn-status`);
-
-      if (applyBtn) {
-        applyBtn.disabled = commandPending[deviceId];
-      }
-
-      if (statusBtn) {
-        statusBtn.disabled = commandPending[deviceId];
-      }
     }
+
+    // Refresh button state for EVERY device currently on screen. Called from
+    // applyCommandUpdate so a command_status push instantly updates both
+    // surfaces' pending/disabled state in lockstep.
+    function refreshAllNodeControlUI() {
+      const seen = new Set();
+      document.querySelectorAll('[id^="apply-btn-"], [id^="card-apply-btn-"]').forEach(btn => {
+        const dev = btn.id.replace('card-apply-btn-', '').replace('apply-btn-', '');
+        if (!seen.has(dev)) { seen.add(dev); updateNodeControlUI(dev); }
+      });
+    }
+    window.refreshAllNodeControlUI = refreshAllNodeControlUI;
     
     // Handle node state updates from WebSocket
     function handleNodeStateUpdate(data) {
@@ -3359,14 +3402,18 @@ Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
           // V3.6.0: key by device_id (UID); name is a display label.
           nodeStates[node.device_id] = node;
 
-          // Clear pending state if we got an update
-          if (commandPending[node.device_id]) {
-            commandPending[node.device_id] = false;
-          }
+          // V3.6.2: keep the friendly-name label in lockstep across surfaces.
+          // A set_name ACK arrives as a node-state push with the NEW name;
+          // pushing it through setDeviceName updates window.deviceNames AND
+          // the marker-tile card title immediately (so the marker tile no
+          // longer lags behind the C&C panel after a rename).
+          if (window.setDeviceName) window.setDeviceName(node.device_id, node.name);
 
           // V3.2.3: re-render the marker-tile controls slot from the same
           // shared helper used by the C&C panel. The two surfaces stay
-          // identical and in lockstep after every WS state push.
+          // identical and in lockstep after every WS state push. Button
+          // disabled state comes from the shared server command queue, so
+          // both surfaces agree on pending without any client-side flag.
           if (window.refreshCardControls) {
             window.refreshCardControls(node);
           }

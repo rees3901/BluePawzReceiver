@@ -933,7 +933,8 @@ struct LoRaCommand
   // V3.1.4 status-machine fields
   CommandStatus status;            // current state in the lifecycle
   uint32_t      statusChangedMs;   // millis() of last status transition
-  uint8_t       txAttempts;        // how many times we've called lora.transmit()
+  uint8_t       txAttempts;        // total lora.transmit() calls (logging/UI)
+  uint8_t       wakeAttempts;      // V3.6.2: sends made when collar CONFIRMED awake
   String        cmdLabel;          // human-readable summary for the UI ("mode→lost")
 };
 
@@ -942,10 +943,26 @@ unsigned long lastCommandTxTime = 0;
 const unsigned long COMMAND_TX_INTERVAL = 3000; // 3 seconds between command transmissions
 uint32_t nextMessageId = 1;                     // Global message ID counter
 
-// V3.1.4: max TX attempts before marking a command FAILED. The
-// opportunistic-on-telemetry path means we typically only need 1
-// attempt; this caps the safety-net path's retry storm.
-#define COMMAND_MAX_TX_ATTEMPTS  6
+// ─────────────────────────────────────────────────────────────────────
+// V3.6.2 command-lifecycle tuning. The OLD model counted every transmit
+// (including speculative sends while the collar was asleep) toward a hard
+// 6-attempt FAILED cap — so a command would "resend 3-4 times then give
+// up" if any ACK was missed. The NEW model matches the intended flow:
+//
+//   * 2 SPECULATIVE sends (immediate + 1 safety-net retry) in case the
+//     collar happens to be awake/catchable. These DON'T count toward
+//     failure — on radio success the command stays QUEUED (scheduled),
+//     because bytes sent to a sleeping collar went nowhere.
+//   * Then the command is SCHEDULED: it waits, QUEUED, until the target
+//     collar next reports in (telemetry). On that wake we send it for
+//     real (collar is in its post-TX RX window) → AWAITING_ACK.
+//   * It only FAILS if the collar woke COMMAND_MAX_WAKE_ATTEMPTS times
+//     and never ACKed (genuinely broken), or the command is older than
+//     COMMAND_MAX_AGE_MS (unreachable collar backstop).
+// ─────────────────────────────────────────────────────────────────────
+#define COMMAND_SPECULATIVE_MAX   2            // immediate + 1 safety-net speculative send
+#define COMMAND_MAX_WAKE_ATTEMPTS 10           // collar-awake sends w/o ACK before FAILED
+#define COMMAND_MAX_AGE_MS        1800000UL    // 30 min: give up on an unreachable collar
 #define COMMAND_DELIVERED_LINGER_MS  10000UL   // keep DELIVERED visible for 10 s
 #define COMMAND_FAILED_LINGER_MS     60000UL   // keep FAILED visible for 60 s
 
@@ -1473,31 +1490,50 @@ static void setCmdStatus(LoRaCommand &cmd, CommandStatus newStatus)
 // failure with retry count bumped, → FAILED if retries exhausted).
 // Does NOT remove from the queue — that's done lazily by the cleanup
 // pass once the command reaches a terminal state + linger time expires.
-static void transmitCommandAt(size_t idx)
+// V3.6.2: transmit a queued command. `collarAwake` distinguishes the two
+// fundamentally different situations:
+//   false (SPECULATIVE) — fired from enqueue / safety-net while we have no
+//     evidence the collar is listening. On radio success we stay QUEUED
+//     (the bytes may have hit a sleeping collar = nowhere). Does NOT count
+//     toward the failure budget.
+//   true (OPPORTUNISTIC) — fired the instant the collar's telemetry arrives,
+//     so it's in its post-TX RX window and genuinely listening. On radio
+//     success we move to AWAITING_ACK and genuinely expect an ACK. These
+//     count toward COMMAND_MAX_WAKE_ATTEMPTS.
+static void transmitCommandAt(size_t idx, bool collarAwake)
 {
   if (idx >= commandQueue.size()) return;
   LoRaCommand &cmd = commandQueue[idx];
 
-  // V3.2.3: cap retries BEFORE we transmit, not only on radio-level
-  // failure. Previously txAttempts was only checked after a TX error;
-  // an AWAITING_ACK that the collar never ACKed could be retried by
-  // the opportunistic path indefinitely. Now we mark FAILED here if
-  // we've already burned through every attempt.
-  if (cmd.txAttempts >= COMMAND_MAX_TX_ATTEMPTS)
+  // Backstop: give up on a command that's been undeliverable for too long.
+  if (millis() - cmd.timestamp > COMMAND_MAX_AGE_MS)
   {
-    Serial.printf("[CMD] msg_id=%lu retry cap reached (%u/%u) — marking FAILED\n",
-                  cmd.messageId, cmd.txAttempts, COMMAND_MAX_TX_ATTEMPTS);
+    Serial.printf("[CMD] msg_id=%lu exceeded max age (%lu ms) — FAILED\n",
+                  cmd.messageId, (unsigned long)COMMAND_MAX_AGE_MS);
     setCmdStatus(cmd, CMD_FAILED);
     return;
+  }
+
+  if (collarAwake)
+  {
+    // Real delivery attempt into a confirmed-awake collar's RX window.
+    if (cmd.wakeAttempts >= COMMAND_MAX_WAKE_ATTEMPTS)
+    {
+      Serial.printf("[CMD] msg_id=%lu collar woke %u times without ACK — FAILED\n",
+                    cmd.messageId, cmd.wakeAttempts);
+      setCmdStatus(cmd, CMD_FAILED);
+      return;
+    }
+    cmd.wakeAttempts++;
   }
 
   setCmdStatus(cmd, CMD_SENDING);
   cmd.txAttempts++;
 
-  Serial.printf("[LoRa] TX msg_id=%lu attempt=%u target=%s bytes=%u: %.*s\n",
-                cmd.messageId, cmd.txAttempts,
-                cmd.targetDevice.c_str(), cmd.len,
-                cmd.len, (const char *)cmd.buf);
+  Serial.printf("[LoRa] TX msg_id=%lu %s (spec=%u wake=%u) target_uid=%u bytes=%u: %.*s\n",
+                cmd.messageId, collarAwake ? "[AWAKE]" : "[speculative]",
+                (unsigned)(cmd.txAttempts - cmd.wakeAttempts), (unsigned)cmd.wakeAttempts,
+                (unsigned)cmd.targetDeviceId, cmd.len, cmd.len, (const char *)cmd.buf);
 
   lora.standby();
   int state = lora.transmit(cmd.buf, cmd.len);
@@ -1506,40 +1542,43 @@ static void transmitCommandAt(size_t idx)
 
   if (state == RADIOLIB_ERR_NONE)
   {
-    Serial.printf("[LoRa] TX OK msg_id=%lu\n", cmd.messageId);
     LED_flicker();
 
     JsonDocument logDoc;
-    logDoc["event"]  = "command_sent";
-    logDoc["target"] = cmd.targetDevice;
-    logDoc["msg_id"] = cmd.messageId;
-    logDoc["bytes"]  = cmd.len;
-    logMessage(logDoc, "event");
-
-    setCmdStatus(cmd, CMD_AWAITING_ACK);
-  }
-  else
-  {
-    Serial.printf("[LoRa] TX FAIL msg_id=%lu err=%d (attempt %u/%u)\n",
-                  cmd.messageId, state, cmd.txAttempts, COMMAND_MAX_TX_ATTEMPTS);
-
-    JsonDocument logDoc;
-    logDoc["event"]      = "command_tx_failed";
-    logDoc["target"]     = cmd.targetDevice;
+    logDoc["event"]      = "command_sent";
+    logDoc["target_id"]  = cmd.targetDeviceId;
     logDoc["msg_id"]     = cmd.messageId;
-    logDoc["error_code"] = state;
-    logDoc["attempt"]    = cmd.txAttempts;
+    logDoc["awake"]      = collarAwake;
+    logDoc["wake_attempts"] = cmd.wakeAttempts;
     logMessage(logDoc, "event");
 
-    if (cmd.txAttempts >= COMMAND_MAX_TX_ATTEMPTS)
+    if (collarAwake)
     {
-      setCmdStatus(cmd, CMD_FAILED);
+      // Collar is in its RX window — we genuinely expect an ACK back now.
+      Serial.printf("[LoRa] TX OK (awake) msg_id=%lu → AWAITING_ACK\n", cmd.messageId);
+      setCmdStatus(cmd, CMD_AWAITING_ACK);
     }
     else
     {
-      // Stay QUEUED so the safety-net pass + opportunistic pass try again.
+      // Speculative: collar probably asleep; bytes likely went nowhere.
+      // Keep it QUEUED (scheduled) — do NOT pretend we're awaiting an ACK.
+      Serial.printf("[LoRa] TX OK (speculative) msg_id=%lu → stays QUEUED (scheduled)\n",
+                    cmd.messageId);
       setCmdStatus(cmd, CMD_QUEUED);
     }
+  }
+  else
+  {
+    // Radio-level failure (LBT collision, busy channel). Transient — keep
+    // it QUEUED and let the next pass retry. Does not count toward failure.
+    Serial.printf("[LoRa] TX FAIL msg_id=%lu err=%d — stays QUEUED\n", cmd.messageId, state);
+    JsonDocument logDoc;
+    logDoc["event"]      = "command_tx_failed";
+    logDoc["target_id"]  = cmd.targetDeviceId;
+    logDoc["msg_id"]     = cmd.messageId;
+    logDoc["error_code"] = state;
+    logMessage(logDoc, "event");
+    setCmdStatus(cmd, CMD_QUEUED);
   }
 }
 
@@ -1574,10 +1613,10 @@ static bool transmitCommandForDevice(uint16_t reportingId, const String &reporti
     if (c.status != CMD_QUEUED && c.status != CMD_AWAITING_ACK) continue;
     if (c.targetDeviceId == reportingId || c.targetDeviceId == DEVICE_ID_BROADCAST)
     {
-      Serial.printf("[LoRa] Opportunistic send for UID %u (%s): dispatching msg_id=%lu (state=%s, attempt=%u)\n",
+      Serial.printf("[LoRa] WAKE detected for UID %u (%s): delivering queued msg_id=%lu (state=%s, wake#%u)\n",
                     (unsigned)reportingId, reportingName.c_str(), c.messageId,
-                    commandStatusName(c.status), c.txAttempts);
-      transmitCommandAt(i);
+                    commandStatusName(c.status), (unsigned)(c.wakeAttempts + 1));
+      transmitCommandAt(i, /*collarAwake=*/true);
       return true;
     }
   }
@@ -1628,6 +1667,19 @@ static void reapTerminalCommands()
   uint32_t now = millis();
   for (auto it = commandQueue.begin(); it != commandQueue.end(); )
   {
+    // V3.6.2: age-based backstop. A command that's been scheduled (QUEUED)
+    // or awaiting an ACK for longer than COMMAND_MAX_AGE_MS — e.g. the
+    // target collar is dead/out of range and never reports in — is failed
+    // here, even though no transmit attempt fired to trigger the check
+    // inside transmitCommandAt().
+    if ((it->status == CMD_QUEUED || it->status == CMD_AWAITING_ACK || it->status == CMD_SENDING) &&
+        (now - it->timestamp > COMMAND_MAX_AGE_MS))
+    {
+      Serial.printf("[CMD] msg_id=%lu unreachable for >%lu ms — FAILED (backstop)\n",
+                    it->messageId, (unsigned long)COMMAND_MAX_AGE_MS);
+      setCmdStatus(*it, CMD_FAILED);
+    }
+
     uint32_t age = now - it->statusChangedMs;
     bool reap = false;
     if (it->status == CMD_DELIVERED && age > COMMAND_DELIVERED_LINGER_MS) reap = true;
@@ -1674,15 +1726,20 @@ void processCommandQueue()
     return;
   }
 
-  // Find the first QUEUED command (skip ones already AWAITING_ACK or
-  // in a terminal state waiting for cleanup). Send that one.
+  // V3.6.2: SPECULATIVE safety-net only. Send a QUEUED command at most
+  // COMMAND_SPECULATIVE_MAX times total (immediate from enqueue + retries
+  // here) while we wait for the collar to wake. After that the command is
+  // "scheduled" — it stays QUEUED but we stop blasting speculative copies
+  // into the void; the opportunistic-on-telemetry path (transmitCommand-
+  // ForDevice) delivers it the moment the collar actually reports in.
   for (size_t i = 0; i < commandQueue.size(); i++)
   {
-    if (commandQueue[i].status == CMD_QUEUED)
-    {
-      transmitCommandAt(i);
-      return;
-    }
+    LoRaCommand &c = commandQueue[i];
+    if (c.status != CMD_QUEUED) continue;
+    uint8_t speculativeSoFar = c.txAttempts - c.wakeAttempts;
+    if (speculativeSoFar >= COMMAND_SPECULATIVE_MAX) continue; // scheduled; await wake
+    transmitCommandAt(i, /*collarAwake=*/false);
+    return;
   }
 }
 
@@ -1727,15 +1784,16 @@ static void enqueueAndSendNow(LoRaCommand &cmd, const String &humanLabel)
   cmd.txAttempts      = 0;
   cmd.cmdLabel        = humanLabel;
 
+  cmd.wakeAttempts = 0;
   commandQueue.push_back(cmd);
   pushCommandStatusWS(commandQueue.back());
 
-  // Try transmitting immediately. This bypasses the rate gate because
-  // we WANT the first attempt to be 'now', not 'next 3 s window'.
-  // The collar might or might not be awake — that's fine, retries
-  // handle the sleep case.
+  // First SPECULATIVE attempt — fire immediately rather than waiting for the
+  // next 3 s safety-net window, in case the collar happens to be awake right
+  // now. If it's asleep (the common case) the command simply stays QUEUED
+  // and is delivered when the collar next reports in.
   size_t idx = commandQueue.size() - 1;
-  transmitCommandAt(idx);
+  transmitCommandAt(idx, /*collarAwake=*/false);
 }
 
 // V3.6.0: send a mode-change command, targeted by UID. targetId==65535

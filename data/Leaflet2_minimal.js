@@ -10,6 +10,27 @@ const map = L.map("map", {
   maxZoom: 23,
 });
 
+// V3.6.2: single source of truth for friendly-name labels, keyed by the
+// immutable device_id. Both the live telemetry path (handleTelemetry) and
+// the node-state path (handleNodeStateUpdate, which carries set_name ACKs)
+// funnel name updates through here, so a rename reflects on the marker tile
+// AND the C&C panel at the same time — no surface lags the other.
+window.deviceNames = window.deviceNames || {};
+window.setDeviceName = function (id, name) {
+  id = String(id);
+  if (!name) return;
+  const changed = window.deviceNames[id] !== name;
+  window.deviceNames[id] = name;
+  if (!changed) return;
+  // Refresh the marker-tile card title in place (the card persists across
+  // renames because it's keyed by device_id, so its title must be updated).
+  const titleEl = document.querySelector(`#marker-card-${id} .marker-card-name`);
+  if (titleEl) {
+    const isKnown = (typeof KNOWN_CATS !== "undefined") && KNOWN_CATS.includes(name);
+    titleEl.textContent = (isKnown || id === "MyDevice") ? name : (name + " (ID " + id + ")");
+  }
+};
+
 // ─────────────────────────────────────────────────────────────────────
 // V3.4.0 client-side UI preferences (per-browser, localStorage).
 // Cat DATA comes from the server (shared truth across all clients); these
@@ -787,8 +808,10 @@ window.handleTelemetry = function (data, isHydrate) {
       if (hasUid || isMyDevice) {
         const id = hasUid ? String(data.device_id) : "MyDevice";
         const name = hasUid ? (data.name || ("Device-" + data.device_id)) : "MyDevice";
-        window.deviceNames = window.deviceNames || {};
-        window.deviceNames[id] = name;
+        // V3.6.2: funnel through the shared setter so the marker-tile title
+        // and the deviceNames map update consistently with the node-state path.
+        if (window.setDeviceName) window.setDeviceName(id, name);
+        else window.deviceNames[id] = name;
         const status = data.status || "Unknown";
 
         // Update last received time for this marker
