@@ -31,10 +31,14 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
+// 3.7.2  fix: stop the GUI showing a rename as "done" before the collar
+//        confirms it. The displayed name now changes ONLY on real telemetry,
+//        not on the set_name ACK (which can echo a name the collar applied to
+//        RAM but never persisted).
 // 3.7.1  fix: no-GPS telemetry (status:"invalidGPSLoc") was misrouted as a
 //        get_status response and dropped before display — collar check-ins
 //        without a fix never reached the map/log.
 // 3.7.0  developer mode (BLE 'Home' beacon defaults off for debugging) +
 //        lost-ACK rename resilience + honour the ACK ok field.
 // 3.6.4  prior release.
-#define BLUEPAWZ_VERSION "3.7.1"
+#define BLUEPAWZ_VERSION "3.7.2"

@@ -1397,7 +1397,21 @@ void updateNodeState(const JsonDocument &doc)
 
   // Get or create node state, keyed by UID.
   NodeState &state = nodeStates[incomingDevIdNum];
-  state.deviceId = deviceName;        // the editable label
+  // V3.7.2: the DISPLAYED name must change ONLY on genuine telemetry, never on
+  // a command response. A set_name ACK echoes the requested NEW name, but the
+  // collar may have applied it to RAM only and not persisted it — so updating
+  // the card from the ACK shows the rename as "done" seconds after the user
+  // submits, then it snaps back to the old name on the next real report (the
+  // false positive being removed here). ACK / pong / get_status responses no
+  // longer change the label; only an actual telemetry check-in does. (We still
+  // initialise it on first contact so a brand-new node is never blank.)
+  bool isResponsePacket = doc["ack"].is<String>() ||
+                          (doc["pong"].is<bool>() && doc["pong"].as<bool>()) ||
+                          (doc["status"] == "ok");
+  if (!isResponsePacket || state.deviceId.length() == 0)
+  {
+    state.deviceId = deviceName; // the editable label — telemetry-confirmed only
+  }
   state.deviceIdNum = incomingDevIdNum; // the immutable UID
   state.lastSeen = millis();
   g_stateDirty = true; // V3.4.0: node state changed → schedule a snapshot
