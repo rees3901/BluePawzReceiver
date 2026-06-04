@@ -31,6 +31,9 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
+// 3.7.3  message log gains src/dst/msg_id attribution (trace each entry to a
+//        collar, the base, or an internal message); a rename no longer reports
+//        "delivered" on the ACK — only once the collar's telemetry confirms it.
 // 3.7.2  fix: stop the GUI showing a rename as "done" before the collar
 //        confirms it. The displayed name now changes ONLY on real telemetry,
 //        not on the set_name ACK (which can echo a name the collar applied to
@@ -41,4 +44,4 @@
 // 3.7.0  developer mode (BLE 'Home' beacon defaults off for debugging) +
 //        lost-ACK rename resilience + honour the ACK ok field.
 // 3.6.4  prior release.
-#define BLUEPAWZ_VERSION "3.7.2"
+#define BLUEPAWZ_VERSION "3.7.3"
