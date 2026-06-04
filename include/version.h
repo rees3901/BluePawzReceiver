@@ -31,7 +31,10 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
+// 3.7.1  fix: no-GPS telemetry (status:"invalidGPSLoc") was misrouted as a
+//        get_status response and dropped before display — collar check-ins
+//        without a fix never reached the map/log.
 // 3.7.0  developer mode (BLE 'Home' beacon defaults off for debugging) +
 //        lost-ACK rename resilience + honour the ACK ok field.
 // 3.6.4  prior release.
-#define BLUEPAWZ_VERSION "3.7.0"
+#define BLUEPAWZ_VERSION "3.7.1"

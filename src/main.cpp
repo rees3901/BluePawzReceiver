@@ -2871,9 +2871,16 @@ static void handleLoRaPacketJSON(const String &incoming)
   // Route responses to updateNodeState() (which handles the ACK branch
   // and runs markCommandDelivered) and bail out before the telemetry
   // path so we don't broadcast ACKs as position updates to web clients.
+  // V3.7.1 FIX: a get_status RESPONSE is specifically status:"ok" (with a mode
+  // and no position). The previous heuristic — "ANY status + mode + no lat" —
+  // also matched real TELEMETRY that simply had no GPS fix yet
+  // (status:"invalidGPSLoc"), so those check-ins were misrouted as responses
+  // and dropped BEFORE notifyPosition(): the packet arrived (LED flickered)
+  // but never reached the map tile or the web log. Match the response by its
+  // actual "ok" marker so no-GPS telemetry still displays.
   bool isResponse = doc["ack"].is<const char *>() ||
                     doc["pong"].is<bool>() ||
-                    (doc["status"].is<const char *>() &&
+                    (doc["status"] == "ok" &&
                      doc["mode"].is<const char *>() &&
                      !doc["lat"].is<float>() &&
                      !doc["latitude"].is<float>());
