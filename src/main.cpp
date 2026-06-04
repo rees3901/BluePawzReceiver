@@ -234,6 +234,29 @@ JsonDocument deviceLocation;
 float g_homeLat = 51.87378215701798f; // Default; overwritten by loadHomeLocation()
 float g_homeLon = -2.239428653198173f;
 
+// V3.6.8: Developer mode (receiver), the base-station counterpart to the
+// collar's developer power profile. Persisted to LittleFS so it survives
+// reboots. When ON, the BLE 'Home' beacon DEFAULTS OFF at boot — collars then
+// never see "home", so they keep acquiring GPS and reporting every cycle,
+// which is exactly what you want while debugging. The user can still manually
+// enable the beacon from the web UI at any time. When OFF (the default),
+// behaviour is unchanged: the beacon advertises at boot as before.
+#define DEV_MODE_FILE "/dev_mode.json"
+bool g_devMode = false;
+
+// V3.6.8: mount LittleFS at most once. The boot sequence needs the filesystem
+// EARLY (to read the developer-mode flag before the BLE beacon decision) and
+// again later for the rest of setup; LittleFS.begin() isn't reliably safe to
+// call twice, so route both through this guarded helper.
+static bool g_fsMounted = false;
+static bool ensureFsMounted()
+{
+  if (g_fsMounted)
+    return true;
+  g_fsMounted = LittleFS.begin(true); // format on fail
+  return g_fsMounted;
+}
+
 // V3: cached so tftRefresh() (1 Hz) doesn't have to poke LittleFS every cycle.
 // Set true once a successful load or save has happened; set false if a load
 // finds no file. Without this cache, vfs_api.cpp logs an error every refresh
@@ -515,7 +538,9 @@ static void tftRenderSummary()
 
     tft.setTextColor(bleEnabled ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
     tft.setCursor(2, 68);
-    snprintf(buf, sizeof(buf), "BLE: %-3s", bleEnabled ? "on" : "off");
+    // V3.6.8: append a DEV tag when developer mode is on (beacon defaults off).
+    snprintf(buf, sizeof(buf), "BLE:%-3s %s", bleEnabled ? "on" : "off",
+             g_devMode ? "DEV" : "   ");
     tft.print(buf);
   }
 
@@ -776,6 +801,52 @@ static bool saveHomeLocation(float lat, float lon)
   return true;
 }
 
+// V3.6.8: developer-mode flag persistence (same LittleFS-JSON pattern as the
+// home location). g_devMode defaults false (normal) when the file is missing.
+static bool loadDevMode()
+{
+  g_devMode = false;
+  if (!LittleFS.exists(DEV_MODE_FILE))
+  {
+    Serial.println("[DEV] No dev_mode.json — developer mode OFF (normal)");
+    return false;
+  }
+  File f = LittleFS.open(DEV_MODE_FILE, "r");
+  if (!f)
+  {
+    Serial.println("[DEV] Failed to open dev_mode.json — developer mode OFF");
+    return false;
+  }
+  JsonDocument doc;
+  DeserializationError err = deserializeJson(doc, f);
+  f.close();
+  if (err)
+  {
+    Serial.printf("[DEV] Parse error: %s — developer mode OFF\n", err.c_str());
+    return false;
+  }
+  g_devMode = doc["dev"] | false;
+  Serial.printf("[DEV] Developer mode loaded: %s\n", g_devMode ? "ON" : "off");
+  return true;
+}
+
+static bool saveDevMode(bool on)
+{
+  JsonDocument doc;
+  doc["dev"] = on;
+  File f = LittleFS.open(DEV_MODE_FILE, "w");
+  if (!f)
+  {
+    Serial.println("[DEV] Failed to open dev_mode.json for write");
+    return false;
+  }
+  serializeJson(doc, f);
+  f.close();
+  g_devMode = on;
+  Serial.printf("[DEV] Developer mode saved: %s\n", on ? "ON" : "off");
+  return true;
+}
+
 // Add a flag to track the serial connection state
 bool serialPreviouslyOpened = false;
 
@@ -990,6 +1061,7 @@ void disableBLE();
 void bleStartCollarScan();
 void bleStopCollarScan();
 void sendBleStateWS(uint8_t clientId = 255);
+void sendDevStateWS(uint8_t clientId = 255); // V3.6.8 developer-mode state push
 void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length);
 void LED_flicker();
 void setup();
@@ -3693,9 +3765,19 @@ void setupBLE()
   pAdvertising->setMinInterval(0x0640);
   pAdvertising->setMaxInterval(0x0640);
 
-  BLEDevice::startAdvertising();
-  lastBLEAdvertTime = millis();
-  Serial.println("[BLE] Advertising started: name='Home' tx_pwr=-12dBm (short-range)");
+  // V3.6.8: only advertise if the beacon is enabled. In developer mode the
+  // boot sequence clears bleEnabled before this runs, so the 'Home' beacon
+  // stays off until the user manually enables it. Normal mode is unchanged.
+  if (bleEnabled)
+  {
+    BLEDevice::startAdvertising();
+    lastBLEAdvertTime = millis();
+    Serial.println("[BLE] Advertising started: name='Home' tx_pwr=-12dBm (short-range)");
+  }
+  else
+  {
+    Serial.println("[BLE] Beacon initialised but advertising OFF (developer mode / manual)");
+  }
 }
 
 // V3.1 BLE callback: invoked for every advertisement seen during a scan.
@@ -3956,6 +4038,16 @@ void sendBleStateWS(uint8_t clientId)
   }
 }
 
+// V3.6.8: push the current developer-mode state to one client (or broadcast).
+void sendDevStateWS(uint8_t clientId)
+{
+  String out = String("{\"type\":\"dev_state\",\"on\":") + (g_devMode ? "true" : "false") + "}";
+  if (clientId == 255)
+    webSocket.broadcastTXT(out);
+  else
+    webSocket.sendTXT(clientId, out);
+}
+
 void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
 {
   // Log payload as string for debug (safe copy)
@@ -4000,6 +4092,31 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       Serial.printf("[WS] BLE get requested by client %u\n", num);
       // Reply to requester with current state
       sendBleStateWS(num);
+      return;
+    }
+
+    // V3.6.8: developer mode. Entering dev mode turns the 'Home' beacon OFF by
+    // default (so collars keep reporting for debugging); leaving it restores
+    // the normal beacon-on behaviour. The user can still flip the BLE beacon
+    // manually afterwards via ble_set. The flag is persisted so it survives a
+    // reboot, where setup() applies the same beacon default.
+    if (commandType == "dev_set")
+    {
+      bool on = doc["on"].is<bool>() ? doc["on"].as<bool>() : false;
+      Serial.printf("[WS] Developer mode set from client %u: %s\n", num, on ? "ON" : "off");
+      saveDevMode(on);
+      if (on)
+        disableBLE(); // beacon defaults OFF in dev mode
+      else
+        enableBLE(); // restore normal beacon-on behaviour
+      sendDevStateWS();  // broadcast new dev state to all clients
+      sendBleStateWS();  // BLE state changed too
+      return;
+    }
+
+    if (commandType == "dev_get")
+    {
+      sendDevStateWS(num);
       return;
     }
   }
@@ -4063,6 +4180,19 @@ void setup()
   digitalWrite(LORA_LED, LOW);
   Serial.println("[BOOT] Step 4/13: BLE beacon");
   Serial.flush();
+  // V3.6.8: load the developer-mode flag BEFORE starting the beacon. Mount the
+  // filesystem early (guarded — re-used at step 8) so that in developer mode
+  // the 'Home' beacon defaults OFF from the very first moment, not only after
+  // WiFi connects. Normal mode leaves bleEnabled=true → beacon on as before.
+  if (ensureFsMounted())
+  {
+    loadDevMode();
+    if (g_devMode)
+    {
+      bleEnabled = false;
+      Serial.println("[DEV] Developer mode ON — BLE 'Home' beacon defaults OFF");
+    }
+  }
   setupBLE();
 
   Serial.println("[BOOT] Step 5/13: WiFi connect");
@@ -4170,8 +4300,9 @@ void setup()
     Serial.println("[OTA] ArduinoOTA ready — upload to cattracker.local");
   }
 
-  // Mount filesystem with better error reporting
-  if (!LittleFS.begin(true))
+  // Mount filesystem with better error reporting (idempotent — may already be
+  // mounted from the early step-4 developer-mode read).
+  if (!ensureFsMounted())
   { // Add format on fail
     Serial.println("[FS] ❌ LittleFS mount failed");
     delay(1000);

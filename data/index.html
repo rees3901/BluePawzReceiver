@@ -1546,7 +1546,26 @@ Turn off to save power when not needed">
           </label>
         </div>
       </div>
-      
+
+      <!-- Developer Mode (V3.6.8) -->
+      <div class="menu-section">
+        <h3>🛠️ Developer Mode</h3>
+        <div class="menu-item" style="justify-content: space-between; align-items: center;">
+          <span class="menu-info-label">Developer Mode:</span>
+          <label class="ble-toggle-label" style="margin: 0;" title="Developer Mode (base station)
+For testing/debugging only.
+When ON, the BLE 'Home' beacon defaults OFF so collars keep
+reporting (roaming) instead of going quiet at home. You can
+still switch the beacon on manually above. Persists across reboots.">
+            <label class="switch">
+              <input type="checkbox" id="devToggle">
+              <span class="slider round"></span>
+            </label>
+            <span id="devStatus">OFF</span>
+          </label>
+        </div>
+      </div>
+
       <!-- Marker Settings -->
       <div class="menu-section">
         <h3>📍 Marker Settings</h3>
@@ -3085,6 +3104,26 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       });
     } else {
       console.error('BLE toggle elements not found:', { bleToggle, bleStatus });
+    }
+
+    // Developer Mode Toggle (V3.6.8) — same pattern as the BLE toggle.
+    const devToggle = document.getElementById('devToggle');
+    const devStatus = document.getElementById('devStatus');
+    if (devToggle && devStatus) {
+      setTimeout(() => { if (window.requestDevStatus) window.requestDevStatus(); }, 300);
+      devToggle.addEventListener('change', function() {
+        const on = this.checked;
+        console.log('Developer mode toggle clicked, new state:', on);
+        devStatus.textContent = on ? 'ENABLING...' : 'DISABLING...';
+        devStatus.style.color = '#ffc107';
+        if (window.sendDev) {
+          window.sendDev(on);
+        } else {
+          console.warn('sendDev helper not available');
+        }
+      });
+    } else {
+      console.error('Developer mode toggle elements not found:', { devToggle, devStatus });
     }
 
     // Export message log function

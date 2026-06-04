@@ -681,6 +681,41 @@ window.sendBle = function (turnOn) {
   console.warn("WS not ready to send BLE set");
 };
 
+// V3.6.8: developer-mode helpers (same shape as the BLE ones). dev_state is
+// pushed by the receiver; dev_get/dev_set request + change it.
+function handleDevState(data) {
+  if (!data || data.type !== "dev_state") return;
+  const devToggle = document.getElementById("devToggle");
+  const devStatus = document.getElementById("devStatus");
+  const isOn = !!data.on;
+  if (devToggle) devToggle.checked = isOn;
+  if (devStatus) {
+    devStatus.textContent = isOn ? "ON" : "OFF";
+    devStatus.style.color = isOn ? "#ffc107" : "#6c757d";
+  }
+}
+
+function requestDevStatus() {
+  try {
+    if (window.ws && window.ws.readyState === 1) {
+      window.ws.send(JSON.stringify({ type: "dev_get" }));
+    }
+  } catch (e) {
+    console.warn("dev get failed:", e);
+  }
+}
+window.requestDevStatus = requestDevStatus;
+
+window.sendDev = function (on) {
+  const payload = { type: "dev_set", on: !!on };
+  if (window.ws && window.ws.readyState === 1) {
+    console.log("Developer mode set via WS:", payload);
+    window.ws.send(JSON.stringify(payload));
+    return;
+  }
+  console.warn("WS not ready to send dev_set");
+};
+
 function connectWebSocket() {
   window.ws = new WebSocket(`ws://${window.location.hostname}:81/`);
 
@@ -694,6 +729,7 @@ function connectWebSocket() {
     }
 
     requestBleStatus();
+    requestDevStatus(); // V3.6.8: sync the developer-mode toggle on (re)connect
 
     // V3.4.0: rebuild the map from the receiver's stored state on every
     // (re)connect — covers initial page load, refresh, and reconnect.
@@ -770,6 +806,12 @@ window.handleTelemetry = function (data, isHydrate) {
         console.log("BLE state update received:", data);
         handleBleState(data);
         return; // Don't process as position data
+      }
+
+      // V3.6.8: developer-mode state push
+      if (data.type === "dev_state") {
+        handleDevState(data);
+        return;
       }
 
       // V3: dynamic home location updated from server.
