@@ -1019,6 +1019,10 @@ void sendRenameCommand(uint16_t deviceIdNum, const String &newName);
 // V3.1.4: forward-decl so handleLoRaPacketJSON (defined earlier in file)
 // can call the command-status helpers defined after the transmit code.
 static bool markCommandDelivered(uint16_t deviceIdNum, uint32_t ackMsgId);
+// V3.6.7: an ACK with ok:false means the collar received but could NOT apply
+// the command (invalid value, or — with the collar's NVS write-verify — a
+// flash write that didn't stick). Mark it FAILED instead of faking DELIVERED.
+static bool markCommandFailedByAck(uint16_t deviceIdNum, uint32_t ackMsgId);
 // V3.6.6: lost-ACK resilience — confirm a pending rename when later telemetry
 // reports the requested name (the set_name ACK may have been lost over RF).
 static bool confirmRenameByTelemetry(uint16_t deviceIdNum, const String &reportedName);
@@ -1391,6 +1395,27 @@ void updateNodeState(const JsonDocument &doc)
                     deviceName.c_str());
     }
 
+    // V3.6.7: honor the ACK's ok field. set_name / set_geofence ACKs carry
+    // ok:true/false; ok:false means the collar received the command but could
+    // NOT apply it (invalid value, or — with the collar's NVS write-verify — a
+    // flash write that didn't persist). Marking that DELIVERED would hide a
+    // real failure (the symptom: GUI says "delivered" yet the collar's
+    // check-ins never show the new name). Mark it FAILED instead. mode/status
+    // ACKs have no ok field → absent ok is treated as success.
+    bool ackOk = !doc["ok"].is<bool>() || doc["ok"].as<bool>();
+    if (!ackOk)
+    {
+      Serial.printf("[ACK] %s reported ok:FALSE (msg_id=%lu) — collar could NOT apply it\n",
+                    ackType.c_str(), msgId);
+      if (markCommandFailedByAck(incomingDevIdNum, msgId))
+        Serial.printf("[ACK] matched + marked FAILED (msg_id=%lu)\n", msgId);
+      else
+        Serial.printf("[ACK] WARNING: no matching queued command for msg_id=%lu device=%s\n",
+                      msgId, deviceName.c_str());
+      broadcastNodeStates();
+      return; // command did NOT succeed — do not fall through to mode handling
+    }
+
     // V3.1.4: mark the matching queued command DELIVERED. The status
     // machine takes care of the WS push so the web UI updates live.
     if (markCommandDelivered(incomingDevIdNum, msgId))
@@ -1697,6 +1722,38 @@ static bool markCommandDelivered(uint16_t deviceIdNum, uint32_t ackMsgId)
       if (c.targetDeviceId == deviceIdNum && c.status == CMD_AWAITING_ACK)
       {
         setCmdStatus(c, CMD_DELIVERED);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// V3.6.7: counterpart to markCommandDelivered for an ACK that reported
+// ok:false — the collar got the command but couldn't apply/persist it. Same
+// matching strategy (exact msg_id, else oldest AWAITING_ACK for the UID) but
+// transitions the command to FAILED so the UI shows the truth.
+static bool markCommandFailedByAck(uint16_t deviceIdNum, uint32_t ackMsgId)
+{
+  if (ackMsgId != 0)
+  {
+    for (auto &c : commandQueue)
+    {
+      if (c.messageId == ackMsgId &&
+          (c.status == CMD_AWAITING_ACK || c.status == CMD_SENDING || c.status == CMD_QUEUED))
+      {
+        setCmdStatus(c, CMD_FAILED);
+        return true;
+      }
+    }
+  }
+  if (deviceIdNum != 0)
+  {
+    for (auto &c : commandQueue)
+    {
+      if (c.targetDeviceId == deviceIdNum && c.status == CMD_AWAITING_ACK)
+      {
+        setCmdStatus(c, CMD_FAILED);
         return true;
       }
     }
