@@ -3244,62 +3244,8 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // same disabled-while-pending behaviour, same confirm dialog (the
     // lost-mode confirm lives in sendModeChange itself, shared by both).
     window.buildRemoteControlsHTML = function (node, prefix) {
-      prefix = prefix || '';
-      // V3.6.0: DOM keys + command routing use the device_id (UID).
-      const dev = node.device_id;
-      const devEsc = String(dev);
-      const nameEsc = String(node.name || '').replace(/'/g, "\\'");
-      const cur = node.mode_known ? node.mode : '';
-      // V3.6.2: pending state comes from the shared server command queue,
-      // never a per-surface guess — so the marker tile and C&C panel always
-      // agree on whether this collar is busy.
-      const isPending = window.deviceHasPendingCommand ? window.deviceHasPendingCommand(dev) : false;
-      const devIdNum = node.device_id || 0;
-      const opts = ['normal', 'active', 'powersave', 'lost']
-        .map(m => `<option value="${m}" ${cur === m ? 'selected' : ''}>${m.charAt(0).toUpperCase() + m.slice(1)}</option>`)
-        .join('');
-      return `
-        <select class="node-mode-select" id="${prefix}mode-select-${dev}" title="Operating Mode
-Normal: Balanced (5min, 19dBm)
-Active: Frequent updates (1min, 19dBm)
-Powersave: Battery saving (20min, 10dBm)
-Lost: Emergency mode (30sec, 22dBm, auto-reverts 2hrs)">
-          ${opts}
-        </select>
-        <button class="node-btn node-btn-apply"
-                onclick="window.sendModeChange('${devEsc}')"
-                id="${prefix}apply-btn-${dev}"
-                ${isPending ? 'disabled' : ''}
-                title="Apply Mode Change&#10;Sends command to tracker via LoRa&#10;Wait for acknowledgment (⏳ shows pending)">
-          ${isPending ? '⏳' : '✓ Apply'}
-        </button>
-        <button class="node-btn node-btn-cancel"
-                onclick="window.cancelPendingForDevice('${devEsc}')"
-                id="${prefix}cancel-btn-${dev}"
-                title="Cancel pending commands for this collar&#10;Cancels every queued/in-flight command targeting this device.&#10;Greyed out when nothing's pending.">
-          ✗ Cancel
-        </button>
-        <button class="node-btn node-btn-status"
-                onclick="window.requestNodeStatus('${devEsc}')"
-                id="${prefix}status-btn-${dev}"
-                ${isPending ? 'disabled' : ''}
-                title="Query Status&#10;Requests battery level, GPS lock, and uptime&#10;Response updates the info display above">
-          🔄
-        </button>
-        <button class="node-btn node-btn-ping"
-                onclick="window.pingCollar('${devEsc}')"
-                id="${prefix}ping-btn-${dev}"
-                title="Presence Check (Ping)&#10;Quick LoRa ping to check if this collar is awake &amp; reachable right now.&#10;Changes nothing — use it before a rename / mode change.">
-          📡 Ping
-        </button>
-        <button class="node-btn node-btn-rename"
-                onclick="window.renameCollar(${devIdNum}, '${nameEsc}')"
-                id="${prefix}rename-btn-${dev}"
-                ${devIdNum ? '' : 'disabled'}
-                title="Rename Collar&#10;Sets a new friendly name for this collar.&#10;Targets the immutable numeric device_id, so it works even&#10;if the current name is just the default Device-N.">
-          ✏️
-        </button>
-      `;
+      // V3.8.0: remote commands removed - cards are display-only now.
+      return '';
     };
 
     // V3.2.3: fill the marker-tile's placeholder div with the shared

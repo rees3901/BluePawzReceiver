@@ -3052,9 +3052,8 @@ static void handleLoRaPacketJSON(const String &incoming)
     String reporting = doc["name"].is<String>() ? doc["name"].as<String>()
                                                  : (String("Device-") + devId);
     tftLastCatName = reporting; // V3: surface on the V2 onboard TFT
-    // V3.5.1: route queued commands STRICTLY by the reporting collar's
-    // numeric UID. Broadcasts still match any reporter.
-    transmitCommandForDevice(devId, reporting);
+    // V3.8.0: remote commands removed — nothing to send back to the collar.
+    (void)reporting;
   }
   else
   {
@@ -4415,16 +4414,13 @@ void setup()
   server.on("/data", HTTP_GET, handleData);
   server.on("/messages.json", HTTP_GET, handleMessagesExport);
   server.on("/clear-log", HTTP_POST, handleClearLog);
-  server.on("/node-states", HTTP_GET, handleNodeStates);    // Get node operating modes
-  server.on("/send-command", HTTP_POST, handleSendCommand); // Send command to node
+  server.on("/node-states", HTTP_GET, handleNodeStates);    // Get node display state
   server.on("/home", HTTP_GET, handleGetHome);              // Get current home lat/lon
   server.on("/home", HTTP_POST, handleSetHome);             // Set & persist home lat/lon
   server.on("/version", HTTP_GET, handleGetVersion);        // Firmware version string
   server.on("/netmode", HTTP_GET, handleGetNetMode);        // V3.1: roaming mode + collar RSSI
-  // V3.1.4: per-command status tracking
-  server.on("/commands",       HTTP_GET,    handleGetCommands);    // list all
-  server.on("/command",        HTTP_DELETE, handleCancelCommand);  // ?msg_id=N
-  server.on("/commands/clear", HTTP_POST,   handleClearCommands);  // wipe pending
+  // V3.8.0: remote-command HTTP API removed (/send-command, /commands,
+  // /command, /commands/clear) — the receiver no longer sends commands.
   // V3.1.2: catch-all for captive-portal probe URLs (iOS, Android, Windows
   // all probe specific paths). onNotFound fires for ANY route the regular
   // server.on() handlers don't claim — in ROAMING mode the handler returns
@@ -4562,8 +4558,7 @@ void loop()
   // Handle LoRa packets
   handleLoRaPacket();
 
-  // Process command queue for LoRa transmission
-  processCommandQueue();
+  // V3.8.0: remote commands removed — no command queue to process.
 
   // Periodic flush of message log to LittleFS
   if (millis() - lastLogFlushTime >= LOG_FLUSH_INTERVAL)
