@@ -31,6 +31,9 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
+// 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —
+//        LoRaCommand queue, ACK/pong/status handling, send/transmit helpers,
+//        /send-command + /commands handlers. updateNodeState is telemetry-only.
 // 3.8.0  remote-command system removed. The collar is transmit-only and the
 //        base is display-only: no ping / rename / mode / status / ACKs, no
 //        command queue, no /send-command API, no per-card command controls.
@@ -48,4 +51,4 @@
 // 3.7.0  developer mode (BLE 'Home' beacon defaults off for debugging) +
 //        lost-ACK rename resilience + honour the ACK ok field.
 // 3.6.4  prior release.
-#define BLUEPAWZ_VERSION "3.8.0"
+#define BLUEPAWZ_VERSION "3.8.1"
