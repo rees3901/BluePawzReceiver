@@ -2033,6 +2033,11 @@ static bool sendLoRaJson(const String &json)
   // Use the const char* overload — transmit(String&) takes a non-const ref.
   int st = lora.transmit(json.c_str());
   lora.startReceive(); // ALWAYS re-arm, even on error, or the base goes deaf
+  // transmit() fires TxDone on DIO1, which our onReceive ISR also watches, so it
+  // sets packetReceived and the next loop would "receive" our own just-sent
+  // FIFO contents (a garbled echo). Clear the flag so we ignore that artifact;
+  // a real inbound packet sets it again after startReceive.
+  packetReceived = false;
   if (st == RADIOLIB_ERR_NONE)
   {
     Serial.println("[LoRa-TX] sent: " + json);
@@ -3692,6 +3697,17 @@ void setup()
   LoRaSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
   int state = lora.begin(LORA_FREQ_MHZ);
+  // CRITICAL for OTAP TX (v3.9.0): on the Heltec Wireless Tracker V2 the SX1262's
+  // antenna RF switch is driven by DIO2. Until now the base was RX-only, and RX
+  // works with the switch in its default position — so this was never needed.
+  // But for TRANSMIT the switch must be flipped to the PA, or the output never
+  // reaches the antenna: the PA just leaks back into our own receiver (you see
+  // the base "receive" its own command) and nothing radiates — collars and the
+  // sniffer hear nothing. setDio2AsRfSwitch(true) makes the SX1262 toggle DIO2
+  // automatically on TX/RX so commands actually go on the air.
+  int rfsw = lora.setDio2AsRfSwitch(true);
+  if (rfsw != RADIOLIB_ERR_NONE)
+    Serial.printf("[LoRa] setDio2AsRfSwitch failed: %d\n", rfsw);
   lora.setOutputPower(22); // RX base station: always max power (mains-powered)
   lora.setSpreadingFactor(LORA_SF);
   lora.setBandwidth(LORA_BW_KHZ);

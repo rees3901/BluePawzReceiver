@@ -31,7 +31,12 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
-// 3.9.0  OTAP Phase 1 (rename round-trip). Unified message envelope
+// 3.9.0  OTAP Phase 1 (rename round-trip).
+//        *** TX FIX: enable DIO2 as the SX1262 RF switch (setDio2AsRfSwitch).
+//        The base was RX-only, so its TX path was never exercised; without the
+//        DIO2 switch the PA leaked into our own RX (base "received" its own
+//        command) and NOTHING radiated — collars/sniffer heard no command. ***
+//        Unified message envelope
 //        (type/source_id/destination_id/message_id) shared collar↔base.
 //        BASE_ID=1, BROADCAST_ID=999. Base regains a TX path (sendLoRaJson,
 //        re-arms RX after every transmit), a per-collar pending-command store,
