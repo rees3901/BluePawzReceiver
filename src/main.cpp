@@ -2050,17 +2050,31 @@ static void pushCommandStatusWS(const PendingCmd &c, const char *reason = nullpt
                 reason ? " reason=" : "", reason ? reason : "");
 }
 
-// Deliver the QUEUED command (if any) for one collar, now that we know it is
-// awake (we just heard a presence or telemetry packet from it). Transmits the
-// stored envelope and flips the command to AWAITING_ACK.
+// Deliver the pending command (if any) for one collar, now that we know it is
+// awake (we just heard a presence packet from it). Transmits the stored
+// envelope. Re-sends on EVERY presence while the command is non-terminal
+// (QUEUED or AWAITING_ACK): renames are idempotent, so a lost ACK simply
+// self-heals on the next wake instead of stranding the command forever — and
+// the entry is erased the moment a real ACK arrives or telemetry confirms the
+// name, so retries are naturally bounded by reachability. (Phase 2 adds a retry
+// cap + 12-min expiry.)
 static void deliverPendingFor(uint16_t collarId)
 {
   auto it = g_pending.find(collarId);
-  if (it == g_pending.end() || it->second.status != CMD_QUEUED)
+  if (it == g_pending.end())
+  {
+    Serial.printf("[OTAP] collar %u awake — no pending command\n", collarId);
     return;
+  }
   PendingCmd &c = it->second;
-  Serial.printf("[OTAP] collar %u awake — delivering queued cmd msg_id=%lu: %s\n",
-                collarId, (unsigned long)c.msgId, c.json.c_str());
+  if (c.status == CMD_DELIVERED || c.status == CMD_FAILED)
+  {
+    Serial.printf("[OTAP] collar %u awake — pending cmd msg_id=%lu already %s, not re-sending\n",
+                  collarId, (unsigned long)c.msgId, cmdStatusStr(c.status));
+    return;
+  }
+  Serial.printf("[OTAP] collar %u awake — delivering cmd msg_id=%lu (was %s): %s\n",
+                collarId, (unsigned long)c.msgId, cmdStatusStr(c.status), c.json.c_str());
   if (sendLoRaJson(c.json))
   {
     c.status = CMD_AWAITING_ACK;
@@ -2069,7 +2083,7 @@ static void deliverPendingFor(uint16_t collarId)
   }
   else
   {
-    Serial.println("[OTAP] TX failed — leaving QUEUED for next presence");
+    Serial.println("[OTAP] TX failed — will retry on next presence");
   }
   pushCommandStatusWS(c);
 }
@@ -2207,7 +2221,15 @@ static void handleLoRaPacketJSON(const String &incoming)
       doc["bearing"] = String((int)brng) + "-" + cardinalFromDegrees((uint16_t)brng);
     }
 
-    // Normalize status to simplified 4-state system
+    // Status handling. We still canonicalise the THREE display states the UI's
+    // marker-icon switch depends on (Home / Roaming / Offline → matching icon
+    // assets). But every OTHER status is now passed through VERBATIM rather than
+    // being collapsed to a generic "Error": the user wants the real reported
+    // state (e.g. "invalidGPSLoc", and future descriptive states like
+    // "low_battery"/"lora_error") to reach the log, map card, and web UI. The UI
+    // shows the raw status text and falls back to the Error icon / grey dot for
+    // any unrecognised value, so nothing breaks. (Phase 3 makes this fully
+    // data-driven.)
     if (doc["status"].is<String>())
     {
       String originalStatus = doc["status"].as<String>();
@@ -2218,32 +2240,24 @@ static void handleLoRaPacketJSON(const String &incoming)
       {
         doc["status"] = "Home";
       }
-      else if (lowerStatus.indexOf("out") != -1 ||
+      else if (lowerStatus.indexOf("roaming") != -1 ||
+               lowerStatus.indexOf("out") != -1 ||
                lowerStatus.indexOf("ok") != -1 ||
                lowerStatus.indexOf("normal") != -1 ||
                lowerStatus.indexOf("outanabout") != -1)
       {
-        doc["status"] = "Roaming"; // V3.1.9: was 'Out' — 'Roaming' is more descriptive for a cat outdoors. Wire-format inputs ('outanabout', 'out', etc.) unchanged for backward compat with existing collars.
+        doc["status"] = "Roaming"; // V3.1.9: was 'Out'. Wire inputs ('roaming','outanabout','out',…) canonicalised for the icon switch.
       }
       else if (lowerStatus.indexOf("offline") != -1)
       {
         doc["status"] = "Offline";
       }
-      else if (lowerStatus.indexOf("error") != -1 ||
-               lowerStatus.indexOf("invalid") != -1 ||
-               lowerStatus.indexOf("no gps fix") != -1 ||
-               lowerStatus.indexOf("no fix") != -1)
-      {
-        doc["status"] = "Error";
-      }
-      else
-      {
-        doc["status"] = "Roaming"; // V3.1.9: was 'Out' — 'Roaming' is more descriptive for a cat outdoors. Wire-format inputs ('outanabout', 'out', etc.) unchanged for backward compat with existing collars.
-      }
+      // else: leave doc["status"] exactly as the collar sent it (e.g.
+      // "invalidGPSLoc"). No generic "Error" rewrite.
     }
     else
     {
-      doc["status"] = "Error";
+      doc["status"] = "Unknown"; // no status field at all — be honest, not "Error"
     }
 
     String payload;
