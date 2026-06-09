@@ -44,6 +44,13 @@
 //        on the collar's next presence/telemetry, confirmed by a matching ACK
 //        OR by the collar's own telemetry echoing the new name (lost-ACK
 //        resilient). Web UI: per-card rename input + live status badge.
+//        Packet structure: telemetry now carries the SAME envelope as the
+//        other messages (type:"telemetry" + source_id + destination_id); to fit
+//        the 255 B LoRa cap in dev mode, heap/uptime_ms are dropped from OTA
+//        telemetry (still on serial) and fw rides steady-state packets only.
+//        The base reports its own GPS as the reserved ID 1 (source_id/device_id
+//        = BASE_ID, type:"telemetry"); the UI maps device_id 1 → the "MyDevice"
+//        self-marker so a packet/log entry reads unambiguously as "from ID 1".
 //        Also: status now passes through verbatim (e.g. "invalidGPSLoc")
 //        instead of collapsing to a generic "Error"; the message log self-heals
 //        on a NoMemory parse (cap 500→150) instead of thrashing the heap every

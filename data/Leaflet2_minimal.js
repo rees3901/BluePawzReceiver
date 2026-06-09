@@ -845,11 +845,16 @@ window.handleTelemetry = function (data, isHydrate) {
       // window.deviceNames[key] and used for popups, card titles, and
       // icon-file selection. MyDevice (the receiver's own GPS) has no
       // device_id, so it keeps the literal "MyDevice" key.
-      const hasUid = (data.device_id !== undefined && data.device_id !== null);
-      const isMyDevice = (data.id === "MyDevice");
+      // V3.9.0: the base station is reserved ID 1 (BASE_ID) and now reports its
+      // own GPS with device_id:1. Treat that (or the legacy id:"MyDevice") as
+      // the receiver's self-marker, keeping the internal "MyDevice" key so every
+      // existing MyDevice special-case (icon, follow, distance reference, no
+      // timeout) keeps working unchanged.
+      const isMyDevice = (data.id === "MyDevice") || (data.device_id === 1);
+      const hasUid = (data.device_id !== undefined && data.device_id !== null) && !isMyDevice;
       if (hasUid || isMyDevice) {
-        const id = hasUid ? String(data.device_id) : "MyDevice";
-        const name = hasUid ? (data.name || ("Device-" + data.device_id)) : "MyDevice";
+        const id = isMyDevice ? "MyDevice" : String(data.device_id);
+        const name = isMyDevice ? "MyDevice" : (data.name || ("Device-" + data.device_id));
         // V3.6.2: funnel through the shared setter so the marker-tile title
         // and the deviceNames map update consistently with the node-state path.
         if (window.setDeviceName) window.setDeviceName(id, name);

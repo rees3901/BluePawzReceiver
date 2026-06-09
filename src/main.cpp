@@ -2552,10 +2552,20 @@ void setupGPS()
   // Initialize device location with default home until the GPS produces
   // a real fix. Status field is what the UI keys on — "Starting up" means
   // we have no real data; flips to "Home" / "Error" once GPS parser runs.
-  deviceLocation["id"]     = "MyDevice";
-  deviceLocation["lat"]    = g_homeLat;
-  deviceLocation["lon"]    = g_homeLon;
-  deviceLocation["status"] = "Starting up";
+  //
+  // OTAP identity: the base station is reserved ID 1 (BASE_ID). Its own GPS
+  // report now carries the unified envelope (type/source_id/destination_id +
+  // device_id == BASE_ID) so an inspected packet/log entry clearly reads as
+  // ID 1 = the receiver. We KEEP the legacy id:"MyDevice" string as the UI's
+  // internal marker key (the web UI maps device_id 1 → the "MyDevice" marker).
+  deviceLocation["type"]           = "telemetry";
+  deviceLocation["source_id"]      = BASE_ID;
+  deviceLocation["destination_id"] = BROADCAST_ID; // self-report, informational
+  deviceLocation["device_id"]      = BASE_ID;
+  deviceLocation["id"]             = "MyDevice";
+  deviceLocation["lat"]            = g_homeLat;
+  deviceLocation["lon"]            = g_homeLon;
+  deviceLocation["status"]         = "Starting up";
 }
 
 // Pump bytes out of the GPS UART, feed them into TinyGPSPlus, update
