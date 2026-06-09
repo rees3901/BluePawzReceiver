@@ -2729,16 +2729,11 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     }
 
     async function refreshCommandList() {
-      try {
-        const r = await fetch('/commands');
-        if (!r.ok) return;
-        const arr = await r.json();
-        // Replace local state with server truth
-        commandsByMsgId.clear();
-        for (const c of arr) commandsByMsgId.set(c.msg_id, c);
-        renderCommandPanel();
-        refreshCancelButtonHighlights();
-      } catch (e) { /* ignore — WS will fill in */ }
+      // V3.9.0: the /commands REST endpoint was removed in v3.8.0, so polling it
+      // just produced a 404 (and a failed-request log) every 15 s on the base.
+      // Command state is now driven entirely by command_status WebSocket pushes,
+      // so this is a deliberate no-op kept only so existing call sites are safe.
+      return;
     }
 
     async function cancelCommand(msgId) {
@@ -3160,8 +3155,14 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       if (name === 'MyDevice') {
         return '/icons/Device_Marker.avif';
       }
-      const baseId = knownCats.includes(name) ? name : 'generic';
-      return `/icons/${baseId}_Marker_Home.avif`;
+      if (!knownCats.includes(name)) {
+        // V3.9.0: unknown collars (e.g. "Device-539") have no _Marker_ asset on
+        // flash, so the old 'generic_Marker_Home.avif' path 404'd on the base
+        // every panel refresh. Use an inline SVG dot — no HTTP request, no
+        // failed-request spam in the serial log.
+        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="9" fill="%23007bff" stroke="white" stroke-width="2"/></svg>';
+      }
+      return `/icons/${name}_Marker_Home.avif`;
     }
     
     // Fetch and display node states

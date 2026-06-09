@@ -926,7 +926,11 @@ bool bleEnabled = true;                         // BLE beacon control flag
 
 // ───────────── Message Logging Config ─────────────
 #define LOG_FILE_PATH "/messages.json"
-#define MAX_LOG_MESSAGES 500     // Circular buffer size
+// V3.9.0: 500 messages (~150 KB JSON) could no longer be parsed in the ESP32's
+// fragmented heap — deserializeJson returned NoMemory on EVERY flush, which both
+// stopped logging AND thrashed the heap (a likely cause of the WebSocket server
+// dropping client connections). 150 keeps the file comfortably parseable.
+#define MAX_LOG_MESSAGES 150     // Circular buffer size
 #define LOG_FLUSH_INTERVAL 60000 // Flush to file every 60 seconds
 unsigned long lastLogFlushTime = 0;
 std::vector<String> messageLogBuffer; // In-memory buffer
@@ -1209,9 +1213,24 @@ void flushMessageLog()
 
   if (error)
   {
-    Serial.printf("[LOG] ❌ Failed to parse existing log: %s\n", error.c_str());
-    // Recreate file if corrupted
-    initMessageLog();
+    Serial.printf("[LOG] ❌ Failed to parse existing log: %s — truncating and starting fresh\n",
+                  error.c_str());
+    // The on-flash log is corrupt or too big to parse (NoMemory). NOTE:
+    // initMessageLog() is a no-op once logFileInitialized is true, so the old
+    // "recovery" never actually healed this — the file stayed broken and every
+    // 60 s flush re-failed, thrashing the heap. Overwrite the file with an empty
+    // skeleton HERE so the log self-heals instead of failing forever.
+    File fresh = LittleFS.open(LOG_FILE_PATH, "w");
+    if (fresh)
+    {
+      fresh.print("{\"device\":\"BluePawzReceiver\",\"messages\":[]}");
+      fresh.close();
+      Serial.println("[LOG] ✅ Log truncated — will rebuild from here");
+    }
+    else
+    {
+      Serial.println("[LOG] ❌ Could not truncate log file");
+    }
     messageLogBuffer.clear();
     return;
   }

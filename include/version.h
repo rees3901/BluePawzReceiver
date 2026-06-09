@@ -39,6 +39,11 @@
 //        on the collar's next presence/telemetry, confirmed by a matching ACK
 //        OR by the collar's own telemetry echoing the new name (lost-ACK
 //        resilient). Web UI: per-card rename input + live status badge.
+//        Also: status now passes through verbatim (e.g. "invalidGPSLoc")
+//        instead of collapsing to a generic "Error"; the message log self-heals
+//        on a NoMemory parse (cap 500→150) instead of thrashing the heap every
+//        flush; UI no longer polls the removed /commands endpoint; unknown-cat
+//        icons use an inline SVG instead of 404ing on a missing _Marker_ file.
 // 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —
 //        LoRaCommand queue, ACK/pong/status handling, send/transmit helpers,
 //        /send-command + /commands handlers. updateNodeState is telemetry-only.
