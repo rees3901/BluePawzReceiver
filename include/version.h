@@ -31,6 +31,14 @@
 // ═════════════════════════════════════════════════════════════════════
 #pragma once
 
+// 3.9.0  OTAP Phase 1 (rename round-trip). Unified message envelope
+//        (type/source_id/destination_id/message_id) shared collar↔base.
+//        BASE_ID=1, BROADCAST_ID=999. Base regains a TX path (sendLoRaJson,
+//        re-arms RX after every transmit), a per-collar pending-command store,
+//        and a type-router for presence/ack/nack: a queued rename is delivered
+//        on the collar's next presence/telemetry, confirmed by a matching ACK
+//        OR by the collar's own telemetry echoing the new name (lost-ACK
+//        resilient). Web UI: per-card rename input + live status badge.
 // 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —
 //        LoRaCommand queue, ACK/pong/status handling, send/transmit helpers,
 //        /send-command + /commands handlers. updateNodeState is telemetry-only.
@@ -51,4 +59,4 @@
 // 3.7.0  developer mode (BLE 'Home' beacon defaults off for debugging) +
 //        lost-ACK rename resilience + honour the ACK ok field.
 // 3.6.4  prior release.
-#define BLUEPAWZ_VERSION "3.8.1"
+#define BLUEPAWZ_VERSION "3.9.0"

@@ -3218,6 +3218,9 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
               </div>
             `;
           }).join('');
+          // The C&C panel just re-emitted empty rename badges; re-sync them
+          // from the shared command state so in-flight renames stay visible.
+          if (window.updateRenameBadges) window.updateRenameBadges();
         })
         .catch(err => {
           console.warn('Failed to fetch node states:', err);
@@ -3244,8 +3247,84 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // same disabled-while-pending behaviour, same confirm dialog (the
     // lost-mode confirm lives in sendModeChange itself, shared by both).
     window.buildRemoteControlsHTML = function (node, prefix) {
-      // V3.8.0: remote commands removed - cards are display-only now.
-      return '';
+      // OTAP Phase 1: rename control. The collar is asleep most of the time, so
+      // a submitted rename is QUEUED on the base and delivered on the collar's
+      // next presence/telemetry packet; the badge tracks the lifecycle
+      // (queued -> waiting -> done / failed) from command_status WS pushes.
+      const uid = node.device_id;
+      const curName = String(node.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+      return `
+        <div class="rename-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;width:100%;">
+          <input type="text" id="${prefix}rename-input-${uid}" class="rename-input"
+                 maxlength="15" placeholder="New name" value="${curName}"
+                 style="flex:1;min-width:90px;padding:3px 6px;font-size:0.85em;"
+                 onkeydown="if(event.key==='Enter'){event.preventDefault();window.sendRename('${prefix}',${uid});}">
+          <button class="rename-btn" id="${prefix}rename-btn-${uid}"
+                  onclick="window.sendRename('${prefix}',${uid})"
+                  style="padding:3px 8px;font-size:0.85em;cursor:pointer;">Rename</button>
+          <span class="rename-badge" id="${prefix}cmd-badge-${uid}" style="font-size:0.8em;opacity:0.9;min-width:60px;"></span>
+        </div>
+      `;
+    };
+
+    // OTAP Phase 1: submit a rename. Reads the input on whichever surface was
+    // used (C&C panel prefix '' or marker card 'card-'), validates client-side
+    // against the SAME rules as the collar's bpValidSenderName, then sends a
+    // cmd_send WS message. The base queues it and reports the lifecycle back via
+    // command_status pushes (the badge).
+    window.sendRename = function (prefix, uid) {
+      const input = document.getElementById(`${prefix}rename-input-${uid}`) ||
+                    document.getElementById(`rename-input-${uid}`) ||
+                    document.getElementById(`card-rename-input-${uid}`);
+      if (!input) { console.error('[CMD] rename input not found for', uid); return; }
+      const name = (input.value || '').trim();
+      // Reject comma, double-quote and backslash (the collar's invalid chars).
+      // Hyphen/space ARE allowed (the default name is "Device-430"). The
+      // backslash is supplied via fromCharCode to avoid any escaping ambiguity.
+      const badChars = [',', '"', String.fromCharCode(92)];
+      const hasBad = badChars.some(ch => name.indexOf(ch) !== -1);
+      if (name.length < 1 || name.length > 15 || hasBad) {
+        alert('Name must be 1-15 characters, with no comma, quote, or backslash.');
+        return;
+      }
+      if (!window.ws || window.ws.readyState !== 1) {
+        alert('Not connected to the base station - try again in a moment.');
+        return;
+      }
+      window.ws.send(JSON.stringify({ type: 'cmd_send', device_id: uid, name: name }));
+      console.log('[CMD] rename queued for', uid, '->', name);
+      // Optimistic local badge; the authoritative state arrives via command_status.
+      ['', 'card-'].forEach(p => {
+        const b = document.getElementById(`${p}cmd-badge-${uid}`);
+        if (b) { b.textContent = 'queued...'; b.style.color = '#888'; }
+      });
+    };
+
+    // OTAP Phase 1: reflect each collar's latest command status onto its
+    // per-card rename badge (both surfaces). Driven by commandsByMsgId, which
+    // applyCommandUpdate keeps in sync with the base's command_status pushes.
+    window.updateRenameBadges = function () {
+      const latest = new Map(); // latest command per target device wins
+      for (const c of commandsByMsgId.values()) {
+        const uid = (c.target_id !== undefined && c.target_id !== null) ? c.target_id : c.device_id;
+        if (uid === undefined) continue;
+        const prev = latest.get(uid);
+        if (!prev || (c.msg_id || 0) >= (prev.msg_id || 0)) latest.set(uid, c);
+      }
+      const text = { queued: 'queued...', sending: 'sending...', awaiting_ack: 'waiting...',
+                     delivered: 'done', failed: 'failed', cancelled: 'cancelled' };
+      const colour = { queued: '#888', sending: '#888', awaiting_ack: '#d39e00',
+                       delivered: '#28a745', failed: '#dc3545', cancelled: '#888' };
+      latest.forEach((c, uid) => {
+        ['', 'card-'].forEach(p => {
+          const b = document.getElementById(`${p}cmd-badge-${uid}`);
+          if (!b) return;
+          b.textContent = text[c.status] || c.status || '';
+          b.style.color = colour[c.status] || '#888';
+          if (c.status === 'failed' && c.reason) b.title = 'NACK: ' + c.reason;
+          else b.removeAttribute('title');
+        });
+      });
     };
 
     // V3.2.3: fill the marker-tile's placeholder div with the shared
@@ -3254,6 +3333,10 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     window.refreshCardControls = function (node) {
       const slot = document.getElementById(`card-controls-${node.device_id}`);
       if (slot) slot.innerHTML = window.buildRemoteControlsHTML(node, 'card-');
+      // buildRemoteControlsHTML emits an EMPTY badge span, so an unrelated
+      // node-state push would otherwise blank an in-flight rename's badge.
+      // Re-sync every badge from the shared command state right after rebuild.
+      if (window.updateRenameBadges) window.updateRenameBadges();
     };
 
     // Send mode change command. V3.6.0: deviceId IS the device_id (UID).
@@ -3411,6 +3494,8 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         const dev = btn.id.replace('card-apply-btn-', '').replace('apply-btn-', '');
         if (!seen.has(dev)) { seen.add(dev); updateNodeControlUI(dev); }
       });
+      // OTAP: refresh per-card rename badges from the shared command state too.
+      if (window.updateRenameBadges) window.updateRenameBadges();
     }
     window.refreshAllNodeControlUI = refreshAllNodeControlUI;
     
