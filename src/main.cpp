@@ -2029,7 +2029,7 @@ static void handleBinaryAlert(const uint8_t *buf, uint8_t pkt_len, int16_t rssi,
 // (handlers run on the main loop, so the radio has a single owner here).
 static bool sendLoRaJson(const String &json)
 {
-  lora.standby();
+  int sb = lora.standby();
   // Use the const char* overload — transmit(String&) takes a non-const ref.
   int st = lora.transmit(json.c_str());
   lora.startReceive(); // ALWAYS re-arm, even on error, or the base goes deaf
@@ -2038,13 +2038,11 @@ static bool sendLoRaJson(const String &json)
   // FIFO contents (a garbled echo). Clear the flag so we ignore that artifact;
   // a real inbound packet sets it again after startReceive.
   packetReceived = false;
-  if (st == RADIOLIB_ERR_NONE)
-  {
-    Serial.println("[LoRa-TX] sent: " + json);
-    return true;
-  }
-  Serial.printf("[LoRa-TX] transmit error %d\n", st);
-  return false;
+  // Log BOTH results: transmit() returning OK while nothing radiates points at
+  // the RF front-end (switch/PA), not the protocol — see the boot self-test.
+  Serial.printf("[LoRa-TX] standby()=%d transmit()=%d %s: %s\n", sb, st,
+                st == RADIOLIB_ERR_NONE ? "OK" : "ERROR", json.c_str());
+  return st == RADIOLIB_ERR_NONE;
 }
 
 // Broadcast a command_status WS message in the EXACT shape the web UI's
@@ -3438,6 +3436,19 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
                     dest, (unsigned long)c.msgId, c.json.c_str());
       logMessage(cmd, "command");
       pushCommandStatusWS(g_pending[dest]);
+
+      // Instant-delivery attempt (user request): the collar is usually asleep,
+      // but on the off chance it is awake RIGHT NOW, fire the command
+      // immediately — TWICE in quick succession — before falling back to
+      // presence-triggered delivery. If it isn't heard, the command stays in
+      // flight and deliverPendingFor re-sends it on the collar's next presence.
+      Serial.println("[OTAP] cmd_send: instant double-send (collar may be awake)");
+      sendLoRaJson(g_pending[dest].json);
+      delay(120);
+      sendLoRaJson(g_pending[dest].json);
+      g_pending[dest].status = CMD_AWAITING_ACK;
+      g_pending[dest].sentAt = millis();
+      pushCommandStatusWS(g_pending[dest]);
       return;
     }
   }
@@ -3707,18 +3718,19 @@ void setup()
   LoRaSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
   int state = lora.begin(LORA_FREQ_MHZ);
-  // CRITICAL for OTAP TX (v3.9.0): on the Heltec Wireless Tracker V2 the SX1262's
-  // antenna RF switch is driven by DIO2. Until now the base was RX-only, and RX
-  // works with the switch in its default position — so this was never needed.
-  // But for TRANSMIT the switch must be flipped to the PA, or the output never
-  // reaches the antenna: the PA just leaks back into our own receiver (you see
-  // the base "receive" its own command) and nothing radiates — collars and the
-  // sniffer hear nothing. setDio2AsRfSwitch(true) makes the SX1262 toggle DIO2
-  // automatically on TX/RX so commands actually go on the air.
-  int rfsw = lora.setDio2AsRfSwitch(true);
-  if (rfsw != RADIOLIB_ERR_NONE)
-    Serial.printf("[LoRa] setDio2AsRfSwitch failed: %d\n", rfsw);
-  lora.setOutputPower(22); // RX base station: always max power (mains-powered)
+  Serial.printf("[LoRa] begin(%.1f) = %d %s\n", (double)LORA_FREQ_MHZ, state,
+                state == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
+  // DO NOT call setDio2AsRfSwitch() on this board. DIO2 drives the KCT8103L
+  // antenna switch (per the HTIT-Tracker_V2.3 schematic), but it already sits in
+  // a state that lets the LoRa path TRANSMIT — the original pre-rip-out firmware
+  // (commit ec6b62c) transmitted commands fine with NO RF-switch config at all.
+  // Enabling setDio2AsRfSwitch makes RadioLib toggle DIO2 during TX, flipping
+  // that switch to the WRONG position so the PA output never reaches the
+  // antenna: RX keeps working but TX silently radiates nothing (transmit() still
+  // returns OK). Leaving DIO2 in its default state is the proven-good config.
+  int pw = lora.setOutputPower(22); // base station: max power (mains-powered)
+  Serial.printf("[LoRa] setOutputPower(22) = %d %s\n", pw,
+                pw == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
   lora.setSpreadingFactor(LORA_SF);
   lora.setBandwidth(LORA_BW_KHZ);
   lora.setCodingRate(LORA_CR);
@@ -3730,6 +3742,21 @@ void setup()
   if (state == RADIOLIB_ERR_NONE)
   {
     Serial.println("[INFO] LoRa initialized successfully.");
+
+    // ── OTAP TX SELF-TEST ──────────────────────────────────────────────
+    // The base was RX-only until v3.9.0. If its TX RF path is misconfigured,
+    // transmit() STILL returns OK (the chip reports TxDone) but nothing leaves
+    // the antenna. Fire one unmistakable test packet at boot so a LoRa sniffer
+    // gives a definitive yes/no on whether the base can radiate AT ALL —
+    // isolating the radio from all the OTAP command logic. Watch your sniffer
+    // when the base boots: if you see {"type":"selftest"} the TX path works.
+    const char *selftest = "{\"type\":\"selftest\",\"source_id\":1,\"msg\":\"base-tx\"}";
+    lora.standby();
+    int ts = lora.transmit((uint8_t *)selftest, strlen(selftest));
+    lora.startReceive();
+    packetReceived = false;
+    Serial.printf("[LoRa] *** TX SELF-TEST: transmit()=%d (%s) — watch the sniffer for {\"type\":\"selftest\"} ***\n",
+                  ts, ts == RADIOLIB_ERR_NONE ? "OK" : "ERROR");
   }
   else
   {
