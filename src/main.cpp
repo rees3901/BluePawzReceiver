@@ -2180,6 +2180,17 @@ static void handleLoRaPacketJSON(const String &incoming)
       Serial.printf("[OTAP] presence from %u\n", src);
       logMessage(doc, "lora");
       deliverPendingFor(src);
+      // Tell the web UI this collar is awake right NOW → drives the per-marker
+      // "awake" indicator + its 60 s countdown (the collar can receive OTAP
+      // commands during this window).
+      {
+        JsonDocument pres;
+        pres["type"] = "presence";
+        pres["device_id"] = src;
+        String out;
+        serializeJson(pres, out);
+        webSocket.broadcastTXT(out);
+      }
       return;
     }
 

@@ -277,6 +277,57 @@ function getMarkerIcon(id, status) {
 const markerHistory = {};
 
 // Create marker card dynamically
+// ═══════════════════════════════════════════════════════════════════
+// V3.9.0: collar "awake" indicator
+// ═══════════════════════════════════════════════════════════════════
+// Collars sleep between wakes. On waking, a collar sends a presence packet;
+// the base forwards it over WS (markCollarAwake), and we light the marker
+// tile's indicator for 60 s — the window the collar is reachable for OTAP
+// commands. It flips back to "asleep" automatically when the window lapses.
+const COLLAR_AWAKE_MS = 60000;
+const collarAwakeUntil = {}; // id (string) → epoch ms the awake window ends
+
+window.markCollarAwake = function (id) {
+  collarAwakeUntil[id] = Date.now() + COLLAR_AWAKE_MS;
+  applyAwakeIndicator(id);
+};
+
+function applyAwakeIndicator(id) {
+  const el = document.getElementById(`awake-ind-${id}`);
+  if (!el) return;
+  const until = collarAwakeUntil[id] || 0;
+  if (until > Date.now()) {
+    const secs = Math.max(1, Math.ceil((until - Date.now()) / 1000));
+    el.textContent = "💡";
+    el.classList.add("awake");
+    el.classList.remove("asleep");
+    el.title = `Awake — presence received; reachable for commands (~${secs}s)`;
+  } else {
+    el.textContent = "💤";
+    el.classList.add("asleep");
+    el.classList.remove("awake");
+    el.title = "Asleep — no presence in the last minute";
+  }
+}
+window.applyAwakeIndicator = applyAwakeIndicator;
+
+// Re-evaluate every 5 s so indicators flip back to "asleep" when the 60 s
+// window lapses (and the countdown tooltip stays roughly current).
+setInterval(function () {
+  for (const id in collarAwakeUntil) applyAwakeIndicator(id);
+}, 5000);
+
+// One-time styles: dim/grey when asleep, bright + gentle pulse when awake.
+(function injectAwakeStyles() {
+  const s = document.createElement("style");
+  s.textContent =
+    ".awake-indicator{position:absolute;top:0;right:0;font-size:1.3em;line-height:1;cursor:help;transition:opacity .3s;}" +
+    ".awake-indicator.asleep{opacity:.35;filter:grayscale(1);}" +
+    ".awake-indicator.awake{opacity:1;animation:awakePulse 1.5s ease-in-out infinite;}" +
+    "@keyframes awakePulse{0%,100%{transform:scale(1);}50%{transform:scale(1.25);}}";
+  document.head.appendChild(s);
+})();
+
 function createMarkerCard(id, status) {
   if (dropdowns.has(id)) return;
 
@@ -323,6 +374,13 @@ function createMarkerCard(id, status) {
     ? '<span style="background: #007bff; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; margin-left: 8px;">🏠 This Device</span>'
     : "";
 
+  // V3.9.0: "awake" indicator (top-right of the tile). A collar is shown awake
+  // for 60 s after its presence packet — i.e. reachable for OTAP commands right
+  // now. The base (MyDevice) is always on, so it gets no sleep/wake indicator.
+  const awakeIndicator = isMyDevice
+    ? ""
+    : `<span class="awake-indicator asleep" id="awake-ind-${id}" title="Asleep — no presence in the last minute">💤</span>`;
+
   const card = document.createElement("div");
   card.className = `marker-card ${statusClass}${myDeviceClass}`;
   card.id = `marker-card-${id}`;
@@ -344,12 +402,13 @@ function createMarkerCard(id, status) {
   const displayEsc = escHtml(displayId);
   const statusEsc  = escHtml(status || "Unknown");
   card.innerHTML = `
-    <div class="marker-card-header">
+    <div class="marker-card-header" style="position:relative;">
       <img src="${iconUrl}" alt="${idEsc}" class="marker-card-icon" id="card-icon-${id}">
       <div class="marker-card-title">
         <h3 class="marker-card-name">${displayEsc}${deviceLabel}</h3>
         <p class="marker-card-status" id="card-status-${id}">${statusEsc}</p>
       </div>
+      ${awakeIndicator}
     </div>
     <div class="marker-card-actions">
       <div class="button-row">
@@ -407,6 +466,10 @@ Useful for debugging and seeing exact coordinates">
   `;
 
   document.querySelector(".marker-cards-container").appendChild(card);
+
+  // V3.9.0: reflect the current awake/asleep state immediately (covers a card
+  // created while the collar is still inside its 60 s awake window).
+  if (window.applyAwakeIndicator) window.applyAwakeIndicator(id);
 
   // V3.2.3: if node state is already cached for this device, fill the
   // controls slot immediately. Otherwise the next /node-states WS push
@@ -829,6 +892,14 @@ window.handleTelemetry = function (data, isHydrate) {
       // index.html's inline JS — we just dispatch.
       if (data.type === "command_status" && window.applyCommandUpdate) {
         window.applyCommandUpdate(data);
+        return;
+      }
+
+      // V3.9.0: the base pushes a presence message when a collar's wake-up
+      // packet arrives. Mark that collar "awake" for 60 s so the marker tile
+      // shows it's reachable for OTAP commands right now.
+      if (data.type === "presence" && data.device_id !== undefined && window.markCollarAwake) {
+        window.markCollarAwake(String(data.device_id));
         return;
       }
 
