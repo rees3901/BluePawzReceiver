@@ -3157,10 +3157,14 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       }
       if (!knownCats.includes(name)) {
         // V3.9.0: unknown collars (e.g. "Device-539") have no _Marker_ asset on
-        // flash, so the old 'generic_Marker_Home.avif' path 404'd on the base
-        // every panel refresh. Use an inline SVG dot — no HTTP request, no
-        // failed-request spam in the serial log.
-        return 'data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><circle cx="12" cy="12" r="9" fill="%23007bff" stroke="white" stroke-width="2"/></svg>';
+        // flash. Use an inline SVG dot — no HTTP request, no 404 spam. MUST be
+        // single-quoted + URL-encoded (like createMarkerCard does); a raw data
+        // URI with double-quotes / < / > terminates the <img src="..."> attribute
+        // early and dumps the rest of the tag as text — that's what mangled the
+        // C&C side-panel card.
+        const svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>" +
+                    "<circle cx='12' cy='12' r='10' fill='#007bff' stroke='white' stroke-width='2'/></svg>";
+        return "data:image/svg+xml;utf8," + encodeURIComponent(svg);
       }
       return `/icons/${name}_Marker_Home.avif`;
     }

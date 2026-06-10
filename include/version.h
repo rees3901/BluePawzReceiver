@@ -72,6 +72,10 @@
 //        generic (name OR mode). Collar also gains a 5 s post-telemetry RX grace
 //        window (POST_TX_LISTEN_MS) so a command + its ACK land in the same wake
 //        before deep sleep.
+//        Touch-ups: cmd delivery is now 1 immediate attempt → 10 s gap → 2nd
+//        attempt → presence-scheduled (was a back-to-back double-send). Fixed the
+//        C&C side-panel card rendering (getIconForNode now URL-encodes its inline
+//        SVG so the data URI can't break the <img> tag).
 // 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —
 //        LoRaCommand queue, ACK/pong/status handling, send/transmit helpers,
 //        /send-command + /commands handlers. updateNodeState is telemetry-only.

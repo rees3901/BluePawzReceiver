@@ -1137,7 +1137,8 @@ struct PendingCmd
   String confirmField;
   String confirmValue;
   CmdStatus status = CMD_QUEUED;
-  uint32_t sentAt = 0;         // millis() of the last TX attempt (Phase 2 retry)
+  uint32_t sentAt = 0;         // millis() of the last TX attempt
+  uint8_t immediateAttempts = 0; // # of immediate (non-presence) TX attempts (max 2)
 };
 
 static std::map<uint16_t, PendingCmd> g_pending; // one in-flight cmd per collar
@@ -2143,6 +2144,7 @@ static void deliverPendingFor(uint16_t collarId)
   {
     c.status = CMD_AWAITING_ACK;
     c.sentAt = millis();
+    c.immediateAttempts = 2; // presence-scheduled delivery now owns it; stop the blind 10 s immediate retry
     Serial.println("[OTAP] delivered — AWAITING_ACK");
   }
   else
@@ -2150,6 +2152,33 @@ static void deliverPendingFor(uint16_t collarId)
     Serial.println("[OTAP] TX failed — will retry on next presence");
   }
   pushCommandStatusWS(c);
+}
+
+// Gap before the SECOND immediate command attempt. On cmd_send the base fires
+// attempt 1 right away (the collar might be awake); if no ACK lands within this
+// window, loop() fires attempt 2; after that it falls back to presence-scheduled
+// delivery (deliverPendingFor on the collar's next wake).
+#define IMMEDIATE_RETRY_MS 10000UL
+
+// Called every loop() pass. Sends the 2nd immediate attempt ~10 s after the 1st
+// for any command still unacked, then stops (presence delivery takes over).
+static void processPendingRetries()
+{
+  uint32_t now = millis();
+  for (auto &kv : g_pending)
+  {
+    PendingCmd &c = kv.second;
+    if (c.status == CMD_AWAITING_ACK && c.immediateAttempts == 1 &&
+        (now - c.sentAt) >= IMMEDIATE_RETRY_MS)
+    {
+      Serial.printf("[OTAP] immediate retry 2/2 for %u msg_id=%lu (no ACK in %lus)\n",
+                    c.dest, (unsigned long)c.msgId, IMMEDIATE_RETRY_MS / 1000UL);
+      sendLoRaJson(c.json);
+      c.sentAt = now;
+      c.immediateAttempts = 2; // done with immediate attempts → presence-scheduled now
+      pushCommandStatusWS(c);
+    }
+  }
 }
 
 // ═════════════════════════════════════════════════════════════════════
@@ -3505,17 +3534,16 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       logMessage(cmd, "command");
       pushCommandStatusWS(g_pending[dest]);
 
-      // Instant-delivery attempt (user request): the collar is usually asleep,
-      // but on the off chance it is awake RIGHT NOW, fire the command
-      // immediately — TWICE in quick succession — before falling back to
-      // presence-triggered delivery. If it isn't heard, the command stays in
-      // flight and deliverPendingFor re-sends it on the collar's next presence.
-      Serial.println("[OTAP] cmd_send: instant double-send (collar may be awake)");
-      sendLoRaJson(g_pending[dest].json);
-      delay(120);
+      // Immediate-delivery attempt 1 of 2 (user request): the collar is usually
+      // asleep, but on the off chance it is awake RIGHT NOW, fire the command
+      // immediately. If no ACK lands within IMMEDIATE_RETRY_MS (10 s), loop()'s
+      // processPendingRetries() fires attempt 2; after that the command falls
+      // back to presence-scheduled delivery (deliverPendingFor) until ACK'd.
+      Serial.println("[OTAP] cmd_send: immediate delivery attempt 1/2");
       sendLoRaJson(g_pending[dest].json);
       g_pending[dest].status = CMD_AWAITING_ACK;
       g_pending[dest].sentAt = millis();
+      g_pending[dest].immediateAttempts = 1;
       pushCommandStatusWS(g_pending[dest]);
       return;
     }
@@ -3912,7 +3940,9 @@ void loop()
   // Handle LoRa packets
   handleLoRaPacket();
 
-  // V3.8.0: remote commands removed — no command queue to process.
+  // OTAP: fire the 2nd immediate command attempt ~10 s after the 1st if still
+  // unacked (then presence-scheduled delivery takes over).
+  processPendingRetries();
 
   // Periodic flush of message log to LittleFS
   if (millis() - lastLogFlushTime >= LOG_FLUSH_INTERVAL)
