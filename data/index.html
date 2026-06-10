@@ -3204,6 +3204,8 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
                   <span class="node-name">${label}</span>
                   <span class="node-id-chip" style="font-size:0.75em;opacity:0.7;margin-left:6px;">ID ${node.device_id}</span>
                   <span class="node-mode-badge ${modeClass}">${node.mode_known ? node.mode : 'unknown'}</span>
+                  <!-- V3.9.0: awake/asleep indicator, mirrors the marker tile. Updated by window.applyAwakeIndicator via the data-awake-id attribute. -->
+                  <span class="awake-indicator asleep" data-awake-id="${node.device_id}" style="margin-left:auto;" title="Asleep - no presence recently">💤</span>
                 </div>
                 <div class="node-info">
                   <span class="node-last-seen">Last seen: ${lastSeenText}</span>
@@ -3219,9 +3221,11 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
               </div>
             `;
           }).join('');
-          // The C&C panel just re-emitted empty rename badges; re-sync them
-          // from the shared command state so in-flight renames stay visible.
+          // The C&C panel just re-emitted empty rename badges + asleep awake
+          // indicators; re-sync both from shared state so in-flight renames and
+          // the awake/asleep state stay correct after the rebuild.
           if (window.updateRenameBadges) window.updateRenameBadges();
+          if (window.refreshAwakeIndicators) window.refreshAwakeIndicators();
         })
         .catch(err => {
           console.warn('Failed to fetch node states:', err);

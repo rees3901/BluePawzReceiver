@@ -63,8 +63,8 @@
 //        flush; UI no longer polls the removed /commands endpoint; unknown-cat
 //        icons use an inline SVG instead of 404ing on a missing _Marker_ file.
 //        Awake indicator: a presence packet makes the base push a "presence" WS
-//        message; the marker tile shows 💡 (awake, reachable for OTAP) for 60 s
-//        then reverts to 💤 (asleep).
+//        message; the marker tile AND the C&C side panel show 💡 (awake,
+//        reachable for OTAP) for 30 s, then revert to 💤 (asleep).
 // 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —
 //        LoRaCommand queue, ACK/pong/status handling, send/transmit helpers,
 //        /send-command + /commands handlers. updateNodeState is telemetry-only.

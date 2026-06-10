@@ -284,47 +284,49 @@ const markerHistory = {};
 // the base forwards it over WS (markCollarAwake), and we light the marker
 // tile's indicator for 60 s — the window the collar is reachable for OTAP
 // commands. It flips back to "asleep" automatically when the window lapses.
-const COLLAR_AWAKE_MS = 60000;
-const collarAwakeUntil = {}; // id (string) → epoch ms the awake window ends
+const COLLAR_AWAKE_MS = 30000;
+const collarAwakeUntil = {}; // id (string) -> epoch ms the awake window ends
 
 window.markCollarAwake = function (id) {
   collarAwakeUntil[id] = Date.now() + COLLAR_AWAKE_MS;
   applyAwakeIndicator(id);
 };
 
+// Update EVERY awake-indicator for this device across all surfaces (marker tile
+// + C&C side panel). Elements are tagged data-awake-id (not a unique id) so both
+// surfaces stay in lockstep with no duplicate-id clash.
 function applyAwakeIndicator(id) {
-  const el = document.getElementById(`awake-ind-${id}`);
-  if (!el) return;
+  const els = document.querySelectorAll('.awake-indicator[data-awake-id="' + id + '"]');
+  if (!els.length) return;
   const until = collarAwakeUntil[id] || 0;
-  if (until > Date.now()) {
-    const secs = Math.max(1, Math.ceil((until - Date.now()) / 1000));
-    el.textContent = "💡";
-    el.classList.add("awake");
-    el.classList.remove("asleep");
-    el.title = `Awake — presence received; reachable for commands (~${secs}s)`;
-  } else {
-    el.textContent = "💤";
-    el.classList.add("asleep");
-    el.classList.remove("awake");
-    el.title = "Asleep — no presence in the last minute";
-  }
+  const awake = until > Date.now();
+  const secs = awake ? Math.max(1, Math.ceil((until - Date.now()) / 1000)) : 0;
+  els.forEach(function (el) {
+    el.textContent = awake ? "💡" : "💤";
+    el.classList.toggle("awake", awake);
+    el.classList.toggle("asleep", !awake);
+    el.title = awake
+      ? ("Awake - presence received; reachable for commands (~" + secs + "s)")
+      : "Asleep - no presence recently";
+  });
 }
 window.applyAwakeIndicator = applyAwakeIndicator;
 
-// Re-evaluate every 5 s so indicators flip back to "asleep" when the 60 s
-// window lapses (and the countdown tooltip stays roughly current).
-setInterval(function () {
+// Re-apply all indicators — covers window expiry (flip back to asleep) and
+// freshly-rebuilt panels. Exposed so the C&C panel can call it after a rebuild.
+window.refreshAwakeIndicators = function () {
   for (const id in collarAwakeUntil) applyAwakeIndicator(id);
-}, 5000);
+};
+setInterval(window.refreshAwakeIndicators, 5000);
 
 // One-time styles: dim/grey when asleep, bright + gentle pulse when awake.
 (function injectAwakeStyles() {
   const s = document.createElement("style");
   s.textContent =
-    ".awake-indicator{position:absolute;top:0;right:0;font-size:1.3em;line-height:1;cursor:help;transition:opacity .3s;}" +
+    ".awake-indicator{font-size:1.3em;line-height:1;cursor:help;transition:opacity .3s;}" +
     ".awake-indicator.asleep{opacity:.35;filter:grayscale(1);}" +
-    ".awake-indicator.awake{opacity:1;animation:awakePulse 1.5s ease-in-out infinite;}" +
-    "@keyframes awakePulse{0%,100%{transform:scale(1);}50%{transform:scale(1.25);}}";
+    ".awake-indicator.awake{opacity:1;animation:awakePulse 2.5s ease-in-out infinite;}" +
+    "@keyframes awakePulse{0%,100%{transform:scale(1);}50%{transform:scale(1.12);}}";
   document.head.appendChild(s);
 })();
 
@@ -379,7 +381,7 @@ function createMarkerCard(id, status) {
   // now. The base (MyDevice) is always on, so it gets no sleep/wake indicator.
   const awakeIndicator = isMyDevice
     ? ""
-    : `<span class="awake-indicator asleep" id="awake-ind-${id}" title="Asleep — no presence in the last minute">💤</span>`;
+    : `<span class="awake-indicator asleep" data-awake-id="${id}" style="position:absolute;top:4px;right:6px;" title="Asleep - no presence recently">💤</span>`;
 
   const card = document.createElement("div");
   card.className = `marker-card ${statusClass}${myDeviceClass}`;
