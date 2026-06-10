@@ -32,10 +32,16 @@
 #pragma once
 
 // 3.9.0  OTAP Phase 1 (rename round-trip).
-//        *** TX FIX: enable DIO2 as the SX1262 RF switch (setDio2AsRfSwitch).
-//        The base was RX-only, so its TX path was never exercised; without the
-//        DIO2 switch the PA leaked into our own RX (base "received" its own
-//        command) and NOTHING radiated — collars/sniffer heard no command. ***
+//        *** TX FIX: drive the KCT8103L RF front-end module. The HTIT-Tracker
+//        V2.3 routes the SX1262 through an external PA+LNA+switch (powered by a
+//        TLV75733 LDO), with control lines VFEM_Ctrl=GPIO7, PA_CSD=GPIO4,
+//        PA_CTX=GPIO5 (decoded from the schematic). The base was RX-only, so
+//        these were never driven — the PA stayed off and TX only LEAKED through
+//        the module (a tiny emission; RX worked via the idle path), so no
+//        command ever reached the air. femInit() powers+enables the FEM at boot;
+//        sendLoRaJson() flips PA_CTX to the TX path per transmit. Verified full
+//        power on a HackRF + sniffer. (NOT setDio2AsRfSwitch — that made it
+//        worse; DIO2 is left in its default state.) ***
 //        Unified message envelope
 //        (type/source_id/destination_id/message_id) shared collar↔base.
 //        BASE_ID=1, BROADCAST_ID=999. Base regains a TX path (sendLoRaJson,

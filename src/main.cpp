@@ -135,8 +135,40 @@ static uint32_t g_lastStateSaveMs = 0;  // last LittleFS write time
 #define LORA_BUSY 13
 #define LORA_DIO1 14
 
+// ───────────── KCT8103L RF front-end module (FEM) control ─────────────
+// v3.9.0 — THE fix for "base won't transmit". The HTIT-Tracker_V2.3 does NOT
+// drive its antenna straight from the SX1262: it routes through an external
+// PA + LNA + T/R-switch module (KCT8103L) powered by a TLV75733 LDO. These
+// lines MUST be driven or the PA never engages — TX merely leaks through the
+// module (a "tiny emission" on a spectrum analyser) while RX still works via
+// the module's idle path. That's why the base received fine but never put a
+// command on the air. GPIOs decoded from the HTIT-Tracker_V2.3 schematic, and
+// cross-checked: the same ESP32-symbol column gives LoRa_NSS=8 / LoRa_SCK=9 /
+// Vext_Ctrl=3 — all matching the defines above — so these are trustworthy.
+//   VFEM_Ctrl → enables the FEM's LDO (power)     : drive HIGH
+//   PA_CSD    → FEM chip enable                   : drive HIGH
+//   PA_CTX    → TX-path select                    : HIGH = TX, LOW = RX
+//   PA_CPS    → hardwired via a 0R resistor (R31) — not software-controlled.
+#define FEM_VCTRL 7
+#define FEM_CSD   4
+#define FEM_CTX   5
+
 SPIClass LoRaSPI(HSPI);
 SX1262 lora = new Module(LORA_NSS, LORA_DIO1, LORA_RST, LORA_BUSY, LoRaSPI);
+
+// Power up + enable the FEM and leave it in RX mode. MUST run before the radio
+// transmits (called from setup() before lora.begin()). Without it the PA is
+// unpowered and only leakage reaches the antenna.
+static void femInit()
+{
+  pinMode(FEM_VCTRL, OUTPUT);
+  digitalWrite(FEM_VCTRL, HIGH); // turn on the FEM's LDO (TLV75733) → FEM powered
+  pinMode(FEM_CSD, OUTPUT);
+  digitalWrite(FEM_CSD, HIGH);   // enable the FEM
+  pinMode(FEM_CTX, OUTPUT);
+  digitalWrite(FEM_CTX, LOW);    // default to the RX path (LNA)
+  delay(20);                     // let the LDO settle before any RF
+}
 
 volatile bool packetReceived = false;
 
@@ -2029,18 +2061,23 @@ static void handleBinaryAlert(const uint8_t *buf, uint8_t pkt_len, int16_t rssi,
 // (handlers run on the main loop, so the radio has a single owner here).
 static bool sendLoRaJson(const String &json)
 {
+  // Switch the KCT8103L front-end into the TX path BEFORE transmitting, or the
+  // PA never reaches the antenna (only leakage radiates). Return it to RX after,
+  // so the base hears the collar's ACK. This is THE fix that got the base on the
+  // air — proven on a HackRF + sniffer with the standalone TX test.
+  digitalWrite(FEM_CTX, HIGH);   // FEM → TX path
+  delayMicroseconds(50);         // brief antenna-switch settle
   int sb = lora.standby();
   // Byte-buffer transmit — identical to the proven pre-rip-out path
   // (ec6b62c transmitCommandAt: lora.transmit(cmd.buf, cmd.len)).
   int st = lora.transmit((uint8_t *)json.c_str(), json.length());
+  digitalWrite(FEM_CTX, LOW);    // FEM → RX path (so we can hear the ACK)
   lora.startReceive(); // ALWAYS re-arm, even on error, or the base goes deaf
   // transmit() fires TxDone on DIO1, which our onReceive ISR also watches, so it
   // sets packetReceived and the next loop would "receive" our own just-sent
   // FIFO contents (a garbled echo). Clear the flag so we ignore that artifact;
   // a real inbound packet sets it again after startReceive.
   packetReceived = false;
-  // Log BOTH results: transmit() returning OK while nothing radiates points at
-  // the RF front-end (switch/PA), not the protocol — see the boot self-test.
   Serial.printf("[LoRa-TX] standby()=%d transmit()=%d %s: %s\n", sb, st,
                 st == RADIOLIB_ERR_NONE ? "OK" : "ERROR", json.c_str());
   return st == RADIOLIB_ERR_NONE;
@@ -3718,17 +3755,21 @@ void setup()
     } });
   LoRaSPI.begin(LORA_SCK, LORA_MISO, LORA_MOSI, LORA_NSS);
 
+  // Power + enable the KCT8103L RF front-end BEFORE the radio. Without this the
+  // PA stays off and TX only leaks through the module — the base receives fine
+  // but never puts a packet on the air. sendLoRaJson() flips FEM_CTX to TX per
+  // transmit; here we just power it up and leave it in RX. (Verified on a HackRF
+  // + sniffer: this is what took the base from a tiny emission to full power.)
+  femInit();
+  Serial.println("[FEM] KCT8103L powered + enabled (VFEM_Ctrl,PA_CSD HIGH; PA_CTX=RX)");
+
   int state = lora.begin(LORA_FREQ_MHZ);
   Serial.printf("[LoRa] begin(%.1f) = %d %s\n", (double)LORA_FREQ_MHZ, state,
                 state == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
-  // DO NOT call setDio2AsRfSwitch() on this board. DIO2 drives the KCT8103L
-  // antenna switch (per the HTIT-Tracker_V2.3 schematic), but it already sits in
-  // a state that lets the LoRa path TRANSMIT — the original pre-rip-out firmware
-  // (commit ec6b62c) transmitted commands fine with NO RF-switch config at all.
-  // Enabling setDio2AsRfSwitch makes RadioLib toggle DIO2 during TX, flipping
-  // that switch to the WRONG position so the PA output never reaches the
-  // antenna: RX keeps working but TX silently radiates nothing (transmit() still
-  // returns OK). Leaving DIO2 in its default state is the proven-good config.
+  // Do NOT call setDio2AsRfSwitch() on this board: the TX path is gated by the
+  // external FEM (driven via FEM_CTX above), not by DIO2. Enabling it only
+  // toggled DIO2 and made TX worse during debugging; leaving DIO2 default is the
+  // proven config (the original pre-rip-out firmware, ec6b62c, used no DIO2 cfg).
   int pw = lora.setOutputPower(22); // base station: max power (mains-powered)
   Serial.printf("[LoRa] setOutputPower(22) = %d %s\n", pw,
                 pw == RADIOLIB_ERR_NONE ? "OK" : "FAIL");
@@ -3745,19 +3786,12 @@ void setup()
     Serial.println("[INFO] LoRa initialized successfully.");
 
     // ── OTAP TX SELF-TEST ──────────────────────────────────────────────
-    // The base was RX-only until v3.9.0. If its TX RF path is misconfigured,
-    // transmit() STILL returns OK (the chip reports TxDone) but nothing leaves
-    // the antenna. Fire one unmistakable test packet at boot so a LoRa sniffer
-    // gives a definitive yes/no on whether the base can radiate AT ALL —
-    // isolating the radio from all the OTAP command logic. Watch your sniffer
-    // when the base boots: if you see {"type":"selftest"} the TX path works.
-    const char *selftest = "{\"type\":\"selftest\",\"source_id\":1,\"msg\":\"base-tx\"}";
-    lora.standby();
-    int ts = lora.transmit((uint8_t *)selftest, strlen(selftest));
-    lora.startReceive();
-    packetReceived = false;
-    Serial.printf("[LoRa] *** TX SELF-TEST: transmit()=%d (%s) — watch the sniffer for {\"type\":\"selftest\"} ***\n",
-                  ts, ts == RADIOLIB_ERR_NONE ? "OK" : "ERROR");
+    // Fire one packet at boot via the real TX path (sendLoRaJson, which drives
+    // the FEM into TX) so a sniffer confirms the base radiates at full power on
+    // startup. A nice proof-of-life that the RF front-end is alive.
+    bool ok = sendLoRaJson("{\"type\":\"selftest\",\"source_id\":1,\"msg\":\"base-tx\"}");
+    Serial.printf("[LoRa] *** TX SELF-TEST sent (%s) — watch the sniffer for {\"type\":\"selftest\"} ***\n",
+                  ok ? "OK" : "ERROR");
   }
   else
   {
