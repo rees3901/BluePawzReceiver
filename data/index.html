@@ -3267,7 +3267,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       // it's one of the four settable profiles; otherwise (e.g. "developer", a
       // local bench mode) show a disabled "current: X" placeholder.
       const curMode = String(node.mode || '').toLowerCase();
-      const settable = ['powersave', 'normal', 'active', 'lost'];
+      const settable = ['powersave', 'normal', 'active', 'lost', 'developer'];
       const isSettable = settable.includes(curMode);
       const placeholder = isSettable ? '' :
         `<option value="" selected disabled>${curMode ? 'current: ' + curMode : 'Set power profile…'}</option>`;
@@ -3292,6 +3292,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
             ${opt('normal', '⚖️ Normal')}
             ${opt('active', '⚡ Active')}
             ${opt('lost', '🚨 Lost mode')}
+            ${opt('developer', '🛠️ Developer')}
           </select>
           <button class="profile-btn" id="${prefix}profile-btn-${uid}"
                   onclick="window.sendProfile('${prefix}',${uid})"
@@ -3343,7 +3344,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
                   document.getElementById(`card-profile-select-${uid}`);
       if (!sel) { console.error('[CMD] profile select not found for', uid); return; }
       const profile = sel.value;
-      const settable = ['powersave', 'normal', 'active', 'lost'];
+      const settable = ['powersave', 'normal', 'active', 'lost', 'developer'];
       if (!settable.includes(profile)) { alert('Pick a power profile first.'); return; }
       if (profile === 'lost' &&
           !confirm('Put this collar into LOST mode?\n\nIt will stay awake more, flash its LED beacon, and transmit at maximum power — this uses significantly more battery. Use when a cat is missing.')) {

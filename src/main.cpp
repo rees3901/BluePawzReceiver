@@ -2181,6 +2181,39 @@ static void processPendingRetries()
   }
 }
 
+// Translate SHORT LoRa-wire keys back to the LONG keys the rest of the receiver
+// (type-router, telemetry path, logMessage, catPayloads, AND the web UI) already
+// expects — so the air frame is small but NOTHING downstream changes. Called
+// once right after deserialize. Done value-first (read into a typed local, then
+// remove + re-add) to avoid ArduinoJson pool-realloc aliasing that a direct
+// doc[long] = doc[short] could hit.
+static void expandWireKeys(JsonDocument &doc)
+{
+  static const struct { const char *s; const char *l; } INT_KEYS[] = {
+      {"src", "source_id"}, {"dst", "destination_id"}, {"mid", "message_id"},
+      {"seq", "msg_id"}, {"did", "device_id"}};
+  for (auto &k : INT_KEYS)
+  {
+    if (!doc[k.s].isNull())
+    {
+      uint32_t v = doc[k.s].as<uint32_t>();
+      doc.remove(k.s);
+      doc[k.l] = v;
+    }
+  }
+  static const struct { const char *s; const char *l; } STR_KEYS[] = {
+      {"st", "status"}, {"md", "mode"}};
+  for (auto &k : STR_KEYS)
+  {
+    if (doc[k.s].is<const char *>())
+    {
+      String v = doc[k.s].as<String>(); // owns a copy before we mutate the doc
+      doc.remove(k.s);
+      doc[k.l] = v;
+    }
+  }
+}
+
 // ═════════════════════════════════════════════════════════════════════
 // JSON HANDLER (V3 active path)
 // ═════════════════════════════════════════════════════════════════════
@@ -2195,6 +2228,10 @@ static void handleLoRaPacketJSON(const String &incoming)
     Serial.println("[LORA] Raw data: " + incoming);
     return;
   }
+
+  // OTAP: expand the SHORT wire keys (src/dst/mid/seq/did/st/md) to long keys so
+  // everything below — and the web UI — keeps working on the verbose names.
+  expandWireKeys(doc);
 
   // ── OTAP type-router ────────────────────────────────────────────────
   // The unified envelope carries an explicit "type". Route control packets
@@ -3484,11 +3521,14 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       c.msgId = g_baseMsgId++;
       c.status = CMD_QUEUED;
 
+      // Build the LoRa command with SHORT wire keys (the collar parses these);
+      // the UI's WS message still uses its own long-ish keys (device_id/name/
+      // profile/ping), read below.
       JsonDocument cmd;
       cmd["type"] = "command";
-      cmd["source_id"] = BASE_ID;
-      cmd["destination_id"] = dest;
-      cmd["message_id"] = c.msgId;
+      cmd["src"] = BASE_ID;
+      cmd["dst"] = dest;
+      cmd["mid"] = c.msgId;
 
       if (doc["name"].is<const char *>())
       {
@@ -3499,19 +3539,27 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       }
       else if (doc["profile"].is<const char *>())
       {
-        // Power/operating profile change. The collar echoes the applied profile
-        // in its telemetry "mode" field, so confirm-by-telemetry watches that.
+        // Power/operating profile change. The collar echoes it in telemetry's
+        // mode field, so confirm-by-telemetry watches "mode" (the EXPANDED key).
         c.label = "mode";
         c.confirmField = "mode";
         c.confirmValue = doc["profile"].as<const char *>();
-        cmd["profile"] = c.confirmValue;
+        cmd["md"] = c.confirmValue; // short wire key for the mode parameter
+      }
+      else if (doc["ping"].is<bool>() || doc["ping"].is<int>())
+      {
+        // Ping: the collar answers with a solicited telemetry (pong) reply. No
+        // telemetry-field to confirm against — the pong itself confirms it (see
+        // the pong handler in the telemetry path).
+        c.label = "ping";
+        cmd["ping"] = true;
       }
       else
       {
         Serial.println("[WS] cmd_send with no recognised parameter — ignored");
         return;
       }
-      serializeJson(cmd, c.json);
+      serializeJson(cmd, c.json); // SHORT-key string actually transmitted
 
       // If a non-terminal command is already in flight for this collar, close
       // it out as FAILED("superseded") so the UI doesn't orphan its msg_id in
@@ -3531,7 +3579,14 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       g_pending[dest] = c; // one in-flight command per collar (Phase 1)
       Serial.printf("[WS] cmd_send queued for %u msg_id=%lu: %s\n",
                     dest, (unsigned long)c.msgId, c.json.c_str());
-      logMessage(cmd, "command");
+      // Log with LONG keys (consistent with inbound logs): re-parse the
+      // short-key command and expand it.
+      {
+        JsonDocument logDoc;
+        deserializeJson(logDoc, c.json);
+        expandWireKeys(logDoc);
+        logMessage(logDoc, "command");
+      }
       pushCommandStatusWS(g_pending[dest]);
 
       // Immediate-delivery attempt 1 of 2 (user request): the collar is usually
