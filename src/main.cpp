@@ -1130,8 +1130,12 @@ struct PendingCmd
   uint16_t dest = 0;            // collar UID this command targets
   uint32_t msgId = 0;          // base-assigned message_id the collar must echo
   String json;                 // the fully-built command envelope, ready to TX
-  String label;                // human action label for the UI ("rename")
-  String name;                 // for rename: the new name (confirm-by-telemetry)
+  String label;                // human action label for the UI ("rename"/"mode")
+  // Confirm-by-telemetry: the command is also considered DELIVERED if the
+  // collar's telemetry field `confirmField` later equals `confirmValue` (covers
+  // a lost ACK). rename → ("name", new name); mode → ("mode", profile).
+  String confirmField;
+  String confirmValue;
   CmdStatus status = CMD_QUEUED;
   uint32_t sentAt = 0;         // millis() of the last TX attempt (Phase 2 retry)
 };
@@ -2362,22 +2366,27 @@ static void handleLoRaPacketJSON(const String &incoming)
     // asleep before it arrived, and the command would brick in AWAITING_ACK
     // with no re-delivery). Delivery happens on the PRESENCE packet at the
     // START of the next wake, where the collar is wide awake for the full
-    // BLE+GPS window. What we DO here: if a still-pending rename's new name now
-    // appears in this collar's telemetry, the change actually stuck even if the
-    // ACK was lost → mark DELIVERED. (Phase 2 adds a post-TX RX window for
-    // same-wake telemetry-triggered delivery + retry/expiry.)
+    // BLE+GPS window. What we DO here: if a still-pending command's expected
+    // value now appears in this collar's telemetry (name for a rename, mode for
+    // a profile change), the change actually stuck even if the ACK was lost →
+    // mark DELIVERED. (Phase 2 adds a post-TX RX window for same-wake
+    // telemetry-triggered delivery + retry/expiry.)
     {
       auto it = g_pending.find(devId);
       if (it != g_pending.end() &&
           it->second.status != CMD_DELIVERED && it->second.status != CMD_FAILED &&
-          it->second.name.length() &&
-          doc["name"].is<const char *>() &&
-          it->second.name == doc["name"].as<const char *>())
+          it->second.confirmField.length() && it->second.confirmValue.length())
       {
-        it->second.status = CMD_DELIVERED;
-        Serial.printf("[OTAP] rename confirmed by telemetry name-match for %u -> DELIVERED\n", devId);
-        pushCommandStatusWS(it->second);
-        g_pending.erase(it);
+        const char *field = it->second.confirmField.c_str();
+        if (doc[field].is<const char *>() &&
+            it->second.confirmValue == doc[field].as<const char *>())
+        {
+          it->second.status = CMD_DELIVERED;
+          Serial.printf("[OTAP] %s confirmed by telemetry (%s=%s) for %u -> DELIVERED\n",
+                        it->second.label.c_str(), field, it->second.confirmValue.c_str(), devId);
+          pushCommandStatusWS(it->second);
+          g_pending.erase(it);
+        }
       }
     }
   }
@@ -3455,8 +3464,18 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       if (doc["name"].is<const char *>())
       {
         c.label = "rename";
-        c.name = doc["name"].as<const char *>();
-        cmd["name"] = c.name;
+        c.confirmField = "name"; // telemetry echoes the applied name back
+        c.confirmValue = doc["name"].as<const char *>();
+        cmd["name"] = c.confirmValue;
+      }
+      else if (doc["profile"].is<const char *>())
+      {
+        // Power/operating profile change. The collar echoes the applied profile
+        // in its telemetry "mode" field, so confirm-by-telemetry watches that.
+        c.label = "mode";
+        c.confirmField = "mode";
+        c.confirmValue = doc["profile"].as<const char *>();
+        cmd["profile"] = c.confirmValue;
       }
       else
       {

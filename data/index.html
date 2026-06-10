@@ -3258,6 +3258,17 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       // (queued -> waiting -> done / failed) from command_status WS pushes.
       const uid = node.device_id;
       const curName = String(node.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+
+      // OTAP: power-profile selector. Pre-select the collar's current mode when
+      // it's one of the four settable profiles; otherwise (e.g. "developer", a
+      // local bench mode) show a disabled "current: X" placeholder.
+      const curMode = String(node.mode || '').toLowerCase();
+      const settable = ['powersave', 'normal', 'active', 'lost'];
+      const isSettable = settable.includes(curMode);
+      const placeholder = isSettable ? '' :
+        `<option value="" selected disabled>${curMode ? 'current: ' + curMode : 'Set power profile…'}</option>`;
+      const opt = (val, label) => `<option value="${val}"${curMode === val ? ' selected' : ''}>${label}</option>`;
+
       return `
         <div class="rename-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;width:100%;">
           <input type="text" id="${prefix}rename-input-${uid}" class="rename-input"
@@ -3268,6 +3279,19 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
                   onclick="window.sendRename('${prefix}',${uid})"
                   style="padding:3px 8px;font-size:0.85em;cursor:pointer;">Rename</button>
           <span class="rename-badge" id="${prefix}cmd-badge-${uid}" style="font-size:0.8em;opacity:0.9;min-width:60px;"></span>
+        </div>
+        <div class="profile-row" style="display:flex;gap:4px;align-items:center;flex-wrap:wrap;width:100%;margin-top:4px;">
+          <select id="${prefix}profile-select-${uid}" class="profile-select"
+                  style="flex:1;min-width:90px;padding:3px 6px;font-size:0.85em;cursor:pointer;">
+            ${placeholder}
+            ${opt('powersave', '🔋 Power saving')}
+            ${opt('normal', '⚖️ Normal')}
+            ${opt('active', '⚡ Active')}
+            ${opt('lost', '🚨 Lost mode')}
+          </select>
+          <button class="profile-btn" id="${prefix}profile-btn-${uid}"
+                  onclick="window.sendProfile('${prefix}',${uid})"
+                  style="padding:3px 8px;font-size:0.85em;cursor:pointer;">Set</button>
         </div>
       `;
     };
@@ -3299,6 +3323,34 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       window.ws.send(JSON.stringify({ type: 'cmd_send', device_id: uid, name: name }));
       console.log('[CMD] rename queued for', uid, '->', name);
       // Optimistic local badge; the authoritative state arrives via command_status.
+      ['', 'card-'].forEach(p => {
+        const b = document.getElementById(`${p}cmd-badge-${uid}`);
+        if (b) { b.textContent = 'queued...'; b.style.color = '#888'; }
+      });
+    };
+
+    // OTAP: submit a power-profile change. Reads the dropdown on whichever
+    // surface was used, confirms before LOST mode (battery-heavy), and sends a
+    // cmd_send with the chosen profile. The base queues it; the shared badge
+    // tracks the lifecycle exactly like a rename.
+    window.sendProfile = function (prefix, uid) {
+      const sel = document.getElementById(`${prefix}profile-select-${uid}`) ||
+                  document.getElementById(`profile-select-${uid}`) ||
+                  document.getElementById(`card-profile-select-${uid}`);
+      if (!sel) { console.error('[CMD] profile select not found for', uid); return; }
+      const profile = sel.value;
+      const settable = ['powersave', 'normal', 'active', 'lost'];
+      if (!settable.includes(profile)) { alert('Pick a power profile first.'); return; }
+      if (profile === 'lost' &&
+          !confirm('Put this collar into LOST mode?\n\nIt will stay awake more, flash its LED beacon, and transmit at maximum power — this uses significantly more battery. Use when a cat is missing.')) {
+        return;
+      }
+      if (!window.ws || window.ws.readyState !== 1) {
+        alert('Not connected to the base station - try again in a moment.');
+        return;
+      }
+      window.ws.send(JSON.stringify({ type: 'cmd_send', device_id: uid, profile: profile }));
+      console.log('[CMD] profile change queued for', uid, '->', profile);
       ['', 'card-'].forEach(p => {
         const b = document.getElementById(`${p}cmd-badge-${uid}`);
         if (b) { b.textContent = 'queued...'; b.style.color = '#888'; }
