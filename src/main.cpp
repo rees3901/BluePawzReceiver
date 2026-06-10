@@ -2030,8 +2030,9 @@ static void handleBinaryAlert(const uint8_t *buf, uint8_t pkt_len, int16_t rssi,
 static bool sendLoRaJson(const String &json)
 {
   int sb = lora.standby();
-  // Use the const char* overload — transmit(String&) takes a non-const ref.
-  int st = lora.transmit(json.c_str());
+  // Byte-buffer transmit — identical to the proven pre-rip-out path
+  // (ec6b62c transmitCommandAt: lora.transmit(cmd.buf, cmd.len)).
+  int st = lora.transmit((uint8_t *)json.c_str(), json.length());
   lora.startReceive(); // ALWAYS re-arm, even on error, or the base goes deaf
   // transmit() fires TxDone on DIO1, which our onReceive ISR also watches, so it
   // sets packetReceived and the next loop would "receive" our own just-sent
