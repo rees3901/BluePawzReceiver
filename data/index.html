@@ -1744,16 +1744,15 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         <div class="debug-console-messages" id="debugConsoleMessages">
           <div style="color: #999; text-align: center; padding: 20px;">No messages yet. Waiting for WebSocket data...</div>
         </div>
-        <!-- V3.6.2: serial-monitor-style PAUSED overlay. Shown while the user
-             has scrolled away from the live end (top). Clicking it jumps back
-             to newest and resumes the live feed. -->
-        <div id="debugPausedBadge" onclick="debugScrollLatest()"
-             style="display:none; position:absolute; bottom:10px; left:50%; transform:translateX(-50%);
-                    background:#dc3545; color:#fff; padding:5px 12px; border-radius:14px;
-                    font-size:0.8em; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.3);
-                    cursor:pointer; z-index:20; white-space:nowrap; user-select:none;">
-          ⏸ Paused — <span id="debugPausedCount">live feed paused</span> · click to resume
-        </div>
+      </div>
+      <!-- Kept outside the scrolling pane so showing the indicator cannot
+           alter its scrollHeight or move the message currently being read. -->
+      <div id="debugPausedBadge" onclick="debugScrollLatest()"
+           style="display:none; width:max-content; margin:6px auto;
+                  background:#dc3545; color:#fff; padding:5px 12px; border-radius:14px;
+                  font-size:0.8em; font-weight:600; box-shadow:0 2px 6px rgba(0,0,0,0.3);
+                  cursor:pointer; white-space:nowrap; user-select:none;">
+        ⏸ Paused — <span id="debugPausedCount">live feed paused</span> · click to resume
       </div>
     </div>
   </div>
@@ -2449,8 +2448,14 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     let debugWasPaused = false;
     let debugScrollWired = false;
 
+    function debugScrollElement() {
+      // The body owns max-height + overflow-y. The inner messages element
+      // expands with its content and therefore never develops a scrollTop.
+      return document.getElementById('debugConsoleBody');
+    }
+
     function debugIsPaused() {
-      const el = document.getElementById('debugConsoleMessages');
+      const el = debugScrollElement();
       return !!el && el.scrollTop > DEBUG_PAUSE_THRESHOLD_PX;
     }
 
@@ -2470,7 +2475,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
 
     function wireDebugScrollListener() {
       if (debugScrollWired) return;
-      const el = document.getElementById('debugConsoleMessages');
+      const el = debugScrollElement();
       if (!el) return;
       el.addEventListener('scroll', () => {
         const paused = debugIsPaused();
@@ -2540,7 +2545,8 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       }
 
       // We're at (or returning to) the live end → pin to newest.
-      messagesDiv.scrollTop = 0;
+      const scrollEl = debugScrollElement();
+      if (scrollEl) scrollEl.scrollTop = 0;
       debugNewSincePause = 0;
       debugWasPaused = false;
       updateDebugPausedIndicator();
@@ -2553,8 +2559,8 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     }
 
     function debugScrollLatest() {
-      const messagesDiv = document.getElementById('debugConsoleMessages');
-      if (messagesDiv) messagesDiv.scrollTop = 0; // newest is at the top
+      const scrollEl = debugScrollElement();
+      if (scrollEl) scrollEl.scrollTop = 0; // newest is at the top
       debugWasPaused = false;
       debugNewSincePause = 0;
       updateDebugConsole(true); // flush anything buffered while paused
