@@ -192,6 +192,11 @@ mode). The receiver doesn't know when. If the receiver pushes a
 queued command "blindly" it almost certainly goes out while the target
 collar is in deep sleep — packet lost forever.
 
+GPIO21's active-low user button is also a collar deep-sleep wake source.
+A single press starts the normal wake cycle, whose first radio action is
+the presence announcement. A second press within 500 ms retains the local
+developer-mode toggle.
+
 ### The fix
 
 Two pieces, mirror images of each other:
