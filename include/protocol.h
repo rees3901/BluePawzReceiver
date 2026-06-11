@@ -100,7 +100,8 @@ enum bp_tlv_type_t : uint8_t
 // transmitter firmware that hardcoded DEVICE_ID_INT = 1..5.
 //
 // The source of truth at runtime is `nodeStates[name].deviceIdNum`,
-// populated from each inbound telemetry packet's `device_id` field.
+// populated from each inbound telemetry packet's `src` identity. Legacy
+// `device_id`/`did` packets remain accepted by the JSON receiver path.
 // See resolveDeviceIdNum() in src/main.cpp — that helper consults
 // nodeStates first and only falls back to this table for first-boot
 // scenarios where no telemetry has been seen yet.

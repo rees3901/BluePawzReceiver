@@ -50,10 +50,10 @@
 //        on the collar's next presence/telemetry, confirmed by a matching ACK
 //        OR by the collar's own telemetry echoing the new name (lost-ACK
 //        resilient). Web UI: per-card rename input + live status badge.
-//        Packet structure: telemetry now carries the SAME envelope as the
-//        other messages (type:"telemetry" + source_id + destination_id); to fit
-//        the 255 B LoRa cap in dev mode, heap/uptime_ms are dropped from OTA
-//        telemetry (still on serial) and fw rides steady-state packets only.
+//        Packet structure: telemetry carries the same routed envelope as the
+//        other messages. Current wire telemetry uses type:"tel", src as both
+//        sender and collar identity, and Unix GPS seconds. The receiver expands
+//        these back to the descriptive internal/UI representation.
 //        The base reports its own GPS as the reserved ID 1 (source_id/device_id
 //        = BASE_ID, type:"telemetry"); the UI maps device_id 1 → the "MyDevice"
 //        self-marker so a packet/log entry reads unambiguously as "from ID 1".
@@ -79,7 +79,8 @@
 //        + 'developer' is now an OTAP-settable profile. + Ping: a ping command
 //        makes the collar emit an immediate telemetry reply (pong:true) with its
 //        current/last values; the base confirms the ping on that pong (UI Ping
-//        button). + SHORT LoRa wire keys to cut airtime: src/dst/mid/seq/did/st/md
+//        button). + SHORT LoRa wire keys to cut airtime: src/dst/mid/seq/st/md,
+//        with compact values tel/CMD/ping, dev, roam and home.
 //        on the air; the base's expandWireKeys() translates them back to the long
 //        keys so the UI, logs and internal code are UNCHANGED.
 // 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —

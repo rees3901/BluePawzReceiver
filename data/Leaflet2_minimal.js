@@ -169,6 +169,7 @@ const markers = {};
 const markerVisibility = {};
 const autoCenter = {};
 const markerLastUpdate = {}; // Track last update time for each marker
+const markerFixUnix = {}; // Latest position timestamp applied to each marker
 // Track which marker is being followed (only one at a time)
 let followedMarkerId = null;
 // Provide globals used by index.html helpers
@@ -197,6 +198,8 @@ function escHtml(s) {
 // handler. Used by both getMarkerIcon() and createMarkerCard() so the
 // fallback look is consistent everywhere.
 function statusColour(status) {
+  if (String(status).startsWith("Last known (stale)")) return "#6c757d";
+  if (String(status).startsWith("Last known")) return "#f0ad4e";
   switch (status) {
     case "Home":    return "#28a745"; // green
     case "Roaming": return "#007bff"; // blue (V3.1.9: was "Out")
@@ -213,8 +216,9 @@ function statusColour(status) {
 // as the labelled icons.
 function unknownDeviceDivIcon(status) {
   const colour = statusColour(status);
+  const retained = String(status).startsWith("Last known");
   return L.divIcon({
-    html: `<div style="width:22px;height:22px;background:${colour};border:2px solid #fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.6);"></div>`,
+    html: `<div style="width:22px;height:22px;background:${colour};border:3px ${retained ? "dashed" : "solid"} #fff;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,0.6);opacity:${retained ? "0.82" : "1"};"></div>`,
     iconSize: [26, 26],
     iconAnchor: [13, 13],
     popupAnchor: [0, -13],
@@ -232,6 +236,12 @@ function getMarkerIcon(id, status) {
       iconAnchor: [16, 32],
       popupAnchor: [0, -32],
     });
+  }
+
+  // Retained positions must never look like a fresh collar location. Use the
+  // same dashed amber/grey marker for every collar, including known cats.
+  if (String(status).startsWith("Last known")) {
+    return unknownDeviceDivIcon(status);
   }
 
   // V3.6.0: `id` is the device_id (UID) key. Icon files are named by the
@@ -606,7 +616,12 @@ function updateMarkerCard(id, status, data) {
 
   // Update status class. Sanitise status to a known token so a malicious
   // status from the wire can't break our class names either.
-  const safeStatus = String(status).toLowerCase().replace(/[^a-z]/g, '');
+  const statusText = String(status);
+  const safeStatus = statusText.startsWith("Last known (stale)")
+    ? "lastknownstale"
+    : statusText.startsWith("Last known")
+      ? "lastknown"
+      : statusText.toLowerCase().replace(/[^a-z]/g, '');
   card.className = `marker-card status-${safeStatus}`;
   // Re-add sheen class (since we just overwrote className)
   card.classList.add("card-sheen");
@@ -622,7 +637,13 @@ function updateMarkerCard(id, status, data) {
   const name = (window.deviceNames && window.deviceNames[id]) || id;
   const iconEl = document.getElementById(`card-icon-${id}`);
   if (iconEl) {
-    if (KNOWN_CATS.includes(name)) {
+    if (String(status).startsWith("Last known")) {
+      const colour = statusColour(status);
+      const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>` +
+                  `<circle cx='12' cy='12' r='9' fill='${colour}' fill-opacity='.82' stroke='white' stroke-width='3' stroke-dasharray='3 2'/>` +
+                  `</svg>`;
+      iconEl.src = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
+    } else if (KNOWN_CATS.includes(name)) {
       let iconStatus;
       switch (status) {
         case "Home":    iconStatus = "Home"; break;
@@ -932,7 +953,26 @@ window.handleTelemetry = function (data, isHydrate) {
         // and the deviceNames map update consistently with the node-state path.
         if (window.setDeviceName) window.setDeviceName(id, name);
         else window.deviceNames[id] = name;
-        const status = data.status || "Unknown";
+        const baseStatus = data.status || "Unknown";
+        const isLastKnown = data.last_known === true ||
+          String(baseStatus).startsWith("Last known");
+        let fixAgeSeconds = Number(data.fix_age_s);
+        if (!Number.isFinite(fixAgeSeconds) && Number(data.time_unix) > 0) {
+          fixAgeSeconds = Math.max(0, Math.floor(Date.now() / 1000 - Number(data.time_unix)));
+        }
+        const staleLastKnown = isLastKnown &&
+          (data.stale === true || (Number.isFinite(fixAgeSeconds) && fixAgeSeconds > 3600));
+        const formatFixAge = (seconds) => {
+          if (!Number.isFinite(seconds)) return "";
+          if (seconds < 60) return `${Math.floor(seconds)}s old`;
+          if (seconds < 3600) return `${Math.floor(seconds / 60)}m old`;
+          if (seconds < 86400) return `${Math.floor(seconds / 3600)}h old`;
+          return `${Math.floor(seconds / 86400)}d old`;
+        };
+        const ageLabel = formatFixAge(fixAgeSeconds);
+        const status = isLastKnown
+          ? `Last known${staleLastKnown ? " (stale)" : ""}${ageLabel ? `, ${ageLabel}` : ""}`
+          : baseStatus;
 
         // Update last received time for this marker
         markerLastUpdate[id] = Date.now();
@@ -971,12 +1011,19 @@ window.handleTelemetry = function (data, isHydrate) {
         }
 
         // Update position if we have coordinates
-        if (data.lat && data.lon) {
+        if (Number.isFinite(Number(data.lat)) && Number.isFinite(Number(data.lon))) {
           console.log(`Updating ${id} position to:`, data.lat, data.lon);
-          const newPos = [data.lat, data.lon];
+          const newPos = [Number(data.lat), Number(data.lon)];
+          const incomingFixUnix = Number(data.time_unix) || 0;
+          const hasNewerPosition = isLastKnown && markerFixUnix[id] &&
+            incomingFixUnix && markerFixUnix[id] > incomingFixUnix;
 
-          // Use setLatLng without animation to avoid rendering issues
-          markers[id].setLatLng(newPos);
+          // A delayed retained reply must not move the marker backwards over a
+          // newer live fix already displayed in this browser session.
+          if (!hasNewerPosition) {
+            markers[id].setLatLng(newPos);
+            markerFixUnix[id] = incomingFixUnix || Math.floor(Date.now() / 1000);
+          }
 
           // Force map to recalculate marker positions
           markers[id]._updateZIndex();
@@ -990,7 +1037,7 @@ window.handleTelemetry = function (data, isHydrate) {
             window.breadcrumbs[id] = data.trail
               .filter((p) => Array.isArray(p) && p.length >= 2)
               .map((p) => [p[0], p[1]]);
-          } else {
+          } else if (!isLastKnown) {
             if (!window.breadcrumbs[id]) {
               window.breadcrumbs[id] = [];
             }
@@ -1034,7 +1081,7 @@ window.handleTelemetry = function (data, isHydrate) {
           });
 
           // Auto-center map if this marker is being followed
-          if (followedMarkerId === id) {
+          if (followedMarkerId === id && !hasNewerPosition) {
             map.setView(newPos, 16);
           }
 

@@ -73,10 +73,10 @@ LoRaWAN public networks normally use `0x34`.
 
 ## 3. Wire format (JSON)
 
-Everything on the radio is human-readable JSON. We chose this over a
-binary TLV protocol on purpose for the V3 rollout — debuggability and
-flexibility were worth more than the airtime savings, given that even
-five collars × ~12 packets/hour barely tickles the duty cycle.
+Everything on the radio is human-readable JSON. Frequently repeated wire
+keys are deliberately compact to reduce airtime while retaining JSON's
+debuggability. The receiver expands them immediately after parsing, so
+the web UI, logs, and internal state continue to use descriptive names.
 
 The binary work is preserved on `wip/binary-migration` branches in
 both repos for future revival if power becomes a constraint.
@@ -85,92 +85,99 @@ both repos for future revival if power becomes a constraint.
 
 Three variants depending on the wake outcome.
 
-**`outanabout`** — normal GPS fix:
+**Normal GPS fix**:
 
 ```jsonc
 {
-  "msg_id":   42,            // monotonic per-collar (RTC-persisted)
-  "device_id": 4,            // immutable numeric identity
-  "id":       "Podge",       // current friendly name
-  "status":   "outanabout",
-  "mode":     "normal",      // current operating profile
-  "lat":      51.873782,
-  "lon":     -2.239428,
-  "time":     "2026-05-28 14:31:02"   // optional, GPS time
+  "type": "tel",
+  "src": 430,                 // source_id
+  "dst": 1,                   // destination_id (base)
+  "seq": 42,                  // telemetry msg_id
+  "name": "Podge",
+  "st": "roam",               // status
+  "md": "normal",             // mode/profile ("dev" for developer)
+  "lat": 51.873782,
+  "lon": -2.239428,
+  "time": 1781188262          // GPS UTC as Unix seconds
 }
 ```
 
-**`BLEHome`** — BLE beacon detected, GPS not acquired:
+The same envelope is used for `BLEHome` and `invalidGPSLoc`; only `st`
+and the optional location fields differ.
 
-```jsonc
-{
-  "msg_id":   43,
-  "device_id": 4,
-  "id":       "Podge",
-  "status":   "BLEHome",
-  "mode":     "normal"
-  // no lat/lon — receiver shows the cat at the home marker
-}
-```
+| Wire key | Expanded receiver key | Meaning |
+|---|---|---|
+| `src` | `source_id` | Sender |
+| `dst` | `destination_id` | Intended recipient |
+| `mid` | `message_id` | Command ID, echoed by replies |
+| `seq` | `msg_id` | Collar telemetry sequence |
+| `st` | `status` | Telemetry state |
+| `md` | `mode` | Operating profile |
 
-**`invalidGPSLoc`** — GPS timed out:
+For collar-originated packets, `src` is also the immutable device identity;
+the receiver derives its internal `device_id` from it. `type:"tel"` is
+normalized to `type:"telemetry"`, and numeric Unix `time` is converted back
+to `YYYY-MM-DD HH:MM:SS` UTC before logs or WebSocket clients see it.
+`name`, `lat`, and `lon` stay unchanged. The receiver also accepts legacy
+`type:"telemetry"`, `did`, and string-formatted `time` during migration.
 
-```jsonc
-{
-  "msg_id":   44,
-  "device_id": 4,
-  "id":       "Podge",
-  "status":   "invalidGPSLoc",
-  "mode":     "normal"
-}
-```
+Compact wire values are normalized before downstream processing:
 
-The receiver's JSON normaliser maps these to four UI states:
-`Home` / `Out` / `Offline` / `Error`.
+| Wire value | Receiver/internal value |
+|---|---|
+| `md:"dev"` | `mode:"developer"` |
+| `st:"roam"` | `status:"roaming"` |
+| `st:"home"` | `status:"BLEHome"` |
+| `st:"last"` | `status:"Last known"` retained GPS fix |
+| `type:"ping"` | `type:"presence"` wake announcement |
+| `type:"CMD"` | `type:"command"` |
 
 ### 3.2 Commands (base → collar)
 
-Targeting rule: a command with a `device` field that doesn't match the
-collar's current name (or `"broadcast"`) is ignored. A command with a
-`device_id` field that doesn't match the collar's immutable numeric id
-is also ignored. Commands with neither field are accepted for
-backward-compat but logged.
+Commands use the same compact envelope and target immutable numeric IDs.
+`src=1` is the base station and `dst=999` is broadcast.
 
 **Mode change**:
 
 ```jsonc
-{ "cmd":"mode", "profile":"lost", "device":"Podge", "msg_id":42 }
+{ "type":"CMD", "src":1, "dst":430, "mid":42, "md":"lost" }
 ```
 
-**Status request** (collar responds with full state including BLE RSSI
-threshold, lost-mode elapsed time, mode, etc.):
+Valid profiles are `powersave`, `normal`, `active`, `lost`, and
+`developer`.
+
+**Rename**:
 
 ```jsonc
-{ "cmd":"get_status", "device":"Podge", "msg_id":43 }
+{ "type":"CMD", "src":1, "dst":430, "mid":43, "name":"Whiskers" }
 ```
 
-**Rename** — targets by immutable id because the current name may be
-the default `Device-N`:
+**Ping**:
 
 ```jsonc
-{ "cmd":"set_name", "device_id":4, "name":"Whiskers", "msg_id":44 }
+{ "type":"CMD", "src":1, "dst":430, "mid":44, "ping":true }
 ```
 
-### 3.3 ACKs (collar → base)
+A ping does not use a separate pong packet type. It causes an immediate
+ordinary telemetry response with `pong:true` and `mid` echoing the ping
+command. A current GPS fix is used when available; otherwise the last
+valid fix retained across deep sleep is returned with `st:"last"` and its
+original Unix timestamp. Retained replies omit `sats`; the receiver marks
+them as last-known, calculates their age, and treats fixes over 60 minutes
+old as stale. The map uses a distinct dashed marker, never adds retained
+fixes to breadcrumbs, and will not replace a newer stored or displayed fix
+with an older one. If the collar has never obtained a fix, `st` is
+`invalidGPSLoc`.
 
-```jsonc
-{ "ack":"mode",     "profile":"lost", "power":22, "sleep":30,
-  "device":"Podge", "msg_id":42 }
+The collar's start-of-wake announcement is separately encoded as
+`{"type":"ping",...}`. The command ping above is unambiguous because it
+uses `type:"CMD"` with a `ping:true` parameter.
 
-{ "ack":"set_name", "ok":true,
-  "device":"Whiskers", "id":"Whiskers", "device_id":4, "msg_id":44 }
+### 3.3 ACKs and NACKs
 
-// get_status response
-{ "status":"ok", "device":"Podge", "mode":"lost", "power":22, "sleep":30,
-  "msg_id":12345, "gps_warm":true, "home_cycles":0,
-  "home_rssi_threshold":-65, "lost_mode_s":1832,
-  "log":"127 entries, 42 KB" }
-```
+Configuration commands return compact `type:"ack"` or `type:"nack"`
+messages and echo `mid`. Ping is confirmed by its solicited telemetry
+instead of an additional ACK.
 
 ---
 
@@ -253,10 +260,11 @@ the collar and survives a reset.
 
 | Mode | TX dBm | Sleep | LED | Purpose |
 |---|---|---|---|---|
-| `normal` | 19 | 5 min | 5 flashes | Default |
+| `normal` | 17 | 5 min | 5 flashes | Default |
 | `powersave` | 10 | 20 min | 5 flashes | Cat is reliably indoors |
-| `active` | 19 | 1 min | 5 flashes | Recent activity / actively watching |
+| `active` | 17 | 1 min | 5 flashes | Recent activity / actively watching |
 | `lost` | 22 | 30 s | continuous beacon | Cat missing |
+| `developer` | 14 | 30 s | 3 flashes | Rapid diagnostics and testing |
 
 ### Lost-mode auto-revert (the subtle bug we fixed)
 
@@ -275,7 +283,7 @@ g_lostModeAccumS += (millis() / 1000) + upcomingSleepS;
 
 // At the top of each wake (in setup):
 if (g_lostModeAccumS >= LOST_MODE_MAX_DURATION_S) {
-    saveOperatingMode("active");
+    saveOperatingMode("normal");
     g_lostModeAccumS = 0;
 }
 ```
@@ -285,7 +293,7 @@ special alert packet** — the previous version sent one with no
 `status` field, which the receiver's JSON normaliser tagged as
 `"Error"` and the cat dropped off the map at the exact moment recovery
 should have happened. Now the next routine telemetry packet carries
-`mode: "active"` and the change shows up naturally.
+`mode: "normal"` and the change shows up naturally.
 
 ---
 
@@ -302,15 +310,15 @@ A scan hit only counts as "home" if **all three** conditions match:
    receiver advertised `"HOME"` and the collar checked `"Home"`, so
    home detection was silently broken).
 2. The beacon includes an RSSI reading (`haveRSSI()` true).
-3. RSSI ≥ `HOME_RSSI_THRESHOLD_DBM` (default `-65`).
+3. RSSI ≥ `HOME_RSSI_THRESHOLD_DBM` (default `-90`).
 
-The combination — beacon at -12 dBm, threshold at -65 dBm — keeps
+The combination — beacon at -12 dBm, threshold at -90 dBm — keeps
 "home" reliably confined to indoors. Walk-test to tune; the threshold
-is reported in `get_status` for tuning visibility.
+is visible in the shared configuration and serial diagnostics.
 
-After `HOME_SLEEP_CYCLES` (default 5) consecutive home-detected wakes
-the collar sends a `"BLEHome"` status packet. This is throttled because
-otherwise an indoor cat would TX every wake interval for nothing.
+Each profile has its own `home_heartbeat_cycles` value. After that many
+consecutive home-detected wakes the collar sends a wire `st:"home"` heartbeat.
+This avoids transmitting on every indoor wake.
 
 ---
 
@@ -320,7 +328,7 @@ The collar has three persistence tiers:
 
 | Tier | Survives | Used for |
 |---|---|---|
-| `RTC_DATA_ATTR` (RTC memory) | deep sleep only — lost on full reset / USB unplug | `g_msgCounter`, `g_currentMode`, `g_lostModeAccumS`, `g_homeBeaconCycles`, `g_gpsWarmedUp` |
+| `RTC_DATA_ATTR` (RTC memory) | deep sleep only — lost on full reset / USB unplug | counters, mode, lost timer, home cycles, GPS warm state, and last valid GPS fix |
 | `Preferences` (NVS, in flash) | everything except erase-flash | `g_senderName` (set via `set_name`), backup `msg_id` every 10 packets |
 | `LittleFS` (in flash) | as NVS | `/track_log.csv` (3 MB capped, rotated) |
 
@@ -328,8 +336,8 @@ The receiver has two tiers:
 
 | Tier | Survives | Used for |
 |---|---|---|
-| In-memory `std::map<String, NodeState>` | reboot wipes it | per-collar state for the UI |
-| `LittleFS` | reboots | `/home_location.json`, `/messages.json` (circular log, 500 entries cap) |
+| In-memory maps keyed by numeric device ID | reboot wipes working state | per-collar state, trails, pending commands |
+| `LittleFS` | reboots | home location, telemetry snapshot, developer mode, and circular message log |
 
 ---
 
@@ -337,17 +345,15 @@ The receiver has two tiers:
 
 Every collar has:
 
-- **`DEVICE_ID_INT`** — immutable numeric (1–255), set at flash time,
-  used for command targeting. Think of it as the MAC address.
+- **`DEVICE_ID_INT`** — immutable numeric (100–998), derived from the
+  ESP32 MAC address and used for command targeting.
 - **`g_senderName`** — friendly label (`"Podge"`, `"Macy"`, `"Device-4"`),
   lives in NVS, changes any time via `set_name`. Pure UX, no
   load-bearing role in the protocol.
 
-Commands target by **name** for `mode` / `get_status` and by
-**device_id** for `set_name` (because the name may be unknown/default).
-Telemetry always carries both. The receiver's `NodeState` tracks both
-and detects renames by spotting "same device_id, different name" and
-dropping the stale name's NodeState entry.
+Commands target the immutable numeric **device_id**. Friendly names are
+display labels only, so renaming a collar cannot break command routing.
+Receiver state, trails, and pending commands are keyed by device_id.
 
 ---
 
@@ -415,9 +421,8 @@ Versions are owned per-repo:
   [`BluePawzReceiver/include/version.h`](https://github.com/rees3901/BluePawzReceiver/blob/main/include/version.h)
   as `#define BLUEPAWZ_VERSION`. Surfaced on the TFT, on the web UI
   title, and at `GET /version`.
-- **Transmitter** version is currently uncoupled from the receiver's —
-  collars don't yet send their version in telemetry. (Adding a
-  `"fw":"3.0.0"` field to the telemetry JSON is a likely MINOR bump.)
+- **Transmitter** version is currently uncoupled from the receiver's and is
+  intentionally omitted from routine telemetry to conserve airtime.
 
 The two MAJORs should always agree (a V3 receiver must only talk to V3
 collars). MINOR / PATCH can drift between halves — receivers are usually

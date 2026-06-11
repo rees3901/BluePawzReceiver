@@ -1164,6 +1164,16 @@
     .marker-card.status-offline {
       border-color: #6c757d;
     }
+
+    .marker-card.status-lastknown {
+      border-color: #f0ad4e;
+      background: linear-gradient(135deg, #ffffff 0%, #fff8e8 100%);
+    }
+
+    .marker-card.status-lastknownstale {
+      border-color: #6c757d;
+      background: linear-gradient(135deg, #ffffff 0%, #f1f3f5 100%);
+    }
     
     /* Special styling for MyDevice card */
     .marker-card.my-device-card {
@@ -3264,8 +3274,8 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       const curName = String(node.name || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 
       // OTAP: power-profile selector. Pre-select the collar's current mode when
-      // it's one of the four settable profiles; otherwise (e.g. "developer", a
-      // local bench mode) show a disabled "current: X" placeholder.
+      // it's one of the five settable profiles; otherwise show a disabled
+      // "current: X" placeholder.
       const curMode = String(node.mode || '').toLowerCase();
       const settable = ['powersave', 'normal', 'active', 'lost', 'developer'];
       const isSettable = settable.includes(curMode);

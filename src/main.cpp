@@ -1429,12 +1429,11 @@ void updateNodeState(const JsonDocument &doc)
   // collar may have applied it to RAM only and not persisted it — so updating
   // the card from the ACK shows the rename as "done" seconds after the user
   // submits, then it snaps back to the old name on the next real report (the
-  // false positive being removed here). ACK / pong / get_status responses no
-  // longer change the label; only an actual telemetry check-in does. (We still
+  // false positive being removed here). ACK / legacy status responses no
+  // longer change the label; solicited pong telemetry is genuine telemetry and
+  // may update it. (We still
   // initialise it on first contact so a brand-new node is never blank.)
-  bool isResponsePacket = doc["ack"].is<String>() ||
-                          (doc["pong"].is<bool>() && doc["pong"].as<bool>()) ||
-                          (doc["status"] == "ok");
+  bool isResponsePacket = doc["ack"].is<String>() || (doc["status"] == "ok");
   if (!isResponsePacket || state.deviceId.length() == 0)
   {
     state.deviceId = deviceName; // the editable label — telemetry-confirmed only
@@ -1445,8 +1444,7 @@ void updateNodeState(const JsonDocument &doc)
 
   // V3.2.5: every telemetry packet now carries the collar's current
   // mode (transmitter doc["mode"] = g_currentMode). Pick it up here so
-  // the C&C panel reflects reality without needing an explicit
-  // get_status round-trip. Only updates when the field exists AND we
+  // the C&C panel reflects reality. Only updates when the field exists AND we
   // weren't going to set it more authoritatively in the ACK branch
   // below (the ACK branch checks `ack:"mode"` and reads `profile`).
   if (doc["mode"].is<String>() && !doc["ack"].is<String>())
@@ -1459,9 +1457,8 @@ void updateNodeState(const JsonDocument &doc)
     }
   }
 
-  // V3.8.x: the collar no longer sends command responses (ack / pong /
-  // get_status) -- the remote-command system was removed. Every inbound packet
-  // is now plain telemetry, so just push the updated node state to clients.
+  // ACK/NACK routing happens before this path. Telemetry, including solicited
+  // pong telemetry, reaches here and refreshes the collar state.
   broadcastNodeStates();
 }
 
@@ -2201,6 +2198,33 @@ static void expandWireKeys(JsonDocument &doc)
       doc[k.l] = v;
     }
   }
+
+  // Current packets use src as both sender and immutable collar identity.
+  // Keep accepting legacy did/device_id, but synthesize device_id when it is
+  // absent so all downstream state/UI code remains unchanged.
+  if (doc["device_id"].isNull() && doc["source_id"].is<int>())
+  {
+    uint16_t sourceId = (uint16_t)doc["source_id"].as<int>();
+    const char *type = doc["type"] | "";
+    if (sourceId != BASE_ID && sourceId != BROADCAST_ID &&
+        (strcmp(type, "tel") == 0 || strcmp(type, "telemetry") == 0 ||
+         strcmp(type, "ping") == 0 || strcmp(type, "presence") == 0 ||
+         strcmp(type, "ack") == 0 ||
+         strcmp(type, "nack") == 0))
+    {
+      doc["device_id"] = sourceId;
+    }
+  }
+
+  // "tel" is the compact radio value. Internally and over WebSocket retain the
+  // descriptive value expected by existing logs and browser code.
+  if (doc["type"] == "tel")
+    doc["type"] = "telemetry";
+  else if (doc["type"] == "ping")
+    doc["type"] = "presence";
+  else if (doc["type"] == "CMD")
+    doc["type"] = "command";
+
   static const struct { const char *s; const char *l; } STR_KEYS[] = {
       {"st", "status"}, {"md", "mode"}};
   for (auto &k : STR_KEYS)
@@ -2212,7 +2236,39 @@ static void expandWireKeys(JsonDocument &doc)
       doc[k.l] = v;
     }
   }
+
+  if (doc["mode"] == "dev")
+    doc["mode"] = "developer";
+  if (doc["status"] == "roam")
+    doc["status"] = "roaming";
+  else if (doc["status"] == "home")
+    doc["status"] = "BLEHome";
 }
+
+// Convert Unix seconds from the compact collar wire payload back to the same
+// human-readable UTC representation used before the wire-format change.
+static String formatUnixUtc(uint32_t unixTime)
+{
+  time_t raw = (time_t)unixTime;
+  struct tm utc;
+  gmtime_r(&raw, &utc);
+  char out[24];
+  snprintf(out, sizeof(out), "%04d-%02d-%02d %02d:%02d:%02d",
+           utc.tm_year + 1900, utc.tm_mon + 1, utc.tm_mday,
+           utc.tm_hour, utc.tm_min, utc.tm_sec);
+  return String(out);
+}
+
+static uint32_t receiverUnixUtc()
+{
+  if (!gps.date.isValid() || !gps.time.isValid())
+    return 0;
+  return gpsToUnixTime(
+      gps.date.year(), gps.date.month(), gps.date.day(),
+      gps.time.hour(), gps.time.minute(), gps.time.second());
+}
+
+#define LAST_KNOWN_STALE_S 3600UL
 
 // ═════════════════════════════════════════════════════════════════════
 // JSON HANDLER (V3 active path)
@@ -2229,9 +2285,33 @@ static void handleLoRaPacketJSON(const String &incoming)
     return;
   }
 
-  // OTAP: expand the SHORT wire keys (src/dst/mid/seq/did/st/md) to long keys so
+  // Expand compact wire keys and normalize tel/src identity so
   // everything below — and the web UI — keeps working on the verbose names.
   expandWireKeys(doc);
+
+  // New collars send GPS UTC as Unix seconds. Preserve the numeric source for
+  // diagnostics, then restore the existing human-readable `time` field before
+  // logging, persistence, or WebSocket broadcast. Legacy string time passes
+  // through untouched.
+  if (doc["time"].is<uint32_t>() || doc["time"].is<int>())
+  {
+    uint32_t unixTime = doc["time"].as<uint32_t>();
+    doc["time_unix"] = unixTime;
+    doc["time"] = formatUnixUtc(unixTime);
+  }
+
+  if (doc["status"] == "last")
+  {
+    doc["last_known"] = true;
+    uint32_t nowUnix = receiverUnixUtc();
+    uint32_t fixUnix = doc["time_unix"] | (uint32_t)0;
+    if (nowUnix >= fixUnix && fixUnix != 0)
+    {
+      uint32_t ageS = nowUnix - fixUnix;
+      doc["fix_age_s"] = ageS;
+      doc["stale"] = ageS > LAST_KNOWN_STALE_S;
+    }
+  }
 
   // ── OTAP type-router ────────────────────────────────────────────────
   // The unified envelope carries an explicit "type". Route control packets
@@ -2296,7 +2376,7 @@ static void handleLoRaPacketJSON(const String &incoming)
       }
       return;
     }
-    // type == "telemetry" (or anything unrecognised) → fall through below.
+    // type == "telemetry" (including normalized wire "tel") falls through.
   }
 
   // V3.2.5: response packets (mode ACK, status response, pong, set_name
@@ -2308,7 +2388,6 @@ static void handleLoRaPacketJSON(const String &incoming)
   //
   // Detect responses by their explicit markers:
   //   - "ack":<type>      mode / set_name / set_geofence
-  //   - "pong":true       ping response
   //   - "status":"ok" + "mode" + no "lat"   get_status response
   //
   // Route responses to updateNodeState() (which handles the ACK branch
@@ -2322,7 +2401,6 @@ static void handleLoRaPacketJSON(const String &incoming)
   // but never reached the map tile or the web log. Match the response by its
   // actual "ok" marker so no-GPS telemetry still displays.
   bool isResponse = doc["ack"].is<const char *>() ||
-                    doc["pong"].is<bool>() ||
                     (doc["status"] == "ok" &&
                      doc["mode"].is<const char *>() &&
                      !doc["lat"].is<float>() &&
@@ -2377,7 +2455,12 @@ static void handleLoRaPacketJSON(const String &incoming)
       String lowerStatus = originalStatus;
       lowerStatus.toLowerCase();
 
-      if (lowerStatus.indexOf("home") != -1)
+      if (lowerStatus == "last")
+      {
+        bool stale = doc["stale"] | false;
+        doc["status"] = stale ? "Last known (stale)" : "Last known";
+      }
+      else if (lowerStatus.indexOf("home") != -1)
       {
         doc["status"] = "Home";
       }
@@ -2403,15 +2486,36 @@ static void handleLoRaPacketJSON(const String &incoming)
 
     String payload;
     serializeJson(doc, payload);
-    catPayloads[devId] = payload; // keyed by UID
+    bool storePayload = true;
+    bool isLastKnown = doc["last_known"] | false;
+    if (isLastKnown)
+    {
+      auto existing = catPayloads.find(devId);
+      if (existing != catPayloads.end())
+      {
+        JsonDocument previous;
+        if (deserializeJson(previous, existing->second) == DeserializationError::Ok &&
+            previous["lat"].is<float>() && previous["lon"].is<float>())
+        {
+          uint32_t previousFix = previous["time_unix"] | (uint32_t)0;
+          uint32_t retainedFix = doc["time_unix"] | (uint32_t)0;
+          bool previousWasLastKnown = previous["last_known"] | false;
+          storePayload = previousWasLastKnown && retainedFix >= previousFix;
+        }
+      }
+    }
+    if (storePayload)
+      catPayloads[devId] = payload; // keyed by UID
 
     // V3.4.0: append to the per-cat trail ring buffer + flag state dirty
     // so the LittleFS snapshot + reload-survivable breadcrumbs stay current.
-    if (doc["lat"].is<float>() && doc["lon"].is<float>())
+    if (!isLastKnown &&
+        doc["lat"].is<float>() && doc["lon"].is<float>())
     {
       recordTrailPoint(devId, doc["lat"].as<float>(), doc["lon"].as<float>());
     }
-    g_stateDirty = true;
+    if (storePayload || !isLastKnown)
+      g_stateDirty = true;
 
     serializeJsonPretty(doc, Serial);
     Serial.println();
@@ -2462,11 +2566,16 @@ static void handleLoRaPacketJSON(const String &incoming)
     if (doc["pong"].is<bool>() && doc["pong"].as<bool>())
     {
       auto it = g_pending.find(devId);
+      uint32_t replyMid = doc["message_id"].is<int>()
+                              ? (uint32_t)doc["message_id"].as<int>()
+                              : 0;
       if (it != g_pending.end() && it->second.label == "ping" &&
+          it->second.msgId == replyMid &&
           it->second.status != CMD_DELIVERED && it->second.status != CMD_FAILED)
       {
         it->second.status = CMD_DELIVERED;
-        Serial.printf("[OTAP] ping confirmed by pong from %u -> DELIVERED\n", devId);
+        Serial.printf("[OTAP] ping msg_id=%lu confirmed by telemetry from %u -> DELIVERED\n",
+                      (unsigned long)replyMid, devId);
         pushCommandStatusWS(it->second);
         g_pending.erase(it);
       }
@@ -2773,7 +2882,6 @@ void handleDeviceOwnGPS()
         deviceLocation["lon"]         = gps.location.lng();
         deviceLocation["status"]      = "Home";   // UI status: green/home marker
         deviceLocation["satellites"]  = gps.satellites.value();
-        deviceLocation["hdop"]        = gps.hdop.value();
         deviceLocation["received_at"] = millis();
 
         if (gps.time.isValid())
@@ -3541,7 +3649,7 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
       // the UI's WS message still uses its own long-ish keys (device_id/name/
       // profile/ping), read below.
       JsonDocument cmd;
-      cmd["type"] = "command";
+      cmd["type"] = "CMD";
       cmd["src"] = BASE_ID;
       cmd["dst"] = dest;
       cmd["mid"] = c.msgId;
@@ -3560,7 +3668,7 @@ void handleWebSocketMessage(uint8_t num, uint8_t *payload, size_t length)
         c.label = "mode";
         c.confirmField = "mode";
         c.confirmValue = doc["profile"].as<const char *>();
-        cmd["md"] = c.confirmValue; // short wire key for the mode parameter
+        cmd["md"] = (c.confirmValue == "developer") ? "dev" : c.confirmValue;
       }
       else if (doc["ping"].is<bool>() || doc["ping"].is<int>())
       {

@@ -30,7 +30,7 @@
 #define LORA_SF 9           // Spreading Factor (7-12). 9 = range/airtime balance
 #define LORA_BW_KHZ 125.0   // Bandwidth (kHz). 125 narrows noise floor for +3dB
 #define LORA_CR 5           // Coding Rate 4/5 (auto-detected by RX via header)
-#define LORA_PREAMBLE 16    // Preamble length
+#define LORA_PREAMBLE 16    // Preamble length (base RX is always-on, 16 is ample)
 #define LORA_USE_CRC 1      // Enable CRC
 #define LORA_SYNC_WORD 0x12 // Private network sync word
 
@@ -51,8 +51,7 @@
 #define BLE_INITIAL_SCAN_S 10 // Initial BLE scan on wake
 #define BLE_SCAN_WINDOW_S 3   // BLE scan window during GPS
 #define BEACON_NAME "Home"    // BLE beacon device name
-#define HOME_SLEEP_CYCLES 5   // Cycles at home before "BLEHome" TX
-
+#define HOME_RSSI_THRESHOLD_DBM (-90)
 // ─────────────────────────────────────────────
 // Operating Mode Profiles
 // ─────────────────────────────────────────────
@@ -65,6 +64,7 @@ struct OperatingMode
     uint8_t led_flash_count;         // LED flashes per TX success
     bool led_beacon_mode;            // Continuous LED beacon while awake
     uint16_t led_beacon_interval_ms; // Interval between beacon flashes
+    uint8_t home_heartbeat_cycles;   // Home cycles before GPS heartbeat TX
 };
 
 // ─────────────────────────────────────────────
@@ -74,11 +74,12 @@ struct OperatingMode
 // NORMAL - Daily tracking, balanced performance
 const OperatingMode MODE_NORMAL = {
     .name = "normal",
-    .lora_power_dbm = 19,    // Good range, not max power
+    .lora_power_dbm = 17,
     .sleep_interval_s = 300, // 5 minutes (will become 10 min in production)
     .led_flash_count = 5,
     .led_beacon_mode = false,
-    .led_beacon_interval_ms = 0};
+    .led_beacon_interval_ms = 0,
+    .home_heartbeat_cycles = 10};
 
 // POWERSAVE - Maximum battery life at home
 const OperatingMode MODE_POWERSAVE = {
@@ -87,16 +88,18 @@ const OperatingMode MODE_POWERSAVE = {
     .sleep_interval_s = 1200, // 20 minutes
     .led_flash_count = 5,     // Keep standard flash (negligible power)
     .led_beacon_mode = false,
-    .led_beacon_interval_ms = 0};
+    .led_beacon_interval_ms = 0,
+    .home_heartbeat_cycles = 10};
 
 // ACTIVE - Frequent updates for monitoring
 const OperatingMode MODE_ACTIVE = {
     .name = "active",
-    .lora_power_dbm = 19,   // Same as normal
+    .lora_power_dbm = 17,
     .sleep_interval_s = 60, // 1 minute
     .led_flash_count = 5,
     .led_beacon_mode = false,
-    .led_beacon_interval_ms = 0};
+    .led_beacon_interval_ms = 0,
+    .home_heartbeat_cycles = 5};
 
 // LOST - Emergency mode with visual beacon
 const OperatingMode MODE_LOST = {
@@ -105,14 +108,34 @@ const OperatingMode MODE_LOST = {
     .sleep_interval_s = 30,        // 30 seconds (still need battery conservation!)
     .led_flash_count = 10,         // More flashes on TX
     .led_beacon_mode = true,       // Enable continuous beacon
-    .led_beacon_interval_ms = 2000 // Flash every 2 seconds
+    .led_beacon_interval_ms = 2000, // Flash every 2 seconds
+    .home_heartbeat_cycles = 3
 };
+
+// DEVELOPER - Rapid cycle for testing and diagnostics
+const OperatingMode MODE_DEVELOPER = {
+    .name = "developer",
+    .lora_power_dbm = 14,
+    .sleep_interval_s = 30,
+    .led_flash_count = 3,
+    .led_beacon_mode = false,
+    .led_beacon_interval_ms = 0,
+    .home_heartbeat_cycles = 2};
+
+// Developer-mode button configuration (used by collar firmware)
+#define DEV_MODE_BUTTON_PIN 21
+#define DEV_MODE_DOUBLE_PRESS_MS 500
 
 // ─────────────────────────────────────────────
 // Lost Mode Safety
 // ─────────────────────────────────────────────
 #define LOST_MODE_MAX_DURATION_S 7200    // 2 hours (120 minutes)
-#define LOST_MODE_FALLBACK_MODE "active" // Revert to active mode after timeout
+#define LOST_MODE_FALLBACK_MODE "normal" // Revert to normal mode after timeout
+
+// Geofence configuration (used by collar firmware)
+#define GEOFENCE_DEFAULT_RADIUS_M 500.0
+#define GEOFENCE_ESCALATE_MODE "active"
+#define GEOFENCE_HYSTERESIS_M 20.0
 
 // ─────────────────────────────────────────────
 // Remote Command Protocol
@@ -123,7 +146,9 @@ const OperatingMode MODE_LOST = {
 // {"cmd":"mode","profile":"normal"}
 // {"cmd":"mode","profile":"active"}
 // {"cmd":"mode","profile":"powersave"}
-// {"cmd":"get_status"}           // Request current mode/battery/GPS status
+// {"cmd":"mode","profile":"developer"}
+// {"type":"CMD","src":1,"dst":N,"mid":42,"ping":true}
+// Ping produces immediate telemetry tagged pong:true.
 
 // Response structure (node → base station):
 // {"ack":"mode","profile":"lost","power":22,"sleep":30}
@@ -142,6 +167,8 @@ inline const OperatingMode *getModeByName(const char *name)
         return &MODE_ACTIVE;
     if (strcmp(name, "lost") == 0)
         return &MODE_LOST;
+    if (strcmp(name, "developer") == 0)
+        return &MODE_DEVELOPER;
     return &MODE_NORMAL; // Default fallback
 }
 

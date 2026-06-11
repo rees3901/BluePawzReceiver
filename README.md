@@ -150,8 +150,8 @@ Open `http://cattracker.local` or the printed IP in a browser.
   clear log buttons.
 - **ℹ️ System Info**: Wi-Fi status, WebSocket state, page uptime.
 - **📡 Command & Control**: one card per known collar. Each card has
-  a mode selector + apply button, status-request 🔄 button, and a
-  rename ✏️ button.
+  rename and ping controls plus a profile selector for `powersave`,
+  `normal`, `active`, `lost`, and `developer`.
 
 ---
 
@@ -190,22 +190,14 @@ useful for scripting too):
 | GET | `/messages.json` | Full circular log buffer download |
 | POST | `/clear-log` | Wipe the LittleFS log file |
 | GET | `/node-states` | Current operating-mode state of every known collar |
-| POST | `/send-command` | Queue a downlink command (see below) |
 | GET | `/home` | Returns `{"lat":...,"lon":...}` |
 | POST | `/home?lat=&lon=` | Save new home location (20 km sanity-check) |
-| GET | `/version` | Returns `{"version":"3.0.0"}` |
+| GET | `/version` | Firmware and filesystem build information |
+| GET | `/netmode` | Home/roaming network state and collar BLE sightings |
 
-### `/send-command` actions
-
-```http
-POST /send-command?device=Podge&action=mode&profile=lost
-POST /send-command?device=Podge&action=status
-POST /send-command?action=rename&device_id=4&name=Whiskers
-```
-
-The `mode` and `status` actions match by collar **name**.
-The `rename` action targets by immutable **`device_id`** because the
-current name may be the default `Device-N`.
+The web UI sends collar commands over its WebSocket connection using
+`type:"cmd_send"` messages. Commands target the immutable numeric
+`device_id`; friendly names are display labels and may be changed.
 
 ---
 
