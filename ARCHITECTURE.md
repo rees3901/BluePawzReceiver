@@ -309,6 +309,10 @@ The receiver advertises a non-connectable BLE beacon named `"Home"` at
 collar runs an active BLE scan during its initial 10 s wake window and
 during GPS acquisition.
 
+The web map also reflects the receiver's network role. While joined to the
+configured home Wi-Fi, the `MyDevice` marker uses `icons/Home.avif`. In
+roaming/AP mode it uses the portable `icons/Device_Marker.avif` marker.
+
 A scan hit only counts as "home" if **all three** conditions match:
 
 1. The advertised name equals `"Home"` (case-sensitive — pre-V3 the

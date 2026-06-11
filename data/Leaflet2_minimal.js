@@ -16,6 +16,37 @@ const map = L.map("map", {
 // funnel name updates through here, so a rename reflects on the marker tile
 // AND the C&C panel at the same time — no surface lags the other.
 window.deviceNames = window.deviceNames || {};
+let receiverNetMode = "unknown";
+
+function receiverMarkerIconUrl() {
+  return receiverNetMode === "home"
+    ? "/icons/Home.avif"
+    : "/icons/Device_Marker.avif";
+}
+
+window.setReceiverNetMode = function (mode) {
+  if (mode !== "home" && mode !== "roaming") return;
+  receiverNetMode = mode;
+
+  if (markers.MyDevice) {
+    markers.MyDevice.setIcon(getMarkerIcon("MyDevice", mode === "home" ? "Home" : "Roaming"));
+  }
+  const cardIcon = document.getElementById("card-icon-MyDevice");
+  if (cardIcon) cardIcon.src = receiverMarkerIconUrl();
+};
+
+function refreshReceiverNetMode() {
+  fetch("/netmode", { cache: "no-store" })
+    .then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.json();
+    })
+    .then((data) => window.setReceiverNetMode(data.mode))
+    .catch(() => {
+      // During reconnects retain the last authoritative mode and icon.
+    });
+}
+
 window.setDeviceName = function (id, name) {
   id = String(id);
   if (!name) return;
@@ -26,8 +57,7 @@ window.setDeviceName = function (id, name) {
   // renames because it's keyed by device_id, so its title must be updated).
   const titleEl = document.querySelector(`#marker-card-${id} .marker-card-name`);
   if (titleEl) {
-    const isKnown = (typeof KNOWN_CATS !== "undefined") && KNOWN_CATS.includes(name);
-    titleEl.textContent = (isKnown || id === "MyDevice") ? name : (name + " (ID " + id + ")");
+    titleEl.textContent = id === "MyDevice" ? name : `${name} (${id})`;
   }
 };
 
@@ -228,10 +258,11 @@ function unknownDeviceDivIcon(status) {
 
 // Basic marker icon function
 function getMarkerIcon(id, status) {
-  // Special handling for MyDevice - use Device_Marker.avif
+  // The receiver is a fixed home marker while joined to the configured home
+  // Wi-Fi. In roaming/AP mode it becomes a portable device marker again.
   if (id === "MyDevice") {
     return L.icon({
-      iconUrl: `/icons/Device_Marker.avif`,
+      iconUrl: receiverMarkerIconUrl(),
       iconSize: [32, 32],
       iconAnchor: [16, 32],
       popupAnchor: [0, -32],
@@ -358,7 +389,7 @@ function createMarkerCard(id, status) {
   let iconUrl;
   let iconIsInline = false;
   if (id === "MyDevice") {
-    iconUrl = "/icons/Device_Marker.avif";
+    iconUrl = receiverMarkerIconUrl();
   } else if (isKnown) {
     iconUrl = `/icons/${name}_Marker_Home.avif`;
   } else {
@@ -371,9 +402,8 @@ function createMarkerCard(id, status) {
     iconUrl = "data:image/svg+xml;utf8," + encodeURIComponent(svg);
     iconIsInline = true;
   }
-  // Display label: known collars show their friendly name; unknown collars
-  // show the name (or "Device-<uid>") so the user can still identify them.
-  const displayId = (isKnown || id === "MyDevice") ? name : (name + " (ID " + id + ")");
+  // Keep the immutable device ID visible beside every editable collar name.
+  const displayId = id === "MyDevice" ? name : `${name} (${id})`;
 
   const statusClass = status
     ? `status-${status.toLowerCase()}`
@@ -637,7 +667,9 @@ function updateMarkerCard(id, status, data) {
   const name = (window.deviceNames && window.deviceNames[id]) || id;
   const iconEl = document.getElementById(`card-icon-${id}`);
   if (iconEl) {
-    if (String(status).startsWith("Last known")) {
+    if (id === "MyDevice") {
+      iconEl.src = receiverMarkerIconUrl();
+    } else if (String(status).startsWith("Last known")) {
       const colour = statusColour(status);
       const svg = `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>` +
                   `<circle cx='12' cy='12' r='9' fill='${colour}' fill-opacity='.82' stroke='white' stroke-width='3' stroke-dasharray='3 2'/>` +
@@ -926,6 +958,11 @@ window.handleTelemetry = function (data, isHydrate) {
         return;
       }
 
+      if (data.type === "net_mode") {
+        window.setReceiverNetMode(data.mode);
+        return;
+      }
+
       // Handle node state updates (Command & Control)
       if (data.type === "node_states" || data.type === "node_alert") {
         if (window.handleNodeStateUpdate) {
@@ -1168,6 +1205,8 @@ setInterval(checkMarkerTimeouts, 30000);
 
 // Create MyDevice marker card immediately on page load
 createMarkerCard("MyDevice", "Starting up");
+refreshReceiverNetMode();
+setInterval(refreshReceiverNetMode, 3000);
 
 // Enable follow for MyDevice by default after a short delay (to ensure button exists)
 setTimeout(() => {

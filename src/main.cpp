@@ -3180,10 +3180,13 @@ void switchToRoamingMode()
   Serial.println("[CAPTIVE] DNS wildcard server up on port 53");
 
   JsonDocument ev;
+  ev["type"]        = "net_mode";
+  ev["mode"]        = "roaming";
   ev["event"]       = "wifi_roaming_on";
   ev["ap_ssid"]     = ROAMING_AP_SSID;
   ev["ap_ip"]       = g_apIp.toString();
   logMessage(ev, "event");
+  notifyPosition(ev);
 }
 
 // V3.1: Switch from roaming/AP back to home/STA mode. Stops the AP and
@@ -3233,9 +3236,12 @@ void switchToHomeMode()
   Serial.println("[CAPTIVE] DNS wildcard server stopped");
 
   JsonDocument ev;
+  ev["type"]     = "net_mode";
+  ev["mode"]     = "home";
   ev["event"]    = "wifi_roaming_off";
   ev["sta_ip"]   = WiFi.localIP().toString();
   logMessage(ev, "event");
+  notifyPosition(ev);
 }
 
 // V3.1: Active WiFi scan, return true if the configured home SSID
