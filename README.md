@@ -131,6 +131,11 @@ monitor prints it on boot, and the TFT shows it too.
 
 Open `http://cattracker.local` or the printed IP in a browser.
 
+In roaming mode, join the open `BluePaws-Roaming` hotspot and browse directly
+to `http://192.168.4.1`. The TFT displays the access-point IP. Captive DNS is
+deliberately not used because fixed-IP access is more predictable on
+no-internet networks.
+
 ### Map
 
 - Live position for each collar via WebSocket (port 81)

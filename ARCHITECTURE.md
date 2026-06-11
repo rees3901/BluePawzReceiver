@@ -313,6 +313,13 @@ The web map also reflects the receiver's network role. While joined to the
 configured home Wi-Fi, the `MyDevice` marker uses `icons/Home.avif`. In
 roaming/AP mode it uses the portable `icons/Device_Marker.avif` marker.
 
+Roaming networking prioritizes a stable phone connection: the receiver serves
+an AP-only `BluePaws-Roaming` hotspot at `192.168.4.1`, with no captive DNS.
+Blocking home-SSID scans are deferred while any hotspot client is connected.
+BLE collar discovery uses a two-second scan window every ten seconds rather
+than a continuous high-duty scan, reducing contention for the ESP32-S3's
+shared Wi-Fi/BLE radio.
+
 A scan hit only counts as "home" if **all three** conditions match:
 
 1. The advertised name equals `"Home"` (case-sensitive — pre-V3 the
