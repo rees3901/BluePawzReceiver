@@ -89,7 +89,7 @@ PRG / user button                                  = 0
 | Spreading factor | SF9 |
 | Bandwidth | 125 kHz |
 | Coding rate | 4/5 |
-| Preamble | 16 symbols |
+| Preamble | 8 symbols |
 | Sync word | 0x12 (private network) |
 | CRC | enabled |
 | LBT | enabled with random backoff |

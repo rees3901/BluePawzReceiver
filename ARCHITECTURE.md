@@ -59,7 +59,7 @@ collars. The base station also runs a low-power BLE beacon named
 | Spreading factor | SF9 |
 | Bandwidth | 125 kHz |
 | Coding rate | 4/5 |
-| Preamble | 16 symbols |
+| Preamble | 8 symbols |
 | Sync word | 0x12 (private network) |
 | CRC | enabled |
 | Listen-Before-Talk | enabled, with random backoff on collision |
