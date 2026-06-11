@@ -21,8 +21,8 @@ When you change one, change the other.
                     │  └──┬───┘  └──┬───┘  └──────┬──────┘ │
                     └─────┼─────────┼─────────────┼────────┘
                           │         │             │
-                LoRa 915MHz│   WiFi/HTTP/WS    BLE
-                  SF8/250k │   (port 80, 81)  (short range)
+                LoRa 868MHz│   WiFi/HTTP/WS    BLE
+                  SF9/125k │   (port 80, 81)  (short range)
                           │         │             │
                           │         ▼             │
                           │   ┌───────────┐       │
@@ -55,18 +55,19 @@ collars. The base station also runs a low-power BLE beacon named
 
 | Setting | Value |
 |---|---|
-| Frequency | 915.0 MHz (US) / 868.0 MHz (EU) — see `config.h` |
-| Spreading factor | SF8 |
-| Bandwidth | 250 kHz |
+| Frequency | 868.0 MHz (EU/UK ISM band) |
+| Spreading factor | SF9 |
+| Bandwidth | 125 kHz |
 | Coding rate | 4/5 |
 | Preamble | 16 symbols |
 | Sync word | 0x12 (private network) |
 | CRC | enabled |
 | Listen-Before-Talk | enabled, with random backoff on collision |
 
-These numbers are duplicated in **both** `config.h` files. Mismatch in
-any of them = no link. Sync word in particular: 0x12 is a private
-network; LoRaWAN public networks use 0x34.
+These values mirror `include/config.h` in both firmware projects. Keep
+the two copies synchronized; a mismatch in any radio parameter prevents
+the link from working. Sync word `0x12` identifies this private network;
+LoRaWAN public networks normally use `0x34`.
 
 ---
 

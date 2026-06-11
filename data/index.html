@@ -3297,6 +3297,10 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
           <button class="profile-btn" id="${prefix}profile-btn-${uid}"
                   onclick="window.sendProfile('${prefix}',${uid})"
                   style="padding:3px 8px;font-size:0.85em;cursor:pointer;">Set</button>
+          <button class="ping-btn" id="${prefix}ping-btn-${uid}"
+                  onclick="window.sendPing('${prefix}',${uid})"
+                  title="Ask the collar to report its current status immediately"
+                  style="padding:3px 8px;font-size:0.85em;cursor:pointer;">📡 Ping</button>
         </div>
       `;
     };
@@ -3359,6 +3363,22 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       ['', 'card-'].forEach(p => {
         const b = document.getElementById(`${p}cmd-badge-${uid}`);
         if (b) { b.textContent = 'queued...'; b.style.color = '#888'; }
+      });
+    };
+
+    // OTAP: ping a collar — asks it to send a telemetry (pong) reply immediately
+    // on its next wake. Same cmd_send pipeline; the badge shows the lifecycle and
+    // clears to "done" when the pong arrives.
+    window.sendPing = function (prefix, uid) {
+      if (!window.ws || window.ws.readyState !== 1) {
+        alert('Not connected to the base station - try again in a moment.');
+        return;
+      }
+      window.ws.send(JSON.stringify({ type: 'cmd_send', device_id: uid, ping: true }));
+      console.log('[CMD] ping queued for', uid);
+      ['', 'card-'].forEach(p => {
+        const b = document.getElementById(`${p}cmd-badge-${uid}`);
+        if (b) { b.textContent = 'pinging...'; b.style.color = '#888'; }
       });
     };
 

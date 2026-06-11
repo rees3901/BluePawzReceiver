@@ -85,14 +85,18 @@ PRG / user button                                  = 0
 
 | Setting | Value |
 |---|---|
-| Frequency | 915.0 MHz (US) / 868.0 MHz (EU) — set in `config.h` |
-| Spreading factor | SF8 |
-| Bandwidth | 250 kHz |
+| Frequency | 868.0 MHz (EU/UK ISM band) |
+| Spreading factor | SF9 |
+| Bandwidth | 125 kHz |
 | Coding rate | 4/5 |
 | Preamble | 16 symbols |
 | Sync word | 0x12 (private network) |
 | CRC | enabled |
 | LBT | enabled with random backoff |
+
+These values mirror `include/config.h` in both firmware projects. Keep
+the receiver and transmitter copies synchronized; a mismatch prevents
+the devices from communicating.
 
 ---
 

@@ -2455,6 +2455,22 @@ static void handleLoRaPacketJSON(const String &incoming)
         }
       }
     }
+
+    // OTAP pong: a SOLICITED telemetry reply (pong:true) confirms a pending
+    // "ping" command for this collar — the ping has no telemetry field to match,
+    // the reply itself is the confirmation.
+    if (doc["pong"].is<bool>() && doc["pong"].as<bool>())
+    {
+      auto it = g_pending.find(devId);
+      if (it != g_pending.end() && it->second.label == "ping" &&
+          it->second.status != CMD_DELIVERED && it->second.status != CMD_FAILED)
+      {
+        it->second.status = CMD_DELIVERED;
+        Serial.printf("[OTAP] ping confirmed by pong from %u -> DELIVERED\n", devId);
+        pushCommandStatusWS(it->second);
+        g_pending.erase(it);
+      }
+    }
   }
   else
   {

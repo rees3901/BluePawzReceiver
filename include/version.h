@@ -76,6 +76,12 @@
 //        attempt → presence-scheduled (was a back-to-back double-send). Fixed the
 //        C&C side-panel card rendering (getIconForNode now URL-encodes its inline
 //        SVG so the data URI can't break the <img> tag).
+//        + 'developer' is now an OTAP-settable profile. + Ping: a ping command
+//        makes the collar emit an immediate telemetry reply (pong:true) with its
+//        current/last values; the base confirms the ping on that pong (UI Ping
+//        button). + SHORT LoRa wire keys to cut airtime: src/dst/mid/seq/did/st/md
+//        on the air; the base's expandWireKeys() translates them back to the long
+//        keys so the UI, logs and internal code are UNCHANGED.
 // 3.8.1  cleanup: delete the now-dead command-lifecycle code (~900 lines) —
 //        LoRaCommand queue, ACK/pong/status handling, send/transmit helpers,
 //        /send-command + /commands handlers. updateNodeState is telemetry-only.
