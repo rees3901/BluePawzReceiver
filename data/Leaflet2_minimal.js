@@ -266,6 +266,7 @@ function getMarkerIcon(id, status) {
       iconSize: [32, 32],
       iconAnchor: [16, 32],
       popupAnchor: [0, -32],
+      className: "tracker-map-marker",
     });
   }
 
@@ -311,6 +312,7 @@ function getMarkerIcon(id, status) {
     iconSize: [32, 32],
     iconAnchor: [16, 32],
     popupAnchor: [0, -32],
+    className: "tracker-map-marker",
   });
 }
 
