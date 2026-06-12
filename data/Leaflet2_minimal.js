@@ -157,7 +157,7 @@ if (vectorLayer) {
 L.control
   .layers(baseMaps, null, {
     position: "topright",
-    collapsed: false, // Set to true to collapse the control
+    collapsed: true,
   })
   .addTo(map);
 
@@ -444,13 +444,14 @@ function createMarkerCard(id, status) {
   const displayEsc = escHtml(displayId);
   const statusEsc  = escHtml(status || "Unknown");
   card.innerHTML = `
-    <div class="marker-card-header" style="position:relative;">
+    <div class="marker-card-header" style="position:relative;" onclick="openMarkerCard('${id}')">
       <img src="${iconUrl}" alt="${idEsc}" class="marker-card-icon" id="card-icon-${id}">
       <div class="marker-card-title">
         <h3 class="marker-card-name">${displayEsc}${deviceLabel}</h3>
         <p class="marker-card-status" id="card-status-${id}">${statusEsc}</p>
       </div>
       ${awakeIndicator}
+      <button class="marker-card-close" type="button" onclick="event.stopPropagation(); closeMarkerCard('${id}')" aria-label="Close tracker details">×</button>
     </div>
     <div class="marker-card-actions">
       <div class="button-row">
@@ -520,6 +521,19 @@ Useful for debugging and seeing exact coordinates">
     window.refreshCardControls(window.nodeStates[id]);
   }
 }
+
+window.openMarkerCard = function (id) {
+  document.querySelectorAll(".marker-card.detail-open").forEach((card) => {
+    if (card.id !== `marker-card-${id}`) card.classList.remove("detail-open");
+  });
+  const card = document.getElementById(`marker-card-${id}`);
+  if (card) card.classList.add("detail-open");
+};
+
+window.closeMarkerCard = function (id) {
+  const card = document.getElementById(`marker-card-${id}`);
+  if (card) card.classList.remove("detail-open");
+};
 
 // Jump to marker location
 window.jumpToMarker = function (id) {

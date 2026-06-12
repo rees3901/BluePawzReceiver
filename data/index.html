@@ -1443,15 +1443,524 @@
       font-size: 0.95em;
       text-align: left;
     }
+
+    /* V4 map-first shell. The established control IDs and handlers remain
+       unchanged; these rules only reorganise their visual presentation. */
+    :root {
+      --ui-bg: rgba(10, 27, 34, 0.94);
+      --ui-bg-soft: rgba(20, 42, 51, 0.92);
+      --ui-line: rgba(199, 225, 234, 0.16);
+      --ui-text: #edf4f7;
+      --ui-muted: #9db0b8;
+      --ui-blue: #36a7ff;
+      --ui-green: #48d597;
+      --ui-shadow: 0 18px 55px rgba(0, 12, 18, 0.34);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; }
+    body {
+      background: #0b2028;
+      color: var(--ui-text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body.light-mode {
+      --ui-bg: rgba(255, 255, 255, 0.95);
+      --ui-bg-soft: rgba(247, 250, 251, 0.96);
+      --ui-line: rgba(25, 57, 70, 0.16);
+      --ui-text: #132a34;
+      --ui-muted: #5e747d;
+      --ui-shadow: 0 18px 55px rgba(18, 47, 58, 0.18);
+      background: #dce7e1;
+      color: var(--ui-text);
+    }
+
+    #map {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100dvh;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      z-index: 1;
+    }
+
+    .app-topbar {
+      position: fixed;
+      z-index: 1100;
+      top: 14px;
+      left: 16px;
+      right: 16px;
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 8px 10px;
+      border: 1px solid var(--ui-line);
+      border-radius: 18px;
+      background: var(--ui-bg);
+      color: var(--ui-text);
+      box-shadow: var(--ui-shadow);
+      backdrop-filter: blur(18px);
+    }
+    .app-menu-button {
+      position: static;
+      width: 40px;
+      height: 40px;
+      display: grid;
+      place-content: center;
+      gap: 4px;
+      padding: 0;
+      border: 0;
+      border-radius: 12px;
+      background: rgba(255,255,255,0.08);
+      cursor: pointer;
+      transform: none;
+    }
+    .app-menu-button span {
+      display: block;
+      width: 18px;
+      height: 2px;
+      margin: 0;
+      border-radius: 2px;
+      background: currentColor;
+    }
+    .app-menu-button:hover { background: rgba(255,255,255,0.14); transform: none; }
+    .app-brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
+    .app-brand img { width: 36px; height: 36px; object-fit: contain; transform: rotate(-10deg); }
+    .app-brand-copy { min-width: 0; }
+    .app-brand strong { display: block; line-height: 1.1; font-size: 1rem; }
+    .app-brand small { display: block; color: var(--ui-muted); font-size: 0.72rem; white-space: nowrap; }
+    .app-top-spacer { flex: 1; }
+    .firmware-version {
+      margin: 0;
+      padding: 3px 7px;
+      color: var(--ui-muted);
+      border: 1px solid var(--ui-line);
+      background: rgba(255,255,255,0.05);
+    }
+    #statusBanner {
+      position: static;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      max-width: min(360px, 44vw);
+      min-height: 38px;
+      padding: 7px 12px;
+      overflow: hidden;
+      border: 1px solid rgba(72, 213, 151, 0.26);
+      border-radius: 999px;
+      background: rgba(72, 213, 151, 0.12) !important;
+      color: var(--ui-text) !important;
+      box-shadow: none;
+      font-size: 0.76rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+    #statusBanner::before {
+      content: "";
+      flex: 0 0 auto;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--ui-green);
+      box-shadow: 0 0 0 5px rgba(72, 213, 151, 0.12);
+    }
+    #statusBanner.flash::before { background: #ff7272; box-shadow: 0 0 0 5px rgba(255,114,114,.13); }
+
+    .connection-popover {
+      position: fixed;
+      z-index: 1150;
+      top: 78px;
+      right: 16px;
+      width: min(330px, calc(100vw - 32px));
+      padding: 15px;
+      border: 1px solid var(--ui-line);
+      border-radius: 18px;
+      background: var(--ui-bg);
+      color: var(--ui-text);
+      box-shadow: var(--ui-shadow);
+      backdrop-filter: blur(18px);
+      transition: opacity .18s, transform .18s;
+    }
+    .connection-popover.closed { opacity: 0; pointer-events: none; transform: translateY(-8px) scale(.98); }
+    .connection-popover-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 11px; }
+    .connection-popover-head span { color: var(--ui-green); font-size: .76rem; }
+    .connection-grid { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; font-size: .82rem; }
+    .connection-grid span:nth-child(odd) { color: var(--ui-muted); }
+
+    .main-logo-title, .hamburger-btn:not(.app-menu-button), .scroll-to-top,
+    #toggleAllCardsBtn, body > div[style*="text-align: center"][style*="margin: 10px"] {
+      display: none !important;
+    }
+
+    .leaflet-top { top: 76px; }
+    .leaflet-left { left: 8px; }
+    .leaflet-right { right: 8px; }
+    .leaflet-control-layers, .leaflet-bar {
+      overflow: hidden;
+      border: 1px solid var(--ui-line) !important;
+      border-radius: 12px !important;
+      background: var(--ui-bg) !important;
+      color: var(--ui-text);
+      box-shadow: 0 8px 22px rgba(0,0,0,.2) !important;
+    }
+    .leaflet-control-layers-expanded { padding: 12px 14px; }
+    .leaflet-control-layers label { color: var(--ui-text); margin: 5px 0; }
+    .leaflet-control-layers-toggle {
+      width: 40px !important;
+      height: 40px !important;
+      display: grid !important;
+      place-items: center;
+      background-image: none !important;
+      color: var(--ui-text);
+      text-decoration: none;
+    }
+    .leaflet-control-layers-toggle::after {
+      content: "▤";
+      font-size: 1.25rem;
+      line-height: 1;
+    }
+    .coordinate-control {
+      display: block;
+      margin-bottom: 92px !important;
+      padding: 6px 9px;
+      border: 1px solid var(--ui-line);
+      border-radius: 10px;
+      background: var(--ui-bg);
+      color: var(--ui-text);
+      box-shadow: 0 6px 18px rgba(0,0,0,.18);
+      font-size: .72rem;
+    }
+    .minimap-container { border-radius: 14px !important; opacity: .86; }
+
+    .marker-cards-container {
+      position: fixed;
+      z-index: 1050;
+      left: 16px;
+      right: 16px;
+      bottom: 16px;
+      width: min(880px, calc(100vw - 32px));
+      min-height: 76px;
+      max-width: none;
+      margin: 0;
+      padding: 9px;
+      display: flex;
+      flex-wrap: nowrap;
+      justify-content: flex-start;
+      gap: 9px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      margin: 0 auto;
+      border: 1px solid var(--ui-line);
+      border-radius: 20px;
+      background: var(--ui-bg);
+      box-shadow: var(--ui-shadow);
+      scrollbar-width: none;
+    }
+    .marker-cards-container::-webkit-scrollbar { display: none; }
+    .marker-card {
+      position: relative;
+      flex: 1 0 185px;
+      min-width: 185px;
+      max-width: 230px;
+      min-height: 56px;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid transparent !important;
+      border-radius: 14px;
+      background: rgba(255,255,255,.06) !important;
+      color: var(--ui-text);
+      box-shadow: none;
+      transform: none !important;
+      transition: background .18s, border-color .18s, opacity .18s;
+    }
+    .marker-card:hover {
+      border-color: rgba(54,167,255,.42) !important;
+      background: rgba(54,167,255,.13) !important;
+      box-shadow: none;
+    }
+    .marker-card-header {
+      min-height: 56px;
+      padding: 8px 10px;
+      align-items: center;
+      border: 0;
+      cursor: pointer;
+    }
+    .marker-card-icon { width: 39px; height: 39px; flex: 0 0 39px; object-fit: contain; }
+    .marker-card-name {
+      margin: 0;
+      overflow: hidden;
+      color: var(--ui-text);
+      font-size: .86rem;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .marker-card-name span { display: none !important; }
+    .marker-card-status { margin: 3px 0 0; color: var(--ui-muted); font-size: .71rem; }
+    .marker-card-actions, .marker-card-console, .marker-card-close { display: none; }
+    .marker-card .awake-indicator { top: 7px !important; right: 7px !important; font-size: .95rem; }
+
+    .marker-card.detail-open {
+      position: fixed;
+      z-index: 1160;
+      top: 84px;
+      right: 16px;
+      bottom: 16px;
+      width: min(365px, calc(100vw - 32px));
+      height: calc(100dvh - 100px);
+      max-width: none;
+      min-height: 0;
+      padding: 17px;
+      overflow-y: auto;
+      border-color: var(--ui-line) !important;
+      border-radius: 22px;
+      background: var(--ui-bg) !important;
+      box-shadow: var(--ui-shadow);
+      backdrop-filter: blur(18px);
+    }
+    .marker-card.detail-open .marker-card-header { padding: 0 0 15px; cursor: default; }
+    .marker-card.detail-open .marker-card-icon { width: 54px; height: 54px; flex-basis: 54px; }
+    .marker-card.detail-open .marker-card-name { padding-right: 28px; font-size: 1.12rem; }
+    .marker-card.detail-open .marker-card-actions { display: block; border-top: 1px solid var(--ui-line); padding-top: 15px; }
+    .marker-card.detail-open .marker-card-console.show { display: block; }
+    .marker-card.detail-open .marker-card-close {
+      position: absolute;
+      top: 0;
+      right: 0;
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border: 0;
+      border-radius: 10px;
+      background: rgba(255,255,255,.08);
+      color: var(--ui-text);
+      font-size: 1.3rem;
+      cursor: pointer;
+    }
+    .marker-card.detail-open .marker-card-btn {
+      border-color: var(--ui-line);
+      border-radius: 11px;
+      background: rgba(255,255,255,.07);
+      color: var(--ui-text);
+    }
+    .marker-card.detail-open .btn-jump { background: var(--ui-blue); color: #041924; }
+    .marker-card.detail-open .node-controls select,
+    .marker-card.detail-open .node-controls input { min-width: 0; }
+
+    .side-menu {
+      z-index: 1210;
+      top: 84px;
+      left: 16px;
+      bottom: 16px;
+      width: min(380px, calc(100vw - 32px));
+      height: auto;
+      padding: 0;
+      overflow: hidden;
+      border: 1px solid var(--ui-line);
+      border-radius: 22px;
+      background: var(--ui-bg) !important;
+      color: var(--ui-text);
+      box-shadow: var(--ui-shadow);
+      backdrop-filter: blur(18px);
+      transform: translateX(calc(-100% - 32px));
+    }
+    .side-menu.active { transform: translateX(0); }
+    .menu-overlay { z-index: 1200; background: rgba(1,10,14,.46); backdrop-filter: blur(3px); }
+    .menu-header {
+      padding: 17px 18px 14px;
+      border-bottom: 1px solid var(--ui-line);
+      background: transparent !important;
+    }
+    .menu-header h2 { margin: 0; font-size: 1.12rem; }
+    .menu-header small { display: block; margin-top: 3px; color: var(--ui-muted); font-size: .74rem; }
+    .menu-close-btn {
+      width: 34px;
+      height: 34px;
+      padding: 0;
+      border: 0;
+      border-radius: 10px;
+      background: rgba(255,255,255,.08);
+      color: var(--ui-text);
+      font-size: 1.3rem;
+    }
+    .menu-content {
+      height: calc(100% - 70px);
+      padding: 0 18px 18px;
+      display: flex;
+      flex-direction: column;
+    }
+    .menu-section {
+      margin: 0;
+      padding: 15px 0;
+      border-bottom: 1px solid var(--ui-line);
+    }
+    .menu-section h3 { margin: 0 0 10px; color: var(--ui-text) !important; font-size: .84rem; }
+    .menu-item { margin: 9px 0; }
+    .menu-info { padding: 4px 0; }
+    .menu-info-label { color: var(--ui-muted) !important; }
+    .settings-disclosure {
+      margin-top: 12px;
+      border: 1px solid var(--ui-line);
+      border-radius: 14px;
+      background: rgba(255,255,255,.035);
+    }
+    .settings-disclosure > summary {
+      padding: 12px 13px;
+      cursor: pointer;
+      font-size: .84rem;
+      font-weight: 700;
+    }
+    .settings-disclosure-body { padding: 0 13px; }
+    .menu-btn { border-radius: 11px; }
+    .advanced-section { display: none; order: 20; }
+    .menu-content.show-advanced .advanced-section { display: block; }
+    .advanced-toggle {
+      order: 10;
+      width: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 14px;
+      padding: 12px 13px;
+      border: 1px solid var(--ui-line);
+      border-radius: 13px;
+      background: rgba(255,255,255,.045);
+      color: var(--ui-text);
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .advanced-toggle span:last-child { color: var(--ui-muted); font-size: 1.25rem; transition: transform .18s; }
+    .menu-content.show-advanced .advanced-toggle span:last-child { transform: rotate(90deg); }
+
+    #commandStatusPanel {
+      position: fixed;
+      z-index: 1080;
+      top: 82px;
+      left: 50%;
+      width: min(520px, calc(100vw - 130px));
+      max-height: 34vh;
+      margin: 0;
+      overflow-y: auto;
+      transform: translateX(-50%);
+      border: 1px solid var(--ui-line);
+      border-radius: 16px;
+      background: var(--ui-bg);
+      color: var(--ui-text);
+      box-shadow: var(--ui-shadow);
+    }
+
+    .debug-console-container {
+      position: fixed;
+      z-index: 1300;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      max-width: none !important;
+      margin: 0 !important;
+      padding: 20px !important;
+      background: rgba(1,10,14,.68);
+      backdrop-filter: blur(8px);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .18s;
+    }
+    .debug-console-container.ui-open { opacity: 1; pointer-events: auto; }
+    .debug-console-card {
+      width: min(780px, 100%);
+      max-height: min(680px, calc(100dvh - 40px));
+      margin: 0;
+      overflow: hidden;
+      border: 1px solid var(--ui-line);
+      border-radius: 22px;
+      background: var(--ui-bg) !important;
+      color: var(--ui-text);
+      box-shadow: var(--ui-shadow);
+    }
+    .debug-console-header { background: transparent !important; border-color: var(--ui-line); }
+    .debug-console-close {
+      width: 34px;
+      height: 34px;
+      margin-left: auto;
+      padding: 0;
+      border: 0;
+      border-radius: 10px;
+      background: rgba(255,255,255,.08);
+      color: var(--ui-text);
+      font-size: 1.3rem;
+      cursor: pointer;
+    }
+    .debug-console-body { max-height: min(440px, 52dvh); }
+
+    @media (max-width: 700px) {
+      .app-topbar { top: 8px; left: 8px; right: 8px; height: 52px; border-radius: 16px; }
+      .app-brand small, #firmwareVersionBadge { display: none; }
+      #statusBanner { max-width: 46px; width: 46px; padding: 0; justify-content: center; font-size: 0; }
+      .connection-popover { top: 68px; right: 8px; }
+      .leaflet-top { top: 62px; }
+      .marker-cards-container {
+        left: 8px;
+        right: 8px;
+        bottom: 8px;
+        width: auto;
+        min-height: 76px;
+        transform: none;
+        border-radius: 17px;
+      }
+      .marker-card { flex-basis: 155px; min-width: 155px; }
+      .marker-card.detail-open {
+        top: auto;
+        left: 8px;
+        right: 8px;
+        bottom: 92px;
+        width: auto;
+        height: auto;
+        max-height: 68dvh;
+      }
+      .side-menu { top: 68px; left: 8px; right: 8px; bottom: 8px; width: auto; }
+      #commandStatusPanel { top: 70px; width: calc(100vw - 80px); }
+      .minimap-container { display: none; }
+      .debug-console-container { padding: 8px !important; }
+      .debug-console-card { max-height: calc(100dvh - 16px); border-radius: 17px; }
+    }
   </style>
 </head>
 <body>
-  <!-- Hamburger Menu Button -->
-  <div class="hamburger-btn" onclick="toggleMenu()">
-    <span></span>
-    <span></span>
-    <span></span>
-  </div>
+  <header class="app-topbar">
+    <button class="hamburger-btn app-menu-button" type="button" onclick="toggleMenu()" aria-label="Open settings">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+    <div class="app-brand">
+      <img src="/icons/favicon.avif" alt="">
+      <div class="app-brand-copy">
+        <strong>Blue Paws</strong>
+        <small>Live receiver map</small>
+      </div>
+    </div>
+    <span id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
+    <span class="app-top-spacer"></span>
+    <button id="statusBanner" type="button" onclick="toggleConnectionPopover()" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</button>
+  </header>
+
+  <aside id="connectionPopover" class="connection-popover closed" aria-label="Receiver connection status">
+    <div class="connection-popover-head">
+      <strong>Receiver status</strong>
+      <span>Live</span>
+    </div>
+    <div class="connection-grid">
+      <span>Wi-Fi</span><strong id="popoverWifiStatus">Checking…</strong>
+      <span>WebSocket</span><strong id="popoverWsStatus">Checking…</strong>
+      <span>Page loaded</span><strong id="popoverUptime">—</strong>
+      <span>Receiver mode</span><strong id="popoverNetMode">—</strong>
+    </div>
+  </aside>
   
   <!-- Scroll to Top Button -->
   <button class="scroll-to-top" id="scrollToTopBtn" onclick="scrollToTop()" title="Scroll to top">
@@ -1466,7 +1975,10 @@
   <!-- Side Menu Panel -->
   <div class="side-menu">
     <div class="menu-header">
-      <h2>⚙️ Settings</h2>
+      <div>
+        <h2>Settings</h2>
+        <small>Everyday controls first</small>
+      </div>
       <button class="menu-close-btn" onclick="closeMenu()">×</button>
     </div>
     
@@ -1474,7 +1986,7 @@
       <!-- V3.1.9: Build info — firmware and filesystem versions. Moved
            here from the floating top-right panel; this is developer /
            troubleshooting info, not foreground UI. -->
-      <div class="menu-section build-info">
+      <div class="menu-section build-info advanced-section">
         <h3>ℹ️ Build Info</h3>
         <div class="ver-row">
           <span class="ver-label">Firmware:</span>
@@ -1558,7 +2070,7 @@ Turn off to save power when not needed">
       </div>
 
       <!-- Developer Mode (V3.6.8) -->
-      <div class="menu-section">
+      <div class="menu-section advanced-section">
         <h3>🛠️ Developer Mode</h3>
         <div class="menu-item" style="justify-content: space-between; align-items: center;">
           <span class="menu-info-label">Developer Mode:</span>
@@ -1584,9 +2096,14 @@ still switch the beacon on manually above. Persists across reboots.">
           <input type="range" id="trailLength" min="2" max="10" value="4" oninput="updateTrailLength(this.value)">
         </div>
       </div>
+
+      <button class="advanced-toggle" type="button" onclick="toggleAdvancedSettings(this)" aria-expanded="false">
+        <span>Advanced</span>
+        <span aria-hidden="true">›</span>
+      </button>
       
       <!-- Data & Logging -->
-      <div class="menu-section">
+      <div class="menu-section advanced-section">
         <h3>💾 Data & Logging</h3>
         <div class="menu-info">
           <span class="menu-info-label">Messages Logged:</span>
@@ -1609,7 +2126,7 @@ Frees up storage space but cannot be undone">🗑️ Clear Message Log</button>
       </div>
       
       <!-- System Info -->
-      <div class="menu-section">
+      <div class="menu-section advanced-section">
         <h3>ℹ️ System Info</h3>
         <div class="menu-info">
           <span class="menu-info-label">WiFi Status:</span>
@@ -1626,7 +2143,7 @@ Frees up storage space but cannot be undone">🗑️ Clear Message Log</button>
       </div>
       
       <!-- Command & Control -->
-      <div class="menu-section">
+      <div class="menu-section advanced-section">
         <h3>📡 Command & Control</h3>
         <div id="nodeControlList" style="max-height: 300px; overflow-y: auto;">
           <div style="color: #999; text-align: center; padding: 20px; font-size: 0.9em;">
@@ -1636,7 +2153,7 @@ Frees up storage space but cannot be undone">🗑️ Clear Message Log</button>
       </div>
       
       <!-- Developer Tools -->
-      <div class="menu-section">
+      <div class="menu-section advanced-section">
         <h3>🛠️ Developer Tools</h3>
         <div class="menu-item">
           <button class="menu-btn menu-btn-secondary" onclick="scrollToDebugConsole()" title="Debug Console
@@ -1658,14 +2175,12 @@ Shows all stored GPS messages in raw format">📊 View Raw Data (/data)</button>
         <img src="/icons/favicon.ico" style="height: 88px; vertical-align: middle; margin-right: 10px; transform: rotate(-15deg);">
       </span>
       Blue Paws Tracker
-      <span id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
+      <span class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
       <span class="title-main-logo">
         <img src="/icons/MainLogoPodgeCarrie_small.avif" style="height: 130px; vertical-align: middle; margin-left: 10px; transform: none;">
       </span>
     </h4>
   </div>
-  <div id="statusBanner" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</div>
-
   <!-- V3.1.9: version info moved from a floating top-right panel into
        the hamburger side menu (see 'Build info' section near the top
        of .menu-content). It's developer/troubleshooting info and
@@ -1704,6 +2219,7 @@ Collapsing cards saves screen space when tracking many devices">
       <div class="debug-console-header" onclick="toggleDebugConsole()">
         <h3 class="debug-console-title">🐛 Debug Console <span id="debug-message-count">(0 messages)</span></h3>
         <span class="debug-console-toggle" id="debug-toggle-icon">▼</span>
+        <button class="debug-console-close" type="button" onclick="event.stopPropagation(); closeDebugConsole()" aria-label="Close diagnostics">×</button>
       </div>
       <div class="debug-console-actions">
         <button class="btn btn-outline-info" onclick="copyDebugConsole()" title="Copy Messages
@@ -2596,6 +3112,25 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       document.querySelector('.menu-overlay').classList.remove('active');
     }
 
+    function toggleAdvancedSettings(button) {
+      const content = document.querySelector('.menu-content');
+      if (!content) return;
+      const isOpen = content.classList.toggle('show-advanced');
+      button.setAttribute('aria-expanded', String(isOpen));
+    }
+
+    function toggleConnectionPopover() {
+      const popover = document.getElementById('connectionPopover');
+      if (!popover) return;
+      popover.classList.toggle('closed');
+      updateMenuInfo();
+    }
+
+    function closeDebugConsole() {
+      const container = document.querySelector('.debug-console-container');
+      if (container) container.classList.remove('ui-open');
+    }
+
     // ═══════════════════════════════════════════════════════════
     // V3.1.4: COMMAND STATUS PANEL
     // ═══════════════════════════════════════════════════════════
@@ -3005,9 +3540,10 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     }
     
     function scrollToDebugConsole() {
-      const debugConsole = document.querySelector('.debug-console-card');
+      const debugConsole = document.querySelector('.debug-console-container');
       if (debugConsole) {
-        debugConsole.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        debugConsole.classList.add('ui-open');
+        updateDebugConsole(true);
         closeMenu();
       }
     }
@@ -3017,6 +3553,9 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       const wifiStatus = document.getElementById('menuWifiStatus');
       const wsStatus = document.getElementById('menuWsStatus');
       const uptime = document.getElementById('pageUptime');
+      const popoverWifi = document.getElementById('popoverWifiStatus');
+      const popoverWs = document.getElementById('popoverWsStatus');
+      const popoverUptime = document.getElementById('popoverUptime');
       
       // Check current connection status from status banner
       const statusBanner = document.getElementById('statusBanner');
@@ -3024,9 +3563,11 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
         if (statusBanner.textContent.includes('Connected')) {
           wifiStatus.textContent = '✅ Connected';
           wifiStatus.style.color = '#28a745';
+          if (popoverWifi) popoverWifi.textContent = 'Connected';
         } else {
           wifiStatus.textContent = '❌ Offline';
           wifiStatus.style.color = '#dc3545';
+          if (popoverWifi) popoverWifi.textContent = 'Offline';
         }
       }
       
@@ -3034,9 +3575,11 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       if (window.ws && window.ws.readyState === 1) {
         wsStatus.textContent = '✅ Connected';
         wsStatus.style.color = '#28a745';
+        if (popoverWs) popoverWs.textContent = 'Connected';
       } else {
         wsStatus.textContent = '❌ Disconnected';
         wsStatus.style.color = '#dc3545';
+        if (popoverWs) popoverWs.textContent = 'Disconnected';
       }
       
       // Calculate uptime
@@ -3044,6 +3587,17 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       const uptimeMinutes = Math.floor(uptimeMs / 60000);
       const uptimeSeconds = Math.floor((uptimeMs % 60000) / 1000);
       uptime.textContent = `${uptimeMinutes}m ${uptimeSeconds}s`;
+      if (popoverUptime) popoverUptime.textContent = `${uptimeMinutes}m ${uptimeSeconds}s`;
+
+      fetch('/netmode', { cache: 'no-store' })
+        .then(response => response.ok ? response.json() : null)
+        .then(data => {
+          const mode = document.getElementById('popoverNetMode');
+          if (mode && data && data.mode) {
+            mode.textContent = data.mode === 'home' ? 'Home Wi-Fi' : 'Roaming hotspot';
+          }
+        })
+        .catch(() => {});
       
       // Fetch log statistics
       fetch('/messages.json')
