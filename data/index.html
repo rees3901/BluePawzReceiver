@@ -1495,14 +1495,24 @@
       height: 56px;
       display: flex;
       align-items: center;
-      gap: 11px;
-      padding: 8px 10px;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 0;
+      color: var(--ui-text);
+      pointer-events: none;
+    }
+    .app-brand-cluster {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 11px 7px 8px;
       border: 1px solid var(--ui-line);
       border-radius: 18px;
       background: var(--ui-bg);
-      color: var(--ui-text);
       box-shadow: var(--ui-shadow);
       backdrop-filter: blur(18px);
+      pointer-events: auto;
     }
     .app-menu-button {
       position: static;
@@ -1527,12 +1537,11 @@
       background: currentColor;
     }
     .app-menu-button:hover { background: rgba(255,255,255,0.14); transform: none; }
-    .app-brand { display: flex; align-items: center; gap: 9px; min-width: 0; }
-    .app-brand img { width: 36px; height: 36px; object-fit: contain; transform: rotate(-10deg); }
+    .app-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .app-brand img { width: 74px; height: 45px; object-fit: contain; }
     .app-brand-copy { min-width: 0; }
     .app-brand strong { display: block; line-height: 1.1; font-size: 1rem; }
     .app-brand small { display: block; color: var(--ui-muted); font-size: 0.72rem; white-space: nowrap; }
-    .app-top-spacer { flex: 1; }
     .firmware-version {
       margin: 0;
       padding: 3px 7px;
@@ -1558,6 +1567,9 @@
       text-overflow: ellipsis;
       white-space: nowrap;
       cursor: pointer;
+      box-shadow: var(--ui-shadow);
+      backdrop-filter: blur(18px);
+      pointer-events: auto;
     }
     #statusBanner::before {
       content: "";
@@ -1619,13 +1631,14 @@
       text-decoration: none;
     }
     .leaflet-control-layers-toggle::after {
-      content: "▤";
-      font-size: 1.25rem;
+      content: "🗺";
+      font-size: 1.35rem;
       line-height: 1;
     }
     .coordinate-control {
       display: block;
-      margin-bottom: 92px !important;
+      margin-right: 8px !important;
+      margin-bottom: 8px !important;
       padding: 6px 9px;
       border: 1px solid var(--ui-line);
       border-radius: 10px;
@@ -1633,6 +1646,13 @@
       color: var(--ui-text);
       box-shadow: 0 6px 18px rgba(0,0,0,.18);
       font-size: .72rem;
+      cursor: pointer;
+      user-select: none;
+    }
+    .coordinate-control:hover { border-color: rgba(54,167,255,.55); }
+    .coordinate-control.copied {
+      border-color: rgba(72,213,151,.7);
+      color: var(--ui-green);
     }
     .minimap-container { border-radius: 14px !important; opacity: .86; }
 
@@ -1657,7 +1677,7 @@
       border: 1px solid var(--ui-line);
       border-radius: 20px;
       background: var(--ui-bg);
-      box-shadow: var(--ui-shadow);
+      box-shadow: 0 16px 44px rgba(0, 12, 18, .38), 0 0 0 1px rgba(255,255,255,.05);
       scrollbar-width: none;
     }
     .marker-cards-container::-webkit-scrollbar { display: none; }
@@ -1674,14 +1694,29 @@
       border-radius: 14px;
       background: rgba(255,255,255,.06) !important;
       color: var(--ui-text);
-      box-shadow: none;
+      box-shadow: 0 5px 16px rgba(0,0,0,.18);
       transform: none !important;
       transition: background .18s, border-color .18s, opacity .18s;
     }
     .marker-card:hover {
       border-color: rgba(54,167,255,.42) !important;
       background: rgba(54,167,255,.13) !important;
-      box-shadow: none;
+      box-shadow: 0 8px 22px rgba(0,0,0,.24);
+    }
+    body.light-mode .marker-cards-container {
+      border-color: rgba(22, 57, 70, .28);
+      background: rgba(255,255,255,.94);
+      box-shadow: 0 16px 42px rgba(18,47,58,.28), 0 0 0 1px rgba(255,255,255,.8);
+    }
+    body.light-mode .marker-card {
+      border-color: rgba(26, 70, 88, .3) !important;
+      background: rgba(255,255,255,.98) !important;
+      box-shadow: 0 6px 18px rgba(18,47,58,.24);
+    }
+    body.light-mode .marker-card:hover {
+      border-color: rgba(36,132,190,.48) !important;
+      background: #fff !important;
+      box-shadow: 0 8px 22px rgba(18,47,58,.22);
     }
     .marker-card-header {
       min-height: 56px;
@@ -1821,20 +1856,27 @@
     .advanced-section { display: none; order: 20; }
     .menu-content.show-advanced .advanced-section { display: block; }
     .advanced-toggle {
-      order: 10;
+      position: sticky;
+      z-index: 3;
+      top: 0;
+      order: -10;
       width: 100%;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      margin-top: 14px;
+      margin: 12px 0 2px;
       padding: 12px 13px;
-      border: 1px solid var(--ui-line);
+      border: 1px solid rgba(54,167,255,.35);
       border-radius: 13px;
-      background: rgba(255,255,255,.045);
+      background: var(--ui-bg);
       color: var(--ui-text);
       font-weight: 700;
+      box-shadow: 0 7px 18px rgba(0,0,0,.14);
       cursor: pointer;
     }
+    .advanced-toggle-copy { text-align: left; }
+    .advanced-toggle-copy strong { display: block; font-size: .84rem; }
+    .advanced-toggle-copy small { display: block; margin-top: 2px; color: var(--ui-muted); font-size: .7rem; font-weight: 500; }
     .advanced-toggle span:last-child { color: var(--ui-muted); font-size: 1.25rem; transition: transform .18s; }
     .menu-content.show-advanced .advanced-toggle span:last-child { transform: rotate(90deg); }
 
@@ -1898,7 +1940,9 @@
     .debug-console-body { max-height: min(440px, 52dvh); }
 
     @media (max-width: 700px) {
-      .app-topbar { top: 8px; left: 8px; right: 8px; height: 52px; border-radius: 16px; }
+      .app-topbar { top: 8px; left: 8px; right: 8px; height: 52px; }
+      .app-brand-cluster { height: 52px; border-radius: 16px; padding: 6px 8px; }
+      .app-brand img { width: 54px; height: 38px; }
       .app-brand small, #firmwareVersionBadge { display: none; }
       #statusBanner { max-width: 46px; width: 46px; padding: 0; justify-content: center; font-size: 0; }
       .connection-popover { top: 68px; right: 8px; }
@@ -1923,6 +1967,7 @@
         max-height: 68dvh;
       }
       .side-menu { top: 68px; left: 8px; right: 8px; bottom: 8px; width: auto; }
+      .coordinate-control { margin-bottom: 92px !important; }
       #commandStatusPanel { top: 70px; width: calc(100vw - 80px); }
       .minimap-container { display: none; }
       .debug-console-container { padding: 8px !important; }
@@ -1932,20 +1977,21 @@
 </head>
 <body>
   <header class="app-topbar">
-    <button class="hamburger-btn app-menu-button" type="button" onclick="toggleMenu()" aria-label="Open settings">
-      <span></span>
-      <span></span>
-      <span></span>
-    </button>
-    <div class="app-brand">
-      <img src="/icons/favicon.avif" alt="">
-      <div class="app-brand-copy">
-        <strong>Blue Paws</strong>
-        <small>Live receiver map</small>
+    <div class="app-brand-cluster">
+      <button class="hamburger-btn app-menu-button" type="button" onclick="toggleMenu()" aria-label="Open settings">
+        <span></span>
+        <span></span>
+        <span></span>
+      </button>
+      <div class="app-brand">
+        <img src="/icons/MainLogoPodgeCarrie_small.avif" alt="Blue Paws">
+        <div class="app-brand-copy">
+          <strong>Blue Paws</strong>
+          <small>Live receiver map</small>
+        </div>
       </div>
+      <span id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
     </div>
-    <span id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
-    <span class="app-top-spacer"></span>
     <button id="statusBanner" type="button" onclick="toggleConnectionPopover()" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</button>
   </header>
 
@@ -1983,6 +2029,13 @@
     </div>
     
     <div class="menu-content">
+      <button class="advanced-toggle" type="button" onclick="toggleAdvancedSettings(this)" aria-expanded="false">
+        <span class="advanced-toggle-copy">
+          <strong>Advanced tools</strong>
+          <small>Diagnostics, logs, commands and build information</small>
+        </span>
+        <span aria-hidden="true">›</span>
+      </button>
       <!-- V3.1.9: Build info — firmware and filesystem versions. Moved
            here from the floating top-right panel; this is developer /
            troubleshooting info, not foreground UI. -->
@@ -2097,11 +2150,6 @@ still switch the beacon on manually above. Persists across reboots.">
         </div>
       </div>
 
-      <button class="advanced-toggle" type="button" onclick="toggleAdvancedSettings(this)" aria-expanded="false">
-        <span>Advanced</span>
-        <span aria-hidden="true">›</span>
-      </button>
-      
       <!-- Data & Logging -->
       <div class="menu-section advanced-section">
         <h3>💾 Data & Logging</h3>
@@ -2328,15 +2376,74 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
     // No need to redeclare them here
 
     // Replace the coordinate control initialization and update code with:
+    let coordinateControlHovered = false;
     const coordinateControl = L.control({position: 'bottomright'});
     coordinateControl.onAdd = function(map) {
       const div = L.DomUtil.create('div', 'coordinate-control');
       div.innerHTML = '--°N, --°E';
+      div.title = 'Click to copy coordinates';
+      div.setAttribute('role', 'button');
+      div.setAttribute('tabindex', '0');
+      div.dataset.copyValue = '';
+      const copyCoordinates = function() {
+        if (!div.dataset.copyValue) return;
+        const value = div.dataset.copyValue;
+        const showCopied = function() {
+          const previous = div.innerHTML;
+          div.innerHTML = 'Copied';
+          div.classList.add('copied');
+          setTimeout(function() {
+            div.innerHTML = previous;
+            div.classList.remove('copied');
+          }, 900);
+        };
+        if (navigator.clipboard && window.isSecureContext) {
+          navigator.clipboard.writeText(value).then(showCopied).catch(function() {
+            const textArea = document.createElement('textarea');
+            textArea.value = value;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-9999px';
+            document.body.appendChild(textArea);
+            textArea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textArea);
+            showCopied();
+          });
+        } else {
+          const textArea = document.createElement('textarea');
+          textArea.value = value;
+          textArea.style.position = 'fixed';
+          textArea.style.left = '-9999px';
+          document.body.appendChild(textArea);
+          textArea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textArea);
+          showCopied();
+        }
+      };
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+      L.DomEvent.on(div, 'mouseenter', function() { coordinateControlHovered = true; });
+      L.DomEvent.on(div, 'mouseleave', function() { coordinateControlHovered = false; });
+      L.DomEvent.on(div, 'mousemove', function(e) {
+        if (e.stopPropagation) e.stopPropagation();
+        if (e.originalEvent && e.originalEvent.stopPropagation) e.originalEvent.stopPropagation();
+      });
+      L.DomEvent.on(div, 'click', copyCoordinates);
+      L.DomEvent.on(div, 'keydown', function(e) {
+        const key = e.key || (e.originalEvent && e.originalEvent.key);
+        if (key === 'Enter' || key === ' ') {
+          if (e.preventDefault) e.preventDefault();
+          if (e.originalEvent && e.originalEvent.preventDefault) e.originalEvent.preventDefault();
+          copyCoordinates();
+        }
+      });
       return div;
     };
     coordinateControl.addTo(map);
 
     map.on('mousemove', function(e) {
+      if (coordinateControlHovered) return;
       const lat = e.latlng.lat;
       const lng = e.latlng.lng;
       const ddLat = Math.abs(lat).toFixed(5) + (lat >= 0 ? '°N' : '°S');
@@ -2344,6 +2451,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       const coordElement = document.querySelector('.coordinate-control');
       if (coordElement) {
         coordElement.innerHTML = `${ddLat}, ${ddLng}`;
+        coordElement.dataset.copyValue = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
       }
     });
 
