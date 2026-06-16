@@ -1302,7 +1302,9 @@
     .marker-card-console {
       margin-top: 10px;
       padding: 10px;
-      background: #f8f9fa;
+      background: #101f26;
+      color: #e8f3f6;
+      border: 1px solid rgba(255,255,255,.12);
       border-radius: 6px;
       max-height: 200px;
       overflow-y: auto;
@@ -1317,8 +1319,9 @@
     
     .console-message {
       padding: 5px;
-      border-bottom: 1px solid #e0e0e0;
+      border-bottom: 1px solid rgba(255,255,255,.12);
       margin-bottom: 5px;
+      color: inherit;
     }
     
     .console-message:last-child {
@@ -1326,8 +1329,29 @@
     }
     
     .console-time {
-      color: #666;
+      color: #9fc2cc;
       font-weight: bold;
+    }
+
+    .console-message pre {
+      margin: 3px 0 0;
+      color: inherit;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    body.light-mode .marker-card-console {
+      background: #f8fafb;
+      color: #132a34;
+      border-color: rgba(25,57,70,.16);
+    }
+
+    body.light-mode .console-message {
+      border-bottom-color: rgba(25,57,70,.16);
+    }
+
+    body.light-mode .console-time {
+      color: #4d6570;
     }
     
     /* Debug Console Styles - Compact Developer View */
@@ -1602,6 +1626,23 @@
     .connection-popover-head span { color: var(--ui-green); font-size: .76rem; }
     .connection-grid { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; font-size: .82rem; }
     .connection-grid span:nth-child(odd) { color: var(--ui-muted); }
+    .connection-grid strong {
+      color: var(--ui-text);
+      font-weight: 650;
+      text-align: right;
+      min-width: 0;
+    }
+    .connection-version-value {
+      display: inline;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: var(--ui-text);
+      box-shadow: none;
+      font: inherit;
+      line-height: inherit;
+      white-space: nowrap;
+    }
 
     .main-logo-title, .hamburger-btn:not(.app-menu-button), .scroll-to-top,
     #toggleAllCardsBtn, body > div[style*="text-align: center"][style*="margin: 10px"] {
@@ -1804,15 +1845,15 @@
       box-shadow: var(--ui-shadow);
       backdrop-filter: blur(18px);
     }
-    .marker-card.detail-open .marker-card-header { padding: 0 0 15px; cursor: default; }
+    .marker-card.detail-open .marker-card-header { padding: 0 48px 15px 0; cursor: default; }
     .marker-card.detail-open .marker-card-icon { width: 54px; height: 54px; flex-basis: 54px; }
     .marker-card.detail-open .marker-card-name { padding-right: 28px; font-size: 1.12rem; }
     .marker-card.detail-open .marker-card-actions { display: block; border-top: 1px solid var(--ui-line); padding-top: 15px; }
     .marker-card.detail-open .marker-card-console.show { display: block; }
     .marker-card.detail-open .marker-card-close {
       position: absolute;
-      top: 0;
-      right: 0;
+      top: 17px;
+      right: 17px;
       display: grid;
       place-items: center;
       width: 34px;
@@ -1824,6 +1865,11 @@
       color: var(--ui-text);
       font-size: 1.3rem;
       cursor: pointer;
+    }
+    .marker-card.detail-open .awake-indicator {
+      top: 17px !important;
+      right: 58px !important;
+      z-index: 1;
     }
     .marker-card.detail-open .marker-card-btn {
       border-color: var(--ui-line);
@@ -2119,7 +2165,7 @@
       <span>WebSocket</span><strong id="popoverWsStatus">Checking…</strong>
       <span>Page loaded</span><strong id="popoverUptime">—</strong>
       <span>Receiver mode</span><strong id="popoverNetMode">—</strong>
-      <span>Firmware</span><strong id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</strong>
+      <span>Firmware</span><strong id="firmwareVersionBadge" class="connection-version-value unknown" title="Receiver firmware version (from /version endpoint)">v—</strong>
       <span>Filesystem</span><strong id="popoverFilesystemVersion">—</strong>
     </div>
   </aside>

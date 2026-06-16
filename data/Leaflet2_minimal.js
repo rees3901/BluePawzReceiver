@@ -762,7 +762,9 @@ function updateMarkerCard(id, status, data) {
     : statusText.startsWith("Last known")
       ? "lastknown"
       : statusText.toLowerCase().replace(/[^a-z]/g, '');
-  card.className = `marker-card status-${safeStatus}`;
+  const wasDetailOpen = card.classList.contains("detail-open");
+  const wasMyDevice = card.classList.contains("my-device-card");
+  card.className = `marker-card status-${safeStatus}${wasMyDevice ? " my-device-card" : ""}${wasDetailOpen ? " detail-open" : ""}`;
   // Re-add sheen class (since we just overwrote className)
   card.classList.add("card-sheen");
 
@@ -827,7 +829,7 @@ function updateMarkerCard(id, status, data) {
         (msg) => `
       <div class="console-message">
         <span class="console-time">${msg.time}</span><br>
-        <pre style="margin: 0; white-space: pre-wrap; word-break: break-all;">${JSON.stringify(
+        <pre>${JSON.stringify(
           msg.data,
           null,
           2
