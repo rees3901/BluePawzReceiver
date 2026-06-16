@@ -353,7 +353,7 @@ The receiver has two tiers:
 | Tier | Survives | Used for |
 |---|---|---|
 | In-memory maps keyed by numeric device ID | reboot wipes working state | per-collar state, trails, pending commands |
-| `LittleFS` | reboots | home location, telemetry snapshot, developer mode, and circular message log |
+| `LittleFS` | reboots | home location, telemetry snapshot, and circular message log |
 
 ---
 

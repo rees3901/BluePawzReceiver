@@ -200,11 +200,105 @@ const markerVisibility = {};
 const autoCenter = {};
 const markerLastUpdate = {}; // Track last update time for each marker
 const markerFixUnix = {}; // Latest position timestamp applied to each marker
+const overlapBadgeLayer = L.layerGroup().addTo(map);
 // Track which marker is being followed (only one at a time)
 let followedMarkerId = null;
 // Provide globals used by index.html helpers
 window.breadcrumbs = window.breadcrumbs || {};
 window.breadcrumbLines = window.breadcrumbLines || {};
+
+function refreshOverlapBadges() {
+  overlapBadgeLayer.clearLayers();
+
+  const visible = Object.entries(markers)
+    .filter(([, marker]) => marker && map.hasLayer(marker))
+    .map(([id, marker]) => ({
+      id,
+      marker,
+      point: map.latLngToLayerPoint(marker.getLatLng()),
+    }));
+  const used = new Set();
+
+  visible.forEach((item, index) => {
+    if (used.has(index)) return;
+    const group = [item];
+    used.add(index);
+
+    visible.forEach((candidate, candidateIndex) => {
+      if (used.has(candidateIndex)) return;
+      if (item.point.distanceTo(candidate.point) <= 14) {
+        group.push(candidate);
+        used.add(candidateIndex);
+      }
+    });
+
+    if (group.length < 2) return;
+
+    const list = group.map(({ id }) => {
+      const label = id === "MyDevice"
+        ? ((window.deviceNames && window.deviceNames[id]) || "Base station")
+        : `${(window.deviceNames && window.deviceNames[id]) || id} (${id})`;
+      return `<button type="button" onclick="map.closePopup(); openMarkerCard('${id}')">${escHtml(label)}</button>`;
+    }).join("");
+
+    L.marker(item.marker.getLatLng(), {
+      interactive: true,
+      keyboard: true,
+      zIndexOffset: 2000,
+      icon: L.divIcon({
+        html: `<div class="overlap-count-marker" title="${group.length} markers at this location">${group.length}</div>`,
+        className: "overlap-badge-shell",
+        iconSize: [24, 24],
+        iconAnchor: [-7, 31],
+      }),
+    })
+      .bindPopup(`<div class="overlap-popup-list"><strong>${group.length} trackers here</strong>${list}</div>`, {
+        closeButton: true,
+        offset: [16, -22],
+      })
+      .addTo(overlapBadgeLayer);
+  });
+}
+
+window.refreshOverlapBadges = refreshOverlapBadges;
+map.on("zoomend moveend", refreshOverlapBadges);
+
+window.copyMapCoordinates = function (lat, lon) {
+  const value = `${Number(lat).toFixed(6)}, ${Number(lon).toFixed(6)}`;
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(value).catch(() => {});
+  } else {
+    const area = document.createElement("textarea");
+    area.value = value;
+    area.style.position = "fixed";
+    area.style.left = "-9999px";
+    document.body.appendChild(area);
+    area.select();
+    document.execCommand("copy");
+    area.remove();
+  }
+  map.closePopup();
+};
+
+window.openMapCoordinates = function (lat, lon) {
+  window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${lat},${lon}`)}`, "_blank", "noopener");
+  map.closePopup();
+};
+
+map.on("contextmenu", function (event) {
+  const lat = event.latlng.lat.toFixed(6);
+  const lon = event.latlng.lng.toFixed(6);
+  L.popup({ closeButton: true, offset: [0, -4] })
+    .setLatLng(event.latlng)
+    .setContent(
+      `<div class="map-context-menu">` +
+      `<strong>Map location</strong><small>${lat}, ${lon}</small>` +
+      `<button type="button" onclick="copyMapCoordinates('${lat}','${lon}')">Copy coordinates</button>` +
+      `<button type="button" onclick="openMapCoordinates('${lat}','${lon}')">Open in Google Maps</button>` +
+      `</div>`
+    )
+    .openOn(map);
+});
 
 // V3.1.7: HTML-escape user-derived strings before injecting them into
 // innerHTML. The `id` and `status` fields originate from incoming LoRa
@@ -815,41 +909,6 @@ window.sendBle = function (turnOn) {
   console.warn("WS not ready to send BLE set");
 };
 
-// V3.6.8: developer-mode helpers (same shape as the BLE ones). dev_state is
-// pushed by the receiver; dev_get/dev_set request + change it.
-function handleDevState(data) {
-  if (!data || data.type !== "dev_state") return;
-  const devToggle = document.getElementById("devToggle");
-  const devStatus = document.getElementById("devStatus");
-  const isOn = !!data.on;
-  if (devToggle) devToggle.checked = isOn;
-  if (devStatus) {
-    devStatus.textContent = isOn ? "ON" : "OFF";
-    devStatus.style.color = isOn ? "#ffc107" : "#6c757d";
-  }
-}
-
-function requestDevStatus() {
-  try {
-    if (window.ws && window.ws.readyState === 1) {
-      window.ws.send(JSON.stringify({ type: "dev_get" }));
-    }
-  } catch (e) {
-    console.warn("dev get failed:", e);
-  }
-}
-window.requestDevStatus = requestDevStatus;
-
-window.sendDev = function (on) {
-  const payload = { type: "dev_set", on: !!on };
-  if (window.ws && window.ws.readyState === 1) {
-    console.log("Developer mode set via WS:", payload);
-    window.ws.send(JSON.stringify(payload));
-    return;
-  }
-  console.warn("WS not ready to send dev_set");
-};
-
 function connectWebSocket() {
   window.ws = new WebSocket(`ws://${window.location.hostname}:81/`);
 
@@ -863,7 +922,6 @@ function connectWebSocket() {
     }
 
     requestBleStatus();
-    requestDevStatus(); // V3.6.8: sync the developer-mode toggle on (re)connect
 
     // V3.4.0: rebuild the map from the receiver's stored state on every
     // (re)connect — covers initial page load, refresh, and reconnect.
@@ -940,12 +998,6 @@ window.handleTelemetry = function (data, isHydrate) {
         console.log("BLE state update received:", data);
         handleBleState(data);
         return; // Don't process as position data
-      }
-
-      // V3.6.8: developer-mode state push
-      if (data.type === "dev_state") {
-        handleDevState(data);
-        return;
       }
 
       // V3: dynamic home location updated from server.
@@ -1040,6 +1092,7 @@ window.handleTelemetry = function (data, isHydrate) {
             icon: getMarkerIcon(id, status),
           }).addTo(map);
           markerVisibility[id] = true;
+          refreshOverlapBadges();
         }
 
         // Always update marker icon based on status (even without coordinates)
@@ -1076,6 +1129,7 @@ window.handleTelemetry = function (data, isHydrate) {
           if (!hasNewerPosition) {
             markers[id].setLatLng(newPos);
             markerFixUnix[id] = incomingFixUnix || Math.floor(Date.now() / 1000);
+            refreshOverlapBadges();
           }
 
           // Force map to recalculate marker positions

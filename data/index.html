@@ -1492,7 +1492,7 @@
       top: 14px;
       left: 16px;
       right: 16px;
-      height: 56px;
+      height: 84px;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -1502,11 +1502,11 @@
       pointer-events: none;
     }
     .app-brand-cluster {
-      height: 56px;
+      height: 84px;
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 7px 11px 7px 8px;
+      gap: 14px;
+      padding: 10px 16px 10px 11px;
       border: 1px solid var(--ui-line);
       border-radius: 18px;
       background: var(--ui-bg);
@@ -1516,32 +1516,32 @@
     }
     .app-menu-button {
       position: static;
-      width: 40px;
-      height: 40px;
+      width: 56px;
+      height: 56px;
       display: grid;
       place-content: center;
       gap: 4px;
       padding: 0;
       border: 0;
-      border-radius: 12px;
+      border-radius: 15px;
       background: rgba(255,255,255,0.08);
       cursor: pointer;
       transform: none;
     }
     .app-menu-button span {
       display: block;
-      width: 18px;
-      height: 2px;
+      width: 25px;
+      height: 3px;
       margin: 0;
       border-radius: 2px;
       background: currentColor;
     }
     .app-menu-button:hover { background: rgba(255,255,255,0.14); transform: none; }
     .app-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-    .app-brand img { width: 74px; height: 45px; object-fit: contain; }
+    .app-brand img { width: 108px; height: 66px; object-fit: contain; }
     .app-brand-copy { min-width: 0; }
-    .app-brand strong { display: block; line-height: 1.1; font-size: 1rem; }
-    .app-brand small { display: block; color: var(--ui-muted); font-size: 0.72rem; white-space: nowrap; }
+    .app-brand strong { display: block; line-height: 1.1; font-size: 1.35rem; }
+    .app-brand small { display: block; color: var(--ui-muted); font-size: .9rem; white-space: nowrap; }
     .firmware-version {
       margin: 0;
       padding: 3px 7px;
@@ -1585,7 +1585,7 @@
     .connection-popover {
       position: fixed;
       z-index: 1150;
-      top: 78px;
+      top: 108px;
       right: 16px;
       width: min(330px, calc(100vw - 32px));
       padding: 15px;
@@ -1608,7 +1608,7 @@
       display: none !important;
     }
 
-    .leaflet-top { top: 76px; }
+    .leaflet-top { top: 104px; }
     .leaflet-left { left: 8px; }
     .leaflet-right { right: 8px; }
     .leaflet-control-layers, .leaflet-bar {
@@ -1629,11 +1629,58 @@
       background-image: none !important;
       color: var(--ui-text);
       text-decoration: none;
+      position: relative;
     }
+    .leaflet-control-layers-toggle::before,
     .leaflet-control-layers-toggle::after {
-      content: "🗺";
-      font-size: 1.35rem;
-      line-height: 1;
+      content: "";
+      position: absolute;
+      left: 11px;
+      width: 17px;
+      height: 11px;
+      border: 2px solid currentColor;
+      border-radius: 2px;
+      transform: skewY(-12deg);
+    }
+    .leaflet-control-layers-toggle::before { top: 10px; opacity: .65; }
+    .leaflet-control-layers-toggle::after { top: 17px; background: var(--ui-bg); }
+
+    .overlap-count-marker {
+      display: grid;
+      place-items: center;
+      border: 2px solid #fff;
+      border-radius: 999px;
+      background: var(--ui-blue);
+      color: #031923;
+      box-shadow: 0 4px 12px rgba(0,0,0,.4);
+      font-size: .7rem;
+      font-weight: 800;
+      cursor: pointer;
+    }
+    .overlap-popup-list { display: grid; gap: 6px; min-width: 170px; }
+    .overlap-popup-list button {
+      width: 100%;
+      padding: 7px 9px;
+      border: 1px solid #ccd8dd;
+      border-radius: 8px;
+      background: #fff;
+      color: #16303a;
+      cursor: pointer;
+      text-align: left;
+    }
+    .map-context-menu { min-width: 210px; }
+    .map-context-menu strong { display: block; margin-bottom: 3px; }
+    .map-context-menu small { display: block; margin-bottom: 9px; color: #647780; }
+    .map-context-menu button {
+      width: 100%;
+      margin-top: 5px;
+      padding: 7px 9px;
+      border: 1px solid #ccd8dd;
+      border-radius: 8px;
+      background: #fff;
+      color: #16303a;
+      cursor: pointer;
+      text-align: left;
     }
     .coordinate-control {
       display: block;
@@ -1742,11 +1789,11 @@
     .marker-card.detail-open {
       position: fixed;
       z-index: 1160;
-      top: 84px;
+      top: 108px;
       right: 16px;
       bottom: 16px;
       width: min(365px, calc(100vw - 32px));
-      height: calc(100dvh - 100px);
+      height: calc(100dvh - 124px);
       max-width: none;
       min-height: 0;
       padding: 17px;
@@ -1790,10 +1837,10 @@
 
     .side-menu {
       z-index: 1210;
-      top: 84px;
+      top: 108px;
       left: 16px;
       bottom: 16px;
-      width: min(380px, calc(100vw - 32px));
+      width: min(435px, calc(100vw - 32px));
       height: auto;
       padding: 0;
       overflow: hidden;
@@ -1889,6 +1936,10 @@
       bottom: 3px;
     }
     .side-menu input:checked + .slider:before { transform: translateX(18px); }
+    .side-menu .node-control-item,
+    .side-menu .node-controls { max-width: 100%; min-width: 0; }
+    .side-menu .node-controls > * { min-width: 0; max-width: 100%; }
+    #nodeControlList { overflow-x: hidden !important; }
     .advanced-section { display: none; order: 20; }
     .menu-content.show-advanced .advanced-section { display: block; }
     .advanced-toggle {
@@ -1944,7 +1995,7 @@
     #commandStatusPanel {
       position: fixed;
       z-index: 1080;
-      top: 82px;
+      top: 108px;
       left: 50%;
       width: min(520px, calc(100vw - 130px));
       max-height: 34vh;
@@ -2003,8 +2054,11 @@
     @media (max-width: 700px) {
       .app-topbar { top: 8px; left: 8px; right: 8px; height: 52px; }
       .app-brand-cluster { height: 52px; border-radius: 16px; padding: 6px 8px; }
+      .app-menu-button { width: 40px; height: 40px; border-radius: 12px; }
+      .app-menu-button span { width: 18px; height: 2px; }
       .app-brand img { width: 54px; height: 38px; }
-      .app-brand small, #firmwareVersionBadge { display: none; }
+      .app-brand strong { font-size: 1rem; }
+      .app-brand small { display: none; }
       #statusBanner { max-width: 46px; width: 46px; padding: 0; justify-content: center; font-size: 0; }
       .connection-popover { top: 68px; right: 8px; }
       .leaflet-top { top: 62px; }
@@ -2051,7 +2105,6 @@
           <small>Live receiver map</small>
         </div>
       </div>
-      <span id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</span>
     </div>
     <button id="statusBanner" type="button" onclick="toggleConnectionPopover()" style="background: rgba(0,255,0,0.1); color: green">WiFi/Network Connected: ✔</button>
   </header>
@@ -2066,6 +2119,8 @@
       <span>WebSocket</span><strong id="popoverWsStatus">Checking…</strong>
       <span>Page loaded</span><strong id="popoverUptime">—</strong>
       <span>Receiver mode</span><strong id="popoverNetMode">—</strong>
+      <span>Firmware</span><strong id="firmwareVersionBadge" class="firmware-version unknown" title="Receiver firmware version (from /version endpoint)">v—</strong>
+      <span>Filesystem</span><strong id="popoverFilesystemVersion">—</strong>
     </div>
   </aside>
   
@@ -2179,25 +2234,6 @@ Turn off to save power when not needed">
               <span class="slider round"></span>
             </label>
             <span id="bleStatus">ON</span>
-          </label>
-        </div>
-      </div>
-
-      <!-- Developer Mode (V3.6.8) -->
-      <div class="menu-section advanced-section">
-        <h3>🛠️ Developer Mode</h3>
-        <div class="menu-item" style="justify-content: space-between; align-items: center;">
-          <span class="menu-info-label">Developer Mode:</span>
-          <label class="ble-toggle-label" style="margin: 0;" title="Developer Mode (base station)
-For testing/debugging only.
-When ON, the BLE 'Home' beacon defaults OFF so collars keep
-reporting (roaming) instead of going quiet at home. You can
-still switch the beacon on manually above. Persists across reboots.">
-            <label class="switch">
-              <input type="checkbox" id="devToggle">
-              <span class="slider round"></span>
-            </label>
-            <span id="devStatus">OFF</span>
           </label>
         </div>
       </div>
@@ -3595,6 +3631,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       const fwBadge  = document.getElementById('firmwareVersionBadge');
       const fwEl     = document.getElementById('verFirmware');
       const fsEl     = document.getElementById('verFilesystem');
+      const popoverFs = document.getElementById('popoverFilesystemVersion');
       const fwHashEl = document.getElementById('verFirmwareHash');
       const fsHashEl = document.getElementById('verFilesystemHash');
       try {
@@ -3608,6 +3645,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
 
         if (fwEl) fwEl.textContent = 'v' + fw;
         if (fsEl) fsEl.textContent = (fs === 'unknown') ? '(not uploaded)' : 'v' + fs;
+        if (popoverFs) popoverFs.textContent = (fs === 'unknown') ? 'Not uploaded' : 'v' + fs;
 
         // V3.2.2: show short git hash next to each version. "unknown"
         // hash → hide the chip rather than display literal "unknown",
@@ -3632,6 +3670,7 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
                     ', filesystem v' + fs + ' @ ' + fsHash);
       } catch (e) {
         if (fwEl) fwEl.textContent = 'unreachable';
+        if (popoverFs) popoverFs.textContent = 'Unreachable';
         console.warn('Could not fetch /version:', e);
       }
     }
@@ -3838,26 +3877,6 @@ Does not affect stored data on ESP32">🗑️ Clear Console</button>
       });
     } else {
       console.error('BLE toggle elements not found:', { bleToggle, bleStatus });
-    }
-
-    // Developer Mode Toggle (V3.6.8) — same pattern as the BLE toggle.
-    const devToggle = document.getElementById('devToggle');
-    const devStatus = document.getElementById('devStatus');
-    if (devToggle && devStatus) {
-      setTimeout(() => { if (window.requestDevStatus) window.requestDevStatus(); }, 300);
-      devToggle.addEventListener('change', function() {
-        const on = this.checked;
-        console.log('Developer mode toggle clicked, new state:', on);
-        devStatus.textContent = on ? 'ENABLING...' : 'DISABLING...';
-        devStatus.style.color = '#ffc107';
-        if (window.sendDev) {
-          window.sendDev(on);
-        } else {
-          console.warn('sendDev helper not available');
-        }
-      });
-    } else {
-      console.error('Developer mode toggle elements not found:', { devToggle, devStatus });
     }
 
     // Export message log function
