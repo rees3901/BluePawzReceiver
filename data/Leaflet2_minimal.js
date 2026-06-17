@@ -618,17 +618,48 @@ Useful for debugging and seeing exact coordinates">
   }
 }
 
+function removeMarkerCardPlaceholder(id) {
+  const placeholder = document.querySelector(`.marker-card-placeholder[data-placeholder-for="${id}"]`);
+  if (placeholder) placeholder.remove();
+}
+
+function makeMarkerCardPlaceholder(card, id) {
+  removeMarkerCardPlaceholder(id);
+  const placeholder = card.cloneNode(true);
+  placeholder.classList.remove("detail-open", "card-sheen");
+  placeholder.classList.add("marker-card-placeholder");
+  placeholder.dataset.placeholderFor = id;
+  placeholder.setAttribute("aria-hidden", "true");
+  placeholder.querySelectorAll("[id]").forEach((el) => el.removeAttribute("id"));
+  placeholder.querySelectorAll("[onclick]").forEach((el) => el.removeAttribute("onclick"));
+  placeholder.addEventListener("click", () => window.openMarkerCard(id));
+  card.parentNode.insertBefore(placeholder, card);
+}
+
+function syncMarkerCardPlaceholder(id) {
+  const card = document.getElementById(`marker-card-${id}`);
+  if (!card || !card.classList.contains("detail-open")) return;
+  makeMarkerCardPlaceholder(card, id);
+}
+
 window.openMarkerCard = function (id) {
   document.querySelectorAll(".marker-card.detail-open").forEach((card) => {
-    if (card.id !== `marker-card-${id}`) card.classList.remove("detail-open");
+    if (card.id !== `marker-card-${id}`) {
+      card.classList.remove("detail-open");
+      removeMarkerCardPlaceholder(card.id.replace("marker-card-", ""));
+    }
   });
   const card = document.getElementById(`marker-card-${id}`);
-  if (card) card.classList.add("detail-open");
+  if (card) {
+    makeMarkerCardPlaceholder(card, id);
+    card.classList.add("detail-open");
+  }
 };
 
 window.closeMarkerCard = function (id) {
   const card = document.getElementById(`marker-card-${id}`);
   if (card) card.classList.remove("detail-open");
+  removeMarkerCardPlaceholder(id);
 };
 
 // Jump to marker location
@@ -839,6 +870,8 @@ function updateMarkerCard(id, status, data) {
       )
       .join("");
   }
+
+  syncMarkerCardPlaceholder(id);
 }
 
 // Helper functions for breadcrumbs
